@@ -13,7 +13,9 @@ use crate::testosterone::test_panic_handler;
 #[cfg(test)]
 use core::panic::PanicInfo;
 
-use bootloader_api::BootloaderConfig;
+use bootloader_api::config::Mapping;
+use bootloader_api::{BootInfo, BootloaderConfig};
+use x86_64::VirtAddr;
 
 pub mod avganec;
 pub mod cereal;
@@ -22,13 +24,31 @@ pub mod testosterone;
 pub mod interrupts;
 pub mod gdt;
 pub mod keyboard;
+pub mod memory;
 
 /// Bootloader settings shared by the kernel and all test kernels
-pub const BOOTLOADER_CONFIG: BootloaderConfig = BootloaderConfig::new_default();
+pub const BOOTLOADER_CONFIG: BootloaderConfig = {
+    let mut config = BootloaderConfig::new_default();
+    config.mappings.physical_memory = Some(Mapping::Dynamic);
+    // keep everything the bootloader maps in the higher half, see `memory`
+    config.mappings.dynamic_range_start = Some(memory::KERNEL_DYNAMIC_START);
+    config.mappings.dynamic_range_end = Some(memory::KERNEL_DYNAMIC_END);
+    config
+};
 
-pub fn init() {
+/// Initializes the CPU tables, memory and interrupts.
+/// The framebuffer has to be taken from `boot_info` for `avganec` before.
+pub fn init(boot_info: &'static mut BootInfo) {
     gdt::init();
     interrupts::init_idt();
+
+    let boot_info: &'static BootInfo = boot_info;
+    let physical_memory_offset = *boot_info
+        .physical_memory_offset
+        .as_ref()
+        .expect("bootloader did not map physical memory");
+    unsafe { memory::init(VirtAddr::new(physical_memory_offset), &boot_info.memory_regions) };
+
     interrupts::init_pics();
     x86_64::instructions::interrupts::enable();
 }
@@ -47,7 +67,7 @@ bootloader_api::entry_point!(test_kernel_main, config = &BOOTLOADER_CONFIG);
 #[cfg(test)]
 fn test_kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     avganec::init(boot_info.framebuffer.take());
-    init();
+    init(boot_info);
     test_main();
     hlt_loop();
 }
