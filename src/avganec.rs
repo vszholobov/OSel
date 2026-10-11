@@ -22,10 +22,13 @@ macro_rules! println {
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
     use core::fmt::Write;
-    // printing before `init` or without a framebuffer is a no-op
-    if let Some(writer) = WRITER.lock().as_mut() {
-        writer.write_fmt(args).unwrap();
-    }
+    // an interrupt handler printing while we hold the lock would deadlock
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        // printing before `init` or without a framebuffer is a no-op
+        if let Some(writer) = WRITER.lock().as_mut() {
+            writer.write_fmt(args).unwrap();
+        }
+    });
 }
 
 const FONT_WEIGHT: FontWeight = FontWeight::Regular;

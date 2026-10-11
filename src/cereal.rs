@@ -8,11 +8,14 @@ use uart_16550::{Config, Uart16550Tty, backend::PioBackend};
 #[doc(hidden)]
 pub fn _print(args: core::fmt::Arguments) {
     use core::fmt::Write;
-    SERIAL1
-        .deref()
-        .lock()
-        .write_fmt(args)
-        .expect("Printing to serial failed");
+    // an interrupt handler printing while we hold the lock would deadlock
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        SERIAL1
+            .deref()
+            .lock()
+            .write_fmt(args)
+            .expect("Printing to serial failed");
+    });
 }
 
 /// Prints to the host through the serial interface.

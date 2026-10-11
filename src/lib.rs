@@ -21,6 +21,7 @@ pub mod qemuno;
 pub mod testosterone;
 pub mod interrupts;
 pub mod gdt;
+pub mod keyboard;
 
 /// Bootloader settings shared by the kernel and all test kernels
 pub const BOOTLOADER_CONFIG: BootloaderConfig = BootloaderConfig::new_default();
@@ -28,6 +29,15 @@ pub const BOOTLOADER_CONFIG: BootloaderConfig = BootloaderConfig::new_default();
 pub fn init() {
     gdt::init();
     interrupts::init_idt();
+    interrupts::init_pics();
+    x86_64::instructions::interrupts::enable();
+}
+
+/// Sleeps until the next interrupt forever
+pub fn hlt_loop() -> ! {
+    loop {
+        x86_64::instructions::hlt();
+    }
 }
 
 #[cfg(test)]
@@ -39,7 +49,7 @@ fn test_kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
     avganec::init(boot_info.framebuffer.take());
     init();
     test_main();
-    loop {}
+    hlt_loop();
 }
 
 #[cfg(test)]

@@ -6,7 +6,7 @@
 
 use bootloader_api::{BootInfo, entry_point};
 use core::panic::PanicInfo;
-use osel::println;
+use osel::{print, println};
 #[cfg(not(test))]
 #[allow(unused_imports)]
 use osel::testosterone::test_main;
@@ -20,14 +20,31 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     #[cfg(test)]
     test_main();
     println!("OSel ready to go!");
-    loop {}
+    echo_keyboard();
+}
+
+/// Prints typed characters until the machine is turned off
+fn echo_keyboard() -> ! {
+    use x86_64::instructions::interrupts;
+    loop {
+        // check the buffer with interrupts off, otherwise a key pressed right
+        // after the check would wait for the next interrupt to be noticed
+        interrupts::disable();
+        match osel::keyboard::pop_char() {
+            Some(c) => {
+                interrupts::enable();
+                print!("{}", c);
+            }
+            None => interrupts::enable_and_hlt(),
+        }
+    }
 }
 
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     println!("{}", info);
-    loop {}
+    osel::hlt_loop();
 }
 
 #[cfg(test)]
