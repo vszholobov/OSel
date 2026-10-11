@@ -13,6 +13,8 @@ use crate::testosterone::test_panic_handler;
 #[cfg(test)]
 use core::panic::PanicInfo;
 
+use bootloader_api::BootloaderConfig;
+
 pub mod avganec;
 pub mod cereal;
 pub mod qemuno;
@@ -20,15 +22,21 @@ pub mod testosterone;
 pub mod interrupts;
 pub mod gdt;
 
+/// Bootloader settings shared by the kernel and all test kernels
+pub const BOOTLOADER_CONFIG: BootloaderConfig = BootloaderConfig::new_default();
+
 pub fn init() {
     gdt::init();
     interrupts::init_idt();
 }
 
+#[cfg(test)]
+bootloader_api::entry_point!(test_kernel_main, config = &BOOTLOADER_CONFIG);
+
 /// Entry point for `cargo test`
 #[cfg(test)]
-#[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
+fn test_kernel_main(boot_info: &'static mut bootloader_api::BootInfo) -> ! {
+    avganec::init(boot_info.framebuffer.take());
     init();
     test_main();
     loop {}

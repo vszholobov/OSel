@@ -2,11 +2,13 @@
 #![no_main]
 #![feature(abi_x86_interrupt)]
 
+use bootloader_api::{BootInfo, entry_point};
 use core::panic::PanicInfo;
 use osel::serial_print;
 
-#[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
+entry_point!(main, config = &osel::BOOTLOADER_CONFIG);
+
+fn main(_boot_info: &'static mut BootInfo) -> ! {
     serial_print!("stack_overflow::stack_overflow...\t");
 
     osel::gdt::init();
@@ -21,7 +23,7 @@ pub extern "C" fn _start() -> ! {
 #[allow(unconditional_recursion)]
 fn stack_overflow() {
     stack_overflow(); // for each recursion, the return address is pushed
-    volatile::Volatile::new(0).read(); // prevent tail recursion optimizations
+    unsafe { core::ptr::read_volatile(&0) }; // prevent tail recursion optimizations
 }
 
 #[panic_handler]

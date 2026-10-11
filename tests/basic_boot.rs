@@ -6,13 +6,16 @@
 
 /// Integrational tests
 
+use bootloader_api::{BootInfo, entry_point};
 use core::panic::PanicInfo;
 #[cfg(not(test))]
 use osel::testosterone::test_main;
 use osel::println;
 
-#[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
+entry_point!(main, config = &osel::BOOTLOADER_CONFIG);
+
+fn main(boot_info: &'static mut BootInfo) -> ! {
+    osel::avganec::init(boot_info.framebuffer.take());
     test_main();
 
     loop {}

@@ -4,18 +4,17 @@
 #![test_runner(osel::testosterone::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
-#[macro_use]
-mod cereal;
-mod avganec;
-mod qemuno;
-mod testosterone;
-
-#[cfg(not(test))]
-pub use crate::testosterone::test_main;
+use bootloader_api::{BootInfo, entry_point};
 use core::panic::PanicInfo;
+use osel::println;
+#[cfg(not(test))]
+#[allow(unused_imports)]
+use osel::testosterone::test_main;
 
-#[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
+entry_point!(kernel_main, config = &osel::BOOTLOADER_CONFIG);
+
+fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
+    osel::avganec::init(boot_info.framebuffer.take());
     println!("OSel woke up!");
     osel::init();
     #[cfg(test)]
@@ -24,7 +23,7 @@ pub extern "C" fn _start() -> ! {
     loop {}
 }
 
-#[cfg(not(test))] // new attribute
+#[cfg(not(test))]
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     println!("{}", info);
@@ -34,5 +33,5 @@ fn panic(info: &PanicInfo) -> ! {
 #[cfg(test)]
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    testosterone::test_panic_handler(info);
+    osel::testosterone::test_panic_handler(info);
 }

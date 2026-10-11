@@ -1,4 +1,12 @@
-//! aVGAnec module provides basic VGA text showing methods
+//! aVGAnec module provides basic text showing methods on top of the linear framebuffer
+//!
+//! Works the same way under UEFI (GOP) and BIOS (VESA): glyphs are rasterized
+//! with the Noto Sans Mono bitmap font and drawn pixel by pixel.
+
+use bootloader_api::info::{FrameBuffer, FrameBufferInfo, PixelFormat};
+use core::fmt;
+use noto_sans_mono_bitmap::{FontWeight, RasterHeight, RasterizedChar, get_raster, get_raster_width};
+use spin::Mutex;
 
 #[macro_export]
 macro_rules! print {
@@ -14,80 +22,73 @@ macro_rules! println {
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
     use core::fmt::Write;
-    WRITER.deref().lock().write_fmt(args).unwrap();
-}
-
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum Color {
-    Black = 0,
-    Blue = 1,
-    Green = 2,
-    Cyan = 3,
-    Red = 4,
-    Magenta = 5,
-    Brown = 6,
-    LightGray = 7,
-    DarkGray = 8,
-    LightBlue = 9,
-    LightGreen = 10,
-    LightCyan = 11,
-    LightRed = 12,
-    Pink = 13,
-    Yellow = 14,
-    White = 15,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(transparent)]
-struct ColorCode(u8);
-
-impl ColorCode {
-    fn new(foreground: Color, background: Color) -> ColorCode {
-        ColorCode((background as u8) << 4 | (foreground as u8))
+    // printing before `init` or without a framebuffer is a no-op
+    if let Some(writer) = WRITER.lock().as_mut() {
+        writer.write_fmt(args).unwrap();
     }
 }
 
+const FONT_WEIGHT: FontWeight = FontWeight::Regular;
+const CHAR_RASTER_HEIGHT: RasterHeight = RasterHeight::Size16;
+const CHAR_WIDTH: usize = get_raster_width(FONT_WEIGHT, CHAR_RASTER_HEIGHT);
+const LINE_HEIGHT: usize = CHAR_RASTER_HEIGHT.val() + 2;
+const UNKNOWN_AVGANEC: char = '\u{FFFD}';
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(C)]
-struct ScreenChar {
-    ascii_character: u8,
-    color_code: ColorCode,
+pub struct Color {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
 }
 
-const BUFFER_HEIGHT: usize = 25;
-const BUFFER_WIDTH: usize = 80;
+impl Color {
+    pub const BLACK: Color = Color::new(0x00, 0x00, 0x00);
+    pub const GREEN: Color = Color::new(0x00, 0xaa, 0x00);
+    pub const WHITE: Color = Color::new(0xff, 0xff, 0xff);
 
-use volatile::Volatile;
+    pub const fn new(r: u8, g: u8, b: u8) -> Color {
+        Color { r, g, b }
+    }
 
-#[repr(transparent)]
-struct Buffer {
-    chars: [[Volatile<ScreenChar>; BUFFER_WIDTH]; BUFFER_HEIGHT],
+    /// Mixes `self` (background) with `fg` using glyph pixel intensity 0..=255
+    fn blend(self, fg: Color, intensity: u8) -> Color {
+        let mix = |bg: u8, fg: u8| ((bg as u16 * (255 - intensity as u16) + fg as u16 * intensity as u16) / 255) as u8;
+        Color::new(mix(self.r, fg.r), mix(self.g, fg.g), mix(self.b, fg.b))
+    }
 }
 
-use lazy_static::lazy_static;
-use spin::Mutex;
+pub static WRITER: Mutex<Option<Writer>> = Mutex::new(None);
 
-const VGA_BUFFER_ADDRESS: usize = 0xb8000;
-
-lazy_static! {
-    pub static ref WRITER: Mutex<Writer> = Mutex::new(Writer {
-        column_position: 0,
-        color_code: ColorCode::new(Color::Green, Color::Black),
-        buffer: unsafe { &mut *(VGA_BUFFER_ADDRESS as *mut Buffer) },
+/// Takes over the framebuffer handed over by the bootloader
+pub fn init(framebuffer: Option<FrameBuffer>) {
+    let writer = framebuffer.map(|fb| {
+        let info = fb.info();
+        let mut writer = Writer {
+            buffer: fb.into_buffer(),
+            info,
+            columns: info.width / CHAR_WIDTH,
+            rows: info.height / LINE_HEIGHT,
+            column_position: 0,
+            foreground: Color::GREEN,
+            background: Color::BLACK,
+        };
+        writer.clear();
+        writer
     });
+    *WRITER.lock() = writer;
 }
 
+/// Text console over the framebuffer. Like the VGA text mode, the cursor stays on
+/// the bottom row and the screen scrolls up on every new line.
 pub struct Writer {
+    buffer: &'static mut [u8],
+    info: FrameBufferInfo,
+    columns: usize,
+    rows: usize,
     column_position: usize,
-    color_code: ColorCode,
-    buffer: &'static mut Buffer,
+    foreground: Color,
+    background: Color,
 }
-
-use core::fmt;
-use core::ops::Deref;
 
 impl fmt::Write for Writer {
     fn write_str(&mut self, s: &str) -> fmt::Result {
@@ -96,62 +97,109 @@ impl fmt::Write for Writer {
     }
 }
 
-const UNKNOWN_AVGANEC: u8 = 0xfe;
-
 impl Writer {
     pub fn write_string(&mut self, s: &str) {
-        for byte in s.bytes() {
-            match byte {
-                // printable ASCII byte or newline
-                0x20..=0x7e | b'\n' => self.write_byte(byte),
-                // not part of printable ASCII range
-                _ => self.write_byte(UNKNOWN_AVGANEC),
-            }
-
+        for c in s.chars() {
+            self.write_char(c);
         }
     }
 
-    pub fn write_byte(&mut self, byte: u8) {
-        match byte {
-            b'\n' => self.new_line(),
-            byte => {
-                if self.column_position >= BUFFER_WIDTH {
+    pub fn write_char(&mut self, c: char) {
+        match c {
+            '\n' => self.new_line(),
+            '\r' => self.column_position = 0,
+            c => {
+                if self.column_position >= self.columns {
                     self.new_line();
                 }
-
-                let row = BUFFER_HEIGHT - 1;
+                let row = self.rows - 1;
                 let col = self.column_position;
-
-                let color_code = self.color_code;
-                self.buffer.chars[row][col].write(ScreenChar {
-                    ascii_character: byte,
-                    color_code,
-                });
+                self.draw_glyph(row, col, glyph(c));
                 self.column_position += 1;
             }
         }
     }
 
-    fn new_line(&mut self) {
-        for row in 1..BUFFER_HEIGHT {
-            for col in 0..BUFFER_WIDTH {
-                let character = self.buffer.chars[row][col].read();
-                self.buffer.chars[row - 1][col].write(character);
-            }
+    pub fn set_colors(&mut self, foreground: Color, background: Color) {
+        self.foreground = foreground;
+        self.background = background;
+    }
+
+    pub fn clear(&mut self) {
+        for y in 0..self.info.height {
+            self.fill_pixel_row(y, self.background);
         }
-        self.clear_row(BUFFER_HEIGHT - 1);
+        self.column_position = 0;
+    }
+
+    fn new_line(&mut self) {
+        let line_bytes = LINE_HEIGHT * self.info.stride * self.info.bytes_per_pixel;
+        let text_bytes = self.rows * line_bytes;
+        self.buffer.copy_within(line_bytes..text_bytes, 0);
+        self.clear_row(self.rows - 1);
         self.column_position = 0;
     }
 
     fn clear_row(&mut self, row: usize) {
-        let blank = ScreenChar {
-            ascii_character: b' ',
-            color_code: self.color_code,
-        };
-        for col in 0..BUFFER_WIDTH {
-            self.buffer.chars[row][col].write(blank);
+        for y in row * LINE_HEIGHT..(row + 1) * LINE_HEIGHT {
+            self.fill_pixel_row(y, self.background);
         }
     }
+
+    fn fill_pixel_row(&mut self, y: usize, color: Color) {
+        for x in 0..self.info.width {
+            self.write_pixel(x, y, color);
+        }
+    }
+
+    fn draw_glyph(&mut self, row: usize, col: usize, glyph: RasterizedChar) {
+        let (x0, y0) = (col * CHAR_WIDTH, row * LINE_HEIGHT);
+        for (dy, line) in glyph.raster().iter().enumerate() {
+            for (dx, &intensity) in line.iter().enumerate() {
+                let color = self.background.blend(self.foreground, intensity);
+                self.write_pixel(x0 + dx, y0 + dy, color);
+            }
+        }
+    }
+
+    fn write_pixel(&mut self, x: usize, y: usize, color: Color) {
+        let offset = self.pixel_offset(x, y);
+        let (bytes, len) = self.encode(color);
+        self.buffer[offset..offset + len].copy_from_slice(&bytes[..len]);
+    }
+
+    fn pixel_offset(&self, x: usize, y: usize) -> usize {
+        (y * self.info.stride + x) * self.info.bytes_per_pixel
+    }
+
+    /// Converts a color into the framebuffer pixel bytes and their count
+    fn encode(&self, color: Color) -> ([u8; 4], usize) {
+        let bytes = match self.info.pixel_format {
+            PixelFormat::Rgb => [color.r, color.g, color.b, 0],
+            PixelFormat::Bgr => [color.b, color.g, color.r, 0],
+            PixelFormat::U8 => [((color.r as u16 + color.g as u16 + color.b as u16) / 3) as u8, 0, 0, 0],
+            other => panic!("unsupported framebuffer pixel format {:?}", other),
+        };
+        (bytes, self.info.bytes_per_pixel.min(bytes.len()))
+    }
+
+    /// Checks that the text cell at (`row`, `col`) shows exactly the glyph of `c`
+    #[cfg(test)]
+    fn cell_shows(&self, row: usize, col: usize, c: char) -> bool {
+        let (x0, y0) = (col * CHAR_WIDTH, row * LINE_HEIGHT);
+        glyph(c).raster().iter().enumerate().all(|(dy, line)| {
+            line.iter().enumerate().all(|(dx, &intensity)| {
+                let offset = self.pixel_offset(x0 + dx, y0 + dy);
+                let (expected, len) = self.encode(self.background.blend(self.foreground, intensity));
+                self.buffer[offset..offset + len] == expected[..len]
+            })
+        })
+    }
+}
+
+fn glyph(c: char) -> RasterizedChar {
+    get_raster(c, FONT_WEIGHT, CHAR_RASTER_HEIGHT)
+        .unwrap_or_else(|| get_raster(UNKNOWN_AVGANEC, FONT_WEIGHT, CHAR_RASTER_HEIGHT).unwrap())
 }
 
 #[test_case]
@@ -170,8 +218,9 @@ fn test_println_many() {
 fn test_println_output() {
     let s = "Some test string that fits on a single line";
     println!("{}", s);
+    let writer = WRITER.lock();
+    let writer = writer.as_ref().expect("no framebuffer");
     for (i, c) in s.chars().enumerate() {
-        let screen_char = WRITER.deref().lock().buffer.chars[BUFFER_HEIGHT - 2][i].read();
-        assert_eq!(char::from(screen_char.ascii_character), c);
+        assert!(writer.cell_shows(writer.rows - 2, i, c), "wrong glyph for {:?} at column {}", c, i);
     }
 }

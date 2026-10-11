@@ -1,0 +1,10 @@
+[package]
+name = "osel-runner"
+description = "Builds bootable OSel disk images and runs them in QEMU"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bootloader = "0.11.17"
+ovmf-prebuilt = "0.2.9"
+bootloader-boot-config = "0.11.17"

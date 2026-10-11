@@ -1,0 +1,47 @@
+name: test
+
+on:
+  # PR branches are covered by pull_request, so push only for master
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+  # the toolchain follows the latest nightly, catch upstream breakage early
+  schedule:
+    - cron: "0 5 * * 1"
+
+# a new push to the same branch cancels the outdated run
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: cargo test (${{ matrix.boot }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        boot: [uefi, bios]
+    env:
+      OSEL_BOOT: ${{ matrix.boot }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install QEMU
+        run: sudo apt-get update && sudo apt-get install -y qemu-system-x86
+
+      - name: Install Rust toolchain from rust-toolchain.toml
+        run: rustup toolchain install && rustc -V
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            runner -> target
+          # runner/target also keeps the downloaded OVMF firmware
+          cache-directories: runner/target/ovmf
+
+      - name: Run tests in QEMU
+        run: cargo test
