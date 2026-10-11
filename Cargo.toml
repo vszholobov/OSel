@@ -35,3 +35,7 @@ doctest = false
 [[test]]
 name = "stack_overflow"
 harness = false
+
+[[test]]
+name = "panic_screen"
+harness = false

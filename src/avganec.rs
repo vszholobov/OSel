@@ -5,6 +5,7 @@
 
 use bootloader_api::info::{FrameBuffer, FrameBufferInfo, PixelFormat};
 use core::fmt;
+use core::panic::PanicInfo;
 use noto_sans_mono_bitmap::{FontWeight, RasterHeight, RasterizedChar, get_raster, get_raster_width};
 use spin::Mutex;
 
@@ -31,6 +32,36 @@ pub fn _print(args: fmt::Arguments) {
     });
 }
 
+/// Shows a fatal error white on red over the whole screen and mirrors it to the serial port
+pub fn panic_screen(info: &PanicInfo) {
+    use core::fmt::Write;
+    x86_64::instructions::interrupts::disable();
+    // the panic could happen while printing, nobody would release these locks anymore
+    unsafe {
+        WRITER.force_unlock();
+        crate::cereal::SERIAL1.force_unlock();
+    }
+    if let Some(writer) = WRITER.lock().as_mut() {
+        writer.set_colors(Color::WHITE, Color::RED);
+        writer.clear();
+        let _ = write!(writer, "OSel crashed :(\n\n{}\n", info);
+    }
+    crate::serial_println!("OSel crashed: {}", info);
+}
+
+/// Color of the pixel at (`x`, `y`), `None` without a framebuffer
+pub fn read_pixel(x: usize, y: usize) -> Option<Color> {
+    let writer = WRITER.lock();
+    let writer = writer.as_ref()?;
+    let offset = writer.pixel_offset(x, y);
+    let bytes = &writer.buffer[offset..offset + writer.info.bytes_per_pixel];
+    Some(match writer.info.pixel_format {
+        PixelFormat::Rgb => Color::new(bytes[0], bytes[1], bytes[2]),
+        PixelFormat::Bgr => Color::new(bytes[2], bytes[1], bytes[0]),
+        _ => Color::new(bytes[0], bytes[0], bytes[0]),
+    })
+}
+
 const FONT_WEIGHT: FontWeight = FontWeight::Regular;
 const CHAR_RASTER_HEIGHT: RasterHeight = RasterHeight::Size16;
 const CHAR_WIDTH: usize = get_raster_width(FONT_WEIGHT, CHAR_RASTER_HEIGHT);
@@ -48,6 +79,7 @@ impl Color {
     pub const BLACK: Color = Color::new(0x00, 0x00, 0x00);
     pub const GREEN: Color = Color::new(0x00, 0xaa, 0x00);
     pub const WHITE: Color = Color::new(0xff, 0xff, 0xff);
+    pub const RED: Color = Color::new(0xaa, 0x00, 0x00);
 
     pub const fn new(r: u8, g: u8, b: u8) -> Color {
         Color { r, g, b }
@@ -71,6 +103,7 @@ pub fn init(framebuffer: Option<FrameBuffer>) {
             info,
             columns: info.width / CHAR_WIDTH,
             rows: info.height / LINE_HEIGHT,
+            row_position: 0,
             column_position: 0,
             foreground: Color::GREEN,
             background: Color::BLACK,
@@ -81,13 +114,14 @@ pub fn init(framebuffer: Option<FrameBuffer>) {
     *WRITER.lock() = writer;
 }
 
-/// Text console over the framebuffer. Like the VGA text mode, the cursor stays on
-/// the bottom row and the screen scrolls up on every new line.
+/// Text console over the framebuffer. Text goes from the top down, once the cursor
+/// reaches the bottom row the screen scrolls up on every new line.
 pub struct Writer {
     buffer: &'static mut [u8],
     info: FrameBufferInfo,
     columns: usize,
     rows: usize,
+    row_position: usize,
     column_position: usize,
     foreground: Color,
     background: Color,
@@ -115,7 +149,7 @@ impl Writer {
                 if self.column_position >= self.columns {
                     self.new_line();
                 }
-                let row = self.rows - 1;
+                let row = self.row_position;
                 let col = self.column_position;
                 self.draw_glyph(row, col, glyph(c));
                 self.column_position += 1;
@@ -132,15 +166,20 @@ impl Writer {
         for y in 0..self.info.height {
             self.fill_pixel_row(y, self.background);
         }
+        self.row_position = 0;
         self.column_position = 0;
     }
 
     fn new_line(&mut self) {
+        self.column_position = 0;
+        if self.row_position + 1 < self.rows {
+            self.row_position += 1;
+            return;
+        }
         let line_bytes = LINE_HEIGHT * self.info.stride * self.info.bytes_per_pixel;
         let text_bytes = self.rows * line_bytes;
         self.buffer.copy_within(line_bytes..text_bytes, 0);
         self.clear_row(self.rows - 1);
-        self.column_position = 0;
     }
 
     fn clear_row(&mut self, row: usize) {
@@ -223,7 +262,9 @@ fn test_println_output() {
     println!("{}", s);
     let writer = WRITER.lock();
     let writer = writer.as_ref().expect("no framebuffer");
+    // println moved the cursor to the start of the next line
+    let row = writer.row_position - 1;
     for (i, c) in s.chars().enumerate() {
-        assert!(writer.cell_shows(writer.rows - 2, i, c), "wrong glyph for {:?} at column {}", c, i);
+        assert!(writer.cell_shows(row, i, c), "wrong glyph for {:?} at column {}", c, i);
     }
 }
