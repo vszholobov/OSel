@@ -6,14 +6,14 @@ on:
     branches: [master]
   pull_request:
   workflow_dispatch:
-  # the toolchain follows the latest nightly, catch upstream breakage early
+  # the toolchain is pinned, a weekly run checks the latest nightly
   schedule:
     - cron: "0 5 * * 1"
 
-# a new push to the same branch cancels the outdated run
+# a new push to a PR cancels its outdated run, runs on master always finish
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   host-tests:
@@ -63,8 +63,46 @@ jobs:
           workspaces: |
             . -> target
             runner -> target
-          # runner/target also keeps the downloaded OVMF firmware
-          cache-directories: runner/target/ovmf
+
+      # the firmware only changes with the ovmf-prebuilt version
+      - uses: actions/cache@v4
+        with:
+          path: runner/.ovmf
+          key: ovmf-${{ hashFiles('runner/Cargo.lock') }}
+
+      # every test binary runs even if an earlier one fails
+      - name: Run tests in QEMU
+        run: cargo test --no-fail-fast
+
+      - name: Boot the real kernel
+        run: OSEL_EXPECT="OSel ready to go!" cargo run
+
+  latest-nightly:
+    name: latest nightly (${{ matrix.boot }})
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        boot: [uefi, bios]
+    env:
+      OSEL_BOOT: ${{ matrix.boot }}
+      # overrides the pinned toolchain from rust-toolchain.toml
+      RUSTUP_TOOLCHAIN: nightly
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install QEMU
+        run: sudo apt-get update && sudo apt-get install -y qemu-system-x86
+
+      - name: Install the latest nightly
+        run: |
+          rustup toolchain install nightly --component rust-src,llvm-tools-preview --target x86_64-unknown-none
+          rustc -V
+
+      - name: Host tests
+        run: cargo test-core && cargo test-runner
 
       - name: Run tests in QEMU
-        run: cargo test
+        run: cargo test --no-fail-fast

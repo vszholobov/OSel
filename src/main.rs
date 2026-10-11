@@ -20,6 +20,8 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     #[cfg(test)]
     test_main();
     println!("OSel ready to go!");
+    // the smoke test in CI waits for this line on the serial port
+    osel::serial_println!("OSel ready to go!");
     echo_keyboard();
 }
 

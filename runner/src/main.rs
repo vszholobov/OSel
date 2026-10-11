@@ -2,7 +2,12 @@
 //! and boots it in QEMU. Replaces `bootimage runner` from bootloader 0.9 times.
 //!
 //! Usage: osel-runner <kernel-elf> [extra qemu args...]
-//! Env:   OSEL_BOOT=uefi|bios (default: uefi)
+//! Env:
+//! - `OSEL_BOOT=uefi|bios`: firmware to boot with (default: uefi)
+//! - `OSEL_EXPECT=<text>`: run headless and succeed once the kernel prints `<text>`
+//!   to the serial port (a smoke test of the real kernel)
+//! - `OSEL_TIMEOUT=<seconds>`: limit for tests and `OSEL_EXPECT` runs (default: 60)
+//! - `OSEL_OVMF_DIR=<dir>`: where to cache the UEFI firmware (default: runner/.ovmf)
 
 use bootloader::{BootConfig, DiskImageBuilder};
 use bootloader_boot_config::LevelFilter;
@@ -12,12 +17,15 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode, ExitStatus, Stdio};
+use std::sync::mpsc;
 use std::thread::{self, sleep};
 use std::time::{Duration, Instant};
 
 /// `exit_qemu(QemuExitCode::Success)` makes QEMU exit with `(0x10 << 1) | 1`
 const TEST_SUCCESS_EXIT_CODE: i32 = 33;
-const TEST_TIMEOUT: Duration = Duration::from_secs(60);
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
+/// Test kernels rely on a known amount of memory
+const TEST_MEMORY: &str = "128M";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Boot {
@@ -25,26 +33,43 @@ enum Boot {
     Bios,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Mode {
+    /// Interactive run with a window
+    Run,
+    /// A test kernel: exits QEMU itself through isa-debug-exit
+    Test,
+    /// Headless run of the real kernel until it prints the expected text
+    Expect(String),
+}
+
 fn main() -> ExitCode {
     let mut args = env::args_os().skip(1);
     let kernel = PathBuf::from(args.next().expect("usage: osel-runner <kernel-elf> [qemu args...]"));
     let mut extra_qemu_args: Vec<_> = args.collect();
 
-    let boot = match parse_boot(env::var("OSEL_BOOT").ok().as_deref()) {
-        Ok(boot) => boot,
+    let config = parse_boot(env::var("OSEL_BOOT").ok().as_deref())
+        .and_then(|boot| Ok((boot, parse_timeout(env::var("OSEL_TIMEOUT").ok().as_deref())?)));
+    let (boot, timeout) = match config {
+        Ok(config) => config,
         Err(message) => {
             eprintln!("{message}");
             return ExitCode::FAILURE;
         }
     };
-    let is_test = is_test_binary(&kernel);
-    if is_test && !extra_qemu_args.is_empty() {
+    let mode = if is_test_binary(&kernel) {
+        Mode::Test
+    } else {
+        env::var("OSEL_EXPECT").ok().filter(|text| !text.is_empty()).map_or(Mode::Run, Mode::Expect)
+    };
+    if mode == Mode::Test && !extra_qemu_args.is_empty() {
         // `cargo test -- <args>` would otherwise hand test filters to QEMU
         eprintln!("warning: test arguments are not supported and ignored: {extra_qemu_args:?}");
         extra_qemu_args.clear();
     }
 
-    let image = create_disk_image(&kernel, boot);
+    let image = image_path(&kernel, boot);
+    create_disk_image(&kernel, &image, boot);
 
     let mut qemu = Command::new("qemu-system-x86_64");
     qemu.arg("-drive").arg(format!("format=raw,file={}", image.display()));
@@ -61,30 +86,60 @@ fn main() -> ExitCode {
         ));
     }
     qemu.args(["-serial", "stdio", "-no-reboot"]);
-    if is_test {
-        qemu.args(["-device", "isa-debug-exit,iobase=0xf4,iosize=0x04", "-display", "none"]);
-        // a test never reads the keyboard of the host, and QEMU must not switch the terminal to raw mode
+    match mode {
+        Mode::Run => {}
+        Mode::Test => {
+            qemu.args(["-device", "isa-debug-exit,iobase=0xf4,iosize=0x04", "-display", "none", "-m", TEST_MEMORY]);
+        }
+        Mode::Expect(_) => {
+            qemu.args(["-display", "none"]);
+        }
+    }
+    if mode != Mode::Run {
+        // nothing reads the host keyboard, and QEMU must not switch the terminal to raw mode
         qemu.stdin(Stdio::null());
     }
     qemu.args(&extra_qemu_args);
     qemu.stdout(Stdio::piped());
 
     let mut child = qemu.spawn().expect("failed to launch qemu-system-x86_64");
-    let output = forward_serial_output(&mut child);
-    if is_test {
-        let status = wait_test(&mut child);
-        let summary = output.join().unwrap_or_default();
-        match test_outcome(status, &summary) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(message) => {
-                eprintln!("test failed: {message}");
-                ExitCode::FAILURE
-            }
+    let stdout = child.stdout.take().expect("qemu stdout is not piped");
+    let exit_code = match &mode {
+        Mode::Run => {
+            let output = thread::spawn(move || forward_serial_output(BufReader::new(stdout), std::io::stdout(), None));
+            let status = child.wait().expect("failed to wait for qemu");
+            let _ = output.join();
+            ExitCode::from(run_exit_code(status))
         }
-    } else {
-        let status = child.wait().expect("failed to wait for qemu");
-        let _ = output.join();
-        ExitCode::from(run_exit_code(status))
+        Mode::Test => {
+            let output = thread::spawn(move || forward_serial_output(BufReader::new(stdout), std::io::stdout(), None));
+            let status = wait_with_timeout(&mut child, timeout, None);
+            let summary = output.join().unwrap_or_default();
+            report(test_outcome(status, &summary, timeout))
+        }
+        Mode::Expect(text) => {
+            let (found_tx, found_rx) = mpsc::channel();
+            let watch = Some((text.to_string(), found_tx));
+            let output = thread::spawn(move || forward_serial_output(BufReader::new(stdout), std::io::stdout(), watch));
+            let status = wait_with_timeout(&mut child, timeout, Some(&found_rx));
+            let found = found_rx.try_recv().is_ok() || output.join().is_ok_and(|summary| summary.found);
+            report(expect_outcome(status, found, text, timeout))
+        }
+    };
+    if mode == Mode::Test {
+        // test images are only needed for the single run, they would pile up in target/
+        let _ = std::fs::remove_file(&image);
+    }
+    exit_code
+}
+
+fn report(outcome: Result<(), String>) -> ExitCode {
+    match outcome {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(message) => {
+            eprintln!("failed: {message}");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -93,6 +148,16 @@ fn parse_boot(value: Option<&str>) -> Result<Boot, String> {
         None | Some("") | Some("uefi") => Ok(Boot::Uefi),
         Some("bios") => Ok(Boot::Bios),
         Some(other) => Err(format!("unknown OSEL_BOOT value `{other}`, expected `uefi` or `bios`")),
+    }
+}
+
+fn parse_timeout(value: Option<&str>) -> Result<Duration, String> {
+    match value {
+        None | Some("") => Ok(DEFAULT_TIMEOUT),
+        Some(seconds) => match seconds.parse::<u64>() {
+            Ok(seconds) if seconds > 0 => Ok(Duration::from_secs(seconds)),
+            _ => Err(format!("OSEL_TIMEOUT must be a positive number of seconds, got `{seconds}`")),
+        },
     }
 }
 
@@ -105,76 +170,96 @@ fn is_test_binary(kernel: &Path) -> bool {
         .is_some_and(|(_, hash)| hash.len() == 16 && hash.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
-fn create_disk_image(kernel: &Path, boot: Boot) -> PathBuf {
+/// The disk image goes next to the kernel ELF, one per boot mode
+fn image_path(kernel: &Path, boot: Boot) -> PathBuf {
+    let mut name = kernel.file_name().unwrap_or_default().to_os_string();
+    name.push(match boot {
+        Boot::Uefi => ".uefi.img",
+        Boot::Bios => ".bios.img",
+    });
+    kernel.with_file_name(name)
+}
+
+fn create_disk_image(kernel: &Path, image: &Path, boot: Boot) {
     let mut boot_config = BootConfig::default();
     // the bootloader traces every boot step by default, keep only problems
     boot_config.log_level = LevelFilter::Warn;
 
     let mut builder = DiskImageBuilder::new(kernel.to_path_buf());
     builder.set_boot_config(&boot_config);
-    let (image, result) = match boot {
-        Boot::Uefi => {
-            let image = kernel.with_extension("uefi.img");
-            let result = builder.create_uefi_image(&image);
-            (image, result)
-        }
-        Boot::Bios => {
-            let image = kernel.with_extension("bios.img");
-            let result = builder.create_bios_image(&image);
-            (image, result)
-        }
+    let result = match boot {
+        Boot::Uefi => builder.create_uefi_image(image),
+        Boot::Bios => builder.create_bios_image(image),
     };
     result.unwrap_or_else(|e| panic!("failed to create disk image {}: {e:#}", image.display()));
-    image
 }
 
-/// Downloads OVMF (UEFI firmware for QEMU) once and caches it next to the runner build
+/// Downloads OVMF (UEFI firmware for QEMU) once. Kept outside target/ so that
+/// `cargo clean` and the CI cache cleanup don't throw it away.
 fn ovmf_firmware() -> Prebuilt {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/ovmf");
+    let dir = env::var_os("OSEL_OVMF_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join(".ovmf"));
     Prebuilt::fetch(Source::LATEST, &dir).expect("failed to fetch OVMF firmware")
 }
 
-/// What the kernel test framework reported over the serial port
+/// What the kernel reported over the serial port
 #[derive(Debug, Default, PartialEq, Eq)]
 struct TestSummary {
     /// `Running N tests` of the custom test runner, absent for `harness = false` tests
     expected: Option<usize>,
+    /// Lines ending with `[ok]`
     passed: usize,
+    /// The `OSEL_EXPECT` text was seen
+    found: bool,
 }
 
 impl TestSummary {
     fn observe(&mut self, line: &str) {
+        // firmware output without a newline can precede the kernel text on the same line
         if let Some(count) = line
-            .strip_prefix("Running ")
-            .and_then(|rest| rest.strip_suffix(" tests"))
+            .find("Running ")
+            .map(|start| &line[start + "Running ".len()..])
+            .and_then(|rest| rest.strip_suffix(" tests").or_else(|| rest.trim_end().strip_suffix(" tests")))
             .and_then(|count| count.parse().ok())
         {
             self.expected = Some(count);
         }
-        self.passed += line.matches("[ok]").count();
+        // only a test result counts, not `[ok]` mentioned inside some message
+        if line.trim_end().ends_with("[ok]") {
+            self.passed += 1;
+        }
     }
 }
 
-/// Prints the kernel serial output without the OVMF console noise
-/// (terminal escape sequences and boot manager messages)
-fn forward_serial_output(child: &mut Child) -> thread::JoinHandle<TestSummary> {
-    let stdout = child.stdout.take().expect("qemu stdout is not piped");
-    thread::spawn(move || {
-        let mut out = std::io::stdout();
-        let mut summary = TestSummary::default();
-        for line in BufReader::new(stdout).split(b'\n') {
-            let Ok(line) = line else { break };
-            let stripped = strip_escape_sequences(&line);
-            if !should_forward(&line, &stripped) {
-                continue;
-            }
-            summary.observe(&String::from_utf8_lossy(&stripped));
-            let _ = out.write_all(&stripped);
-            let _ = out.write_all(b"\n");
-            let _ = out.flush();
+/// Copies the kernel serial output without the OVMF console noise (terminal escape
+/// sequences and boot manager messages) and summarizes it. With `watch`, reports
+/// through the channel as soon as a line contains the watched text.
+fn forward_serial_output(
+    reader: impl BufRead,
+    mut out: impl Write,
+    watch: Option<(String, mpsc::Sender<()>)>,
+) -> TestSummary {
+    let mut summary = TestSummary::default();
+    for line in reader.split(b'\n') {
+        let Ok(line) = line else { break };
+        let stripped = strip_escape_sequences(&line);
+        if !should_forward(&line, &stripped) {
+            continue;
         }
-        summary
-    })
+        let text = String::from_utf8_lossy(&stripped);
+        summary.observe(&text);
+        if let Some((expected, found)) = &watch
+            && text.contains(expected.as_str())
+        {
+            summary.found = true;
+            let _ = found.send(());
+        }
+        let _ = out.write_all(&stripped);
+        let _ = out.write_all(b"\n");
+        let _ = out.flush();
+    }
+    summary
 }
 
 /// Drops firmware noise but keeps real empty lines printed by the kernel
@@ -235,29 +320,44 @@ fn run_exit_code(status: ExitStatus) -> u8 {
     }
 }
 
-/// `None` when QEMU was killed by the timeout
-fn test_outcome(status: Option<ExitStatus>, summary: &TestSummary) -> Result<(), String> {
+/// `status` is `None` when QEMU was killed by the timeout
+fn test_outcome(status: Option<ExitStatus>, summary: &TestSummary, timeout: Duration) -> Result<(), String> {
     let Some(status) = status else {
-        return Err(format!("timed out after {}s", TEST_TIMEOUT.as_secs()));
+        return Err(format!("timed out after {}s", timeout.as_secs()));
     };
     if status.code() != Some(TEST_SUCCESS_EXIT_CODE) {
         return Err(format!("qemu exit code {:?}", status.code()));
     }
     match summary.expected {
-        Some(expected) if summary.passed < expected => {
-            Err(format!("only {} of {} tests reported [ok]", summary.passed, expected))
+        Some(expected) if summary.passed != expected => {
+            Err(format!("{} of {} tests reported [ok]", summary.passed, expected))
         }
+        // a test kernel that exits with success before reporting anything is broken
+        None if summary.passed == 0 => Err("no test reported [ok]".into()),
         _ => Ok(()),
     }
 }
 
-fn wait_test(child: &mut Child) -> Option<ExitStatus> {
+/// `status` is `None` when QEMU was stopped: by the runner after finding the text,
+/// or by the timeout
+fn expect_outcome(status: Option<ExitStatus>, found: bool, expected: &str, timeout: Duration) -> Result<(), String> {
+    match (found, status) {
+        (true, _) => Ok(()),
+        (false, None) => Err(format!("`{expected}` not printed within {}s", timeout.as_secs())),
+        (false, Some(status)) => Err(format!("kernel stopped with {status} before printing `{expected}`")),
+    }
+}
+
+/// Waits for `child` to exit. Kills it after `timeout`, or as soon as `stop` receives
+/// a message; returns `None` then.
+fn wait_with_timeout(child: &mut Child, timeout: Duration, stop: Option<&mpsc::Receiver<()>>) -> Option<ExitStatus> {
     let started = Instant::now();
     loop {
         if let Some(status) = child.try_wait().expect("failed to wait for qemu") {
             return Some(status);
         }
-        if started.elapsed() > TEST_TIMEOUT {
+        let stop_requested = stop.is_some_and(|stop| stop.try_recv().is_ok());
+        if stop_requested || started.elapsed() > timeout {
             let _ = child.kill();
             let _ = child.wait();
             return None;
@@ -269,11 +369,25 @@ fn wait_test(child: &mut Child) -> Option<ExitStatus> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
 
     fn exit(code: i32) -> Option<ExitStatus> {
         // wait(2) encoding: exit code in the second byte
         Some(ExitStatus::from_raw(code << 8))
     }
+
+    fn summary(expected: Option<usize>, passed: usize) -> TestSummary {
+        TestSummary { expected, passed, found: false }
+    }
+
+    fn forward(input: &[u8], watch: Option<&str>) -> (String, TestSummary) {
+        let mut out = Vec::new();
+        let (tx, _rx) = mpsc::channel();
+        let summary = forward_serial_output(Cursor::new(input), &mut out, watch.map(|w| (w.to_string(), tx)));
+        (String::from_utf8_lossy(&out).into_owned(), summary)
+    }
+
+    const TIMEOUT: Duration = Duration::from_secs(60);
 
     #[test]
     fn boot_mode_parsing() {
@@ -286,15 +400,37 @@ mod tests {
     }
 
     #[test]
+    fn timeout_parsing() {
+        assert_eq!(parse_timeout(None), Ok(DEFAULT_TIMEOUT));
+        assert_eq!(parse_timeout(Some("")), Ok(DEFAULT_TIMEOUT));
+        assert_eq!(parse_timeout(Some("120")), Ok(Duration::from_secs(120)));
+        assert!(parse_timeout(Some("0")).is_err());
+        assert!(parse_timeout(Some("-1")).is_err());
+        assert!(parse_timeout(Some("1m")).is_err());
+    }
+
+    #[test]
     fn test_binary_detection() {
         assert!(!is_test_binary(Path::new("target/x86_64-unknown-none/debug/OSel")));
-        assert!(is_test_binary(Path::new("deps/osel-0123456789abcdef")));
+        assert!(!is_test_binary(Path::new("target/x86_64-unknown-none/release/OSel")));
+        assert!(is_test_binary(Path::new("target/x86_64-unknown-none/debug/deps/osel-0123456789abcdef")));
+        assert!(is_test_binary(Path::new(
+            "target/x86_64-unknown-none/debug/build/osel/af4e2a3f9a893cec/out/osel-af4e2a3f9a893cec"
+        )));
         assert!(is_test_binary(Path::new("out/basic_boot-0123456789ABCDEF")));
         assert!(is_test_binary(Path::new("out/heap-allocation-a1b2c3d4e5f60718")));
         assert!(!is_test_binary(Path::new("deps/osel-0123456789abcde")), "15 digits");
         assert!(!is_test_binary(Path::new("deps/osel-0123456789abcdef0")), "17 digits");
         assert!(!is_test_binary(Path::new("deps/x-ghijklmnopqrstuv")), "not hex");
         assert!(!is_test_binary(Path::new("")));
+    }
+
+    #[test]
+    fn image_names() {
+        let kernel = Path::new("out/heap_stress-5bff53b1c56fbc6d");
+        assert_eq!(image_path(kernel, Boot::Uefi), Path::new("out/heap_stress-5bff53b1c56fbc6d.uefi.img"));
+        assert_eq!(image_path(kernel, Boot::Bios), Path::new("out/heap_stress-5bff53b1c56fbc6d.bios.img"));
+        assert_eq!(image_path(Path::new("debug/OSel"), Boot::Uefi), Path::new("debug/OSel.uefi.img"));
     }
 
     #[test]
@@ -307,6 +443,9 @@ mod tests {
     #[test]
     fn strips_other_sequences() {
         assert_eq!(strip_escape_sequences(b"\x1b(Bok"), b"ok", "charset selection");
+        assert_eq!(strip_escape_sequences(b"\x1b)0ok"), b"ok");
+        assert_eq!(strip_escape_sequences(b"\x1b*Bok"), b"ok");
+        assert_eq!(strip_escape_sequences(b"\x1b+Bok"), b"ok");
         assert_eq!(strip_escape_sequences(b"\x1b]0;title\x07ok"), b"ok", "OSC with BEL");
         assert_eq!(strip_escape_sequences(b"\x1b]0;title\x1b\\ok"), b"ok", "OSC with ST");
         assert_eq!(strip_escape_sequences(b"\x1bcok"), b"ok", "reset");
@@ -326,36 +465,83 @@ mod tests {
         assert!(should_forward(b"[ok]", b"[ok]"));
         assert!(!should_forward(b"\x1b[2J\x1b[1;1H", b""), "pure screen update");
         assert!(!should_forward(b"BdsDxe: loading Boot0002", b"BdsDxe: loading Boot0002"));
+        assert!(should_forward(b"kernel says BdsDxe: hi", b"kernel says BdsDxe: hi"), "only at the start");
     }
 
     #[test]
     fn summary_counts_tests() {
         let mut summary = TestSummary::default();
-        for line in ["Running 3 tests", "a...\t[ok]", "b...\t[ok]", "garbage"] {
+        for line in ["Running 3 tests", "a...\t[ok]", "b...\t[ok]  ", "garbage"] {
             summary.observe(line);
         }
-        assert_eq!(summary, TestSummary { expected: Some(3), passed: 2 });
+        assert_eq!((summary.expected, summary.passed), (Some(3), 2));
         summary.observe("Running x tests");
         assert_eq!(summary.expected, Some(3), "unparsable count is ignored");
     }
 
     #[test]
+    fn summary_finds_count_after_firmware_text() {
+        let mut summary = TestSummary::default();
+        summary.observe("BdsDxe: starting Boot0002Running 4 tests");
+        assert_eq!(summary.expected, Some(4));
+    }
+
+    #[test]
+    fn summary_ignores_ok_inside_messages() {
+        let mut summary = TestSummary::default();
+        summary.observe("Error: expected [ok] but got nothing");
+        summary.observe("[ok] at the start is not a result either");
+        assert_eq!(summary.passed, 0);
+    }
+
+    #[test]
+    fn forwarding_end_to_end() {
+        let input = b"\x1b[2J\x1b[1;1HBdsDxe: loading\nRunning 2 tests\na...\t[ok]\n\nb...\t[ok]";
+        let (out, summary) = forward(input, None);
+        assert_eq!(out, "Running 2 tests\na...\t[ok]\n\nb...\t[ok]\n", "last partial line is kept");
+        assert_eq!((summary.expected, summary.passed), (Some(2), 2));
+    }
+
+    #[test]
+    fn forwarding_survives_invalid_utf8() {
+        let (out, summary) = forward(b"\xff\xfe broken\nx...\t[ok]\n", None);
+        assert!(out.contains("broken"));
+        assert_eq!(summary.passed, 1);
+    }
+
+    #[test]
+    fn forwarding_watches_for_text() {
+        let (_, summary) = forward(b"OSel woke up!\nOSel ready to go!\n", Some("ready to go"));
+        assert!(summary.found);
+        let (_, summary) = forward(b"OSel woke up!\n", Some("ready to go"));
+        assert!(!summary.found);
+    }
+
+    #[test]
     fn outcome_success() {
-        let summary = TestSummary { expected: Some(2), passed: 2 };
-        assert_eq!(test_outcome(exit(33), &summary), Ok(()));
-        let harness_free = TestSummary { expected: None, passed: 1 };
-        assert_eq!(test_outcome(exit(33), &harness_free), Ok(()));
+        assert_eq!(test_outcome(exit(33), &summary(Some(2), 2), TIMEOUT), Ok(()));
+        assert_eq!(test_outcome(exit(33), &summary(None, 1), TIMEOUT), Ok(()), "harness = false");
+        assert_eq!(test_outcome(exit(33), &summary(Some(0), 0), TIMEOUT), Ok(()), "a test binary without tests");
     }
 
     #[test]
     fn outcome_failures() {
-        let summary = TestSummary { expected: Some(1), passed: 1 };
-        assert!(test_outcome(exit(35), &summary).is_err(), "QemuExitCode::Failed");
-        assert!(test_outcome(exit(0), &summary).is_err(), "triple fault / reset");
-        assert!(test_outcome(exit(1), &summary).is_err());
-        assert!(test_outcome(None, &summary).unwrap_err().contains("timed out"));
-        let missing = TestSummary { expected: Some(3), passed: 1 };
-        assert!(test_outcome(exit(33), &missing).unwrap_err().contains("1 of 3"));
+        let ok = summary(Some(1), 1);
+        assert!(test_outcome(exit(35), &ok, TIMEOUT).is_err(), "QemuExitCode::Failed");
+        assert!(test_outcome(exit(0), &ok, TIMEOUT).is_err(), "triple fault / reset");
+        assert!(test_outcome(exit(1), &ok, TIMEOUT).is_err());
+        assert!(test_outcome(None, &ok, TIMEOUT).unwrap_err().contains("timed out after 60s"));
+        assert!(test_outcome(exit(33), &summary(Some(3), 1), TIMEOUT).unwrap_err().contains("1 of 3"));
+        assert!(test_outcome(exit(33), &summary(Some(1), 2), TIMEOUT).unwrap_err().contains("2 of 1"), "extra [ok]");
+        assert!(test_outcome(exit(33), &summary(None, 0), TIMEOUT).is_err(), "silent success");
+    }
+
+    #[test]
+    fn expect_outcomes() {
+        assert_eq!(expect_outcome(None, true, "ready", TIMEOUT), Ok(()));
+        assert_eq!(expect_outcome(exit(0), true, "ready", TIMEOUT), Ok(()));
+        assert!(expect_outcome(None, false, "ready", TIMEOUT).unwrap_err().contains("within 60s"));
+        assert!(expect_outcome(exit(0), false, "ready", TIMEOUT).unwrap_err().contains("stopped"));
     }
 
     #[test]
@@ -363,5 +549,29 @@ mod tests {
         assert_eq!(run_exit_code(ExitStatus::from_raw(0)), 0);
         assert_eq!(run_exit_code(ExitStatus::from_raw(3 << 8)), 3);
         assert_eq!(run_exit_code(ExitStatus::from_raw(9)), 137, "SIGKILL");
+    }
+
+    #[test]
+    fn timeout_kills_the_process() {
+        let mut child = Command::new("sleep").arg("10").spawn().unwrap();
+        let started = Instant::now();
+        assert_eq!(wait_with_timeout(&mut child, Duration::from_millis(200), None), None);
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(child.try_wait().unwrap().is_some(), "the process is reaped");
+    }
+
+    #[test]
+    fn stop_request_kills_the_process() {
+        let mut child = Command::new("sleep").arg("10").spawn().unwrap();
+        let (tx, rx) = mpsc::channel();
+        tx.send(()).unwrap();
+        assert_eq!(wait_with_timeout(&mut child, Duration::from_secs(30), Some(&rx)), None);
+    }
+
+    #[test]
+    fn finished_process_reports_status() {
+        let mut child = Command::new("sh").args(["-c", "exit 7"]).spawn().unwrap();
+        let status = wait_with_timeout(&mut child, Duration::from_secs(30), None).unwrap();
+        assert_eq!(status.code(), Some(7));
     }
 }
