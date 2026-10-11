@@ -12,3 +12,4 @@ pub mod keyboard;
 pub mod pit;
 pub mod memory;
 pub mod heap;
+pub mod exception;

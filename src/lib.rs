@@ -15,6 +15,7 @@ use crate::testosterone::test_panic_handler;
 #[cfg(test)]
 use core::panic::PanicInfo;
 
+pub use bootloader_api;
 use bootloader_api::config::Mapping;
 use bootloader_api::{BootInfo, BootloaderConfig};
 use x86_64::VirtAddr;
@@ -55,6 +56,13 @@ pub fn init(boot_info: &'static mut BootInfo) {
 
     interrupts::init_pics();
     x86_64::instructions::interrupts::enable();
+}
+
+static PANICKING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Marks the kernel as panicking, `false` if it already was (a panic inside a panic handler)
+pub fn enter_panic() -> bool {
+    !PANICKING.swap(true, core::sync::atomic::Ordering::SeqCst)
 }
 
 /// Sleeps until the next interrupt forever

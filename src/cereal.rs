@@ -16,6 +16,30 @@ pub fn _print(args: core::fmt::Arguments) {
     });
 }
 
+/// Writes straight to COM1 without locks or initialization, for panics where the
+/// normal path may be broken. Gives up quickly when there is no serial port.
+pub fn emergency_print(args: core::fmt::Arguments) {
+    use x86_64::instructions::port::Port;
+    struct RawCom1;
+    impl core::fmt::Write for RawCom1 {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            let mut line_status = Port::<u8>::new(0x3fd);
+            let mut data = Port::<u8>::new(0x3f8);
+            for byte in s.bytes() {
+                // transmitter empty, bounded so a missing port can't hang the panic
+                for _ in 0..100_000 {
+                    if unsafe { line_status.read() } & 0x20 != 0 {
+                        break;
+                    }
+                }
+                unsafe { data.write(byte) };
+            }
+            Ok(())
+        }
+    }
+    let _ = core::fmt::Write::write_fmt(&mut RawCom1, args);
+}
+
 /// Prints to the host through the serial interface.
 #[macro_export]
 macro_rules! serial_print {

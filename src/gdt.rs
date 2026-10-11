@@ -26,6 +26,9 @@ pub fn init() {
         // a wrong descriptor in our GDT and make `iretq` fault on interrupt return
         SS::set_reg(GDT.1.data_selector);
         DS::set_reg(GDT.1.data_selector);
+        // the LDT register may still hold its reset value (a table at address 0),
+        // a null LDT makes every LDT selector fault cleanly with #GP
+        core::arch::asm!("lldt {0:x}", in(reg) 0u16, options(nostack, preserves_flags));
         load_tss(GDT.1.tss_selector);
     }
 }

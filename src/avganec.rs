@@ -59,20 +59,25 @@ pub fn read_pixel(x: usize, y: usize) -> Option<Color> {
     with_console(|console| console.read_pixel(x, y)).flatten()
 }
 
-/// Shows a fatal error white on red over the whole screen and mirrors it to the serial port
+/// Shows a fatal error white on red over the whole screen and mirrors it to the serial port.
+///
+/// A panic while showing a panic (say, a broken `Display` in the message) only gets a raw
+/// line on the serial port: drawing again would most likely panic again.
 pub fn panic_screen(info: &PanicInfo) {
     use core::fmt::Write;
     interrupts::disable();
-    // the panic could happen while printing, nobody would release these locks anymore
-    unsafe {
-        WRITER.force_unlock();
-        crate::cereal::SERIAL1.force_unlock();
+    if !crate::enter_panic() {
+        crate::cereal::emergency_print(format_args!("\nnested panic: {}\n", info));
+        return;
     }
+    // the panic could happen while printing, nobody would release this lock anymore
+    unsafe { WRITER.force_unlock() };
     if let Some(console) = WRITER.lock().as_mut() {
         console.set_colors(Color::WHITE, Color::RED);
         console.clear();
         let _ = write!(console, "OSel crashed :(\n\n{}\n", info);
     }
+    unsafe { crate::cereal::SERIAL1.force_unlock() };
     crate::serial_println!("OSel crashed: {}", info);
 }
 

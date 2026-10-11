@@ -45,3 +45,35 @@ harness = false
 [[test]]
 name = "panic_screen"
 harness = false
+
+[[test]]
+name = "divide_error"
+harness = false
+
+[[test]]
+name = "invalid_opcode"
+harness = false
+
+[[test]]
+name = "general_protection"
+harness = false
+
+[[test]]
+name = "unhandled_vector"
+harness = false
+
+[[test]]
+name = "double_fault"
+harness = false
+
+[[test]]
+name = "heap_oom"
+harness = false
+
+[[test]]
+name = "panic_while_printing"
+harness = false
+
+[[test]]
+name = "nested_panic"
+harness = false
