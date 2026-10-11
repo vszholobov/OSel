@@ -122,15 +122,52 @@ impl FixedSizeBlockAllocator {
     fn reclaim_free_blocks(&mut self) -> usize {
         let mut released = 0;
         for index in 0..BLOCK_SIZES.len() {
-            while let Some(node) = NonNull::new(self.list_heads[index]) {
-                self.list_heads[index] = unsafe { node.as_ref().next };
-                unsafe { self.fallback_allocator.deallocate(node.cast(), block_layout(index)) };
+            // the linked list allocator walks its address sorted hole list from the lowest
+            // hole on every free: blocks given back from the highest address down always
+            // land at the front of the list, any other order makes this quadratic
+            let mut node = unsafe { sort_descending(self.list_heads[index]) };
+            while let Some(current) = NonNull::new(node) {
+                node = unsafe { current.as_ref().next };
+                unsafe { self.fallback_allocator.deallocate(current.cast(), block_layout(index)) };
                 released += 1;
             }
+            self.list_heads[index] = ptr::null_mut();
             self.free_blocks[index] = 0;
         }
         released
     }
+}
+
+/// Merge sort of a free list by node address, highest first, without allocating
+///
+/// # Safety
+/// `head` must start a valid null terminated list.
+unsafe fn sort_descending(head: *mut ListNode) -> *mut ListNode {
+    if head.is_null() || unsafe { (*head).next.is_null() } {
+        return head;
+    }
+    // split in the middle: `slow` ends at the last node of the first half
+    let (mut slow, mut fast) = (head, unsafe { (*head).next });
+    while !fast.is_null() && !unsafe { (*fast).next.is_null() } {
+        slow = unsafe { (*slow).next };
+        fast = unsafe { (*(*fast).next).next };
+    }
+    let second = unsafe { (*slow).next };
+    unsafe { (*slow).next = ptr::null_mut() };
+    let (mut a, mut b) = unsafe { (sort_descending(head), sort_descending(second)) };
+
+    let mut merged: *mut ListNode = ptr::null_mut();
+    let mut tail: *mut *mut ListNode = &mut merged;
+    while !a.is_null() && !b.is_null() {
+        let higher = if a > b { &mut a } else { &mut b };
+        unsafe {
+            *tail = *higher;
+            tail = &mut (**higher).next;
+            *higher = (**higher).next;
+        }
+    }
+    unsafe { *tail = if a.is_null() { b } else { a } };
+    merged
 }
 
 impl Default for FixedSizeBlockAllocator {
@@ -288,6 +325,100 @@ mod tests {
         arena.free(ptr, 16, 4096);
         assert_eq!(arena.allocator.fallback_free(), free_before);
         assert_eq!(arena.allocator.free_blocks(), [0; BLOCK_SIZES.len()]);
+    }
+
+    #[test]
+    fn reclaim_of_scattered_blocks_is_fast() {
+        let mut arena = Arena::new(1024 * 1024);
+        let mut blocks = Vec::new();
+        while let Some(ptr) = Some(arena.alloc(8, 8)).filter(|p| !p.is_null()) {
+            blocks.push(ptr);
+        }
+        // every other block in descending address order: the worst case for the hole list
+        blocks.sort();
+        let freed: Vec<*mut u8> = blocks.iter().copied().step_by(2).rev().collect();
+        for &ptr in &freed {
+            arena.free(ptr, 8, 8);
+        }
+        // the freed blocks sit between used ones, so the 64 bytes don't fit even after the
+        // reclaim; what matters is that giving back thousands of blocks stays cheap
+        let started = std::time::Instant::now();
+        assert!(arena.alloc(64, 8).is_null());
+        let elapsed = started.elapsed();
+        assert_eq!(arena.allocator.free_blocks(), [0; BLOCK_SIZES.len()], "everything was reclaimed");
+        assert!(elapsed < std::time::Duration::from_secs(1), "reclaim took {elapsed:?}");
+    }
+
+    #[test]
+    fn sorting_free_lists() {
+        let mut nodes: Vec<ListNode> = (0..37).map(|_| ListNode { next: ptr::null_mut() }).collect();
+        let addresses: Vec<*mut ListNode> = nodes.iter_mut().map(|n| n as *mut ListNode).collect();
+        // link them in a scrambled order
+        let order: Vec<usize> = (0..37).map(|i| (i * 17) % 37).collect();
+        for pair in order.windows(2) {
+            let (from, to) = (addresses[pair[0]], addresses[pair[1]]);
+            unsafe { (*from).next = to };
+        }
+        let mut node = unsafe { sort_descending(addresses[order[0]]) };
+        let mut sorted = Vec::new();
+        while !node.is_null() {
+            sorted.push(node);
+            node = unsafe { (*node).next };
+        }
+        let mut expected = addresses.clone();
+        expected.reverse();
+        assert_eq!(sorted, expected, "every node once, highest address first");
+        assert!(unsafe { sort_descending(ptr::null_mut()) }.is_null());
+    }
+
+    #[test]
+    fn eight_byte_blocks_take_sixteen_bytes() {
+        // the linked list allocator never hands out less than 16 bytes
+        let mut arena = Arena::new(ARENA_SIZE);
+        let mut blocks = Vec::new();
+        while let Some(ptr) = Some(arena.alloc(8, 8)).filter(|p| !p.is_null()) {
+            blocks.push(ptr);
+        }
+        assert!(blocks.len() <= ARENA_SIZE / 16);
+        assert!(blocks.len() >= ARENA_SIZE / 16 - 2);
+        for &ptr in &blocks {
+            arena.free(ptr, 8, 8);
+        }
+        assert!(!arena.alloc(ARENA_SIZE - 64, 8).is_null(), "everything comes back");
+    }
+
+    #[test]
+    fn zero_size_allocations() {
+        let mut arena = Arena::new(ARENA_SIZE);
+        for align in [1, 8, 2048, 4096] {
+            let ptr = arena.alloc(0, align);
+            assert!(!ptr.is_null());
+            assert_eq!(ptr as usize % align, 0);
+            arena.free(ptr, 0, align);
+        }
+    }
+
+    #[test]
+    fn small_size_big_alignment_uses_the_matching_class() {
+        let mut arena = Arena::new(ARENA_SIZE);
+        let ptr = arena.alloc(1, 2048);
+        assert_eq!(ptr as usize % 2048, 0);
+        arena.free(ptr, 1, 2048);
+        assert_eq!(arena.allocator.free_blocks()[8], 1, "cached as a 2048 byte block");
+    }
+
+    #[test]
+    fn reclaim_also_helps_small_allocations() {
+        let mut arena = Arena::new(ARENA_SIZE);
+        let mut big = Vec::new();
+        while let Some(ptr) = Some(arena.alloc(2048, 8)).filter(|p| !p.is_null()) {
+            big.push(ptr);
+        }
+        assert!(arena.alloc(8, 8).is_null() || arena.allocator.fallback_free() > 0);
+        for &ptr in &big {
+            arena.free(ptr, 2048, 8);
+        }
+        assert!(!arena.alloc(8, 8).is_null());
     }
 
     #[test]

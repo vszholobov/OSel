@@ -104,7 +104,9 @@ impl fmt::Display for PageFaultCause {
             (PageFaultErrorCode::MALFORMED_TABLE, "reserved bit set in a page table"),
             (PageFaultErrorCode::PROTECTION_KEY, "protection key"),
             (PageFaultErrorCode::SHADOW_STACK, "shadow stack"),
+            (PageFaultErrorCode::HLAT, "HLAT paging"),
             (PageFaultErrorCode::SGX, "SGX"),
+            (PageFaultErrorCode::RMP, "RMP violation"),
         ] {
             if code.contains(flag) {
                 write!(f, ", {}", name)?;
@@ -216,6 +218,10 @@ mod tests {
         assert_eq!(format!("{}", SelectorError(0x0c)), "LDT entry 1 (0x1)");
         assert_eq!(format!("{}", SelectorError(0x13a)), "IDT entry 39 (0x27)");
         assert_eq!(format!("{}", SelectorError(0x13b)), "IDT entry 39 (0x27), external event");
+        assert_eq!(format!("{}", SelectorError(0x11)), "GDT entry 2 (0x2), external event");
+        assert_eq!(format!("{}", SelectorError(0x1)), "GDT entry 0 (0x0), external event");
+        assert_eq!(format!("{}", SelectorError(0xfff8)), "GDT entry 8191 (0x1fff)");
+        assert_eq!(format!("{}", SelectorError(0b110)), "IDT entry 0 (0x0)", "TI means nothing for the IDT");
     }
 
     #[test]
@@ -230,6 +236,11 @@ mod tests {
         assert_eq!(cause(0b1001), "protection violation on read by kernel, reserved bit set in a page table");
         assert_eq!(cause(1 << 5), "page not present on read by kernel, protection key");
         assert_eq!(cause(1 << 15), "page not present on read by kernel, SGX");
+        assert_eq!(cause(0b0100), "page not present on read by user");
+        assert_eq!(cause(1 << 6), "page not present on read by kernel, shadow stack");
+        assert_eq!(cause(1 << 7), "page not present on read by kernel, HLAT paging");
+        assert_eq!(cause(1 << 31), "page not present on read by kernel, RMP violation");
+        assert_eq!(cause(1 << 3 | 1 << 5), "page not present on read by kernel, reserved bit set in a page table, protection key");
     }
 
     #[test]
@@ -258,6 +269,17 @@ mod tests {
         assert!(buf.truncated());
         write!(buf, "c").unwrap();
         assert_eq!(buf.as_str(), "abЖ", "nothing is appended after truncation");
+    }
+
+    #[test]
+    fn fixed_buf_exact_fit() {
+        let mut buf = FixedBuf::<3>::new();
+        write!(buf, "abc").unwrap();
+        assert_eq!(buf.as_str(), "abc");
+        assert!(!buf.truncated());
+        write!(buf, "d").unwrap();
+        assert!(buf.truncated());
+        assert_eq!(buf.as_str(), "abc");
     }
 
     #[test]

@@ -149,10 +149,15 @@ impl<'a> Console<'a> {
             '\n' => self.new_line(),
             '\r' => self.column = 0,
             '\t' => {
-                let spaces = TAB_WIDTH - self.column % TAB_WIDTH;
-                for _ in 0..spaces {
-                    self.write_char(' ');
+                if self.column >= self.columns {
+                    self.new_line();
                 }
+                // a tab never wraps: it stops at the next tab stop or at the line end
+                let stop = (self.column / TAB_WIDTH + 1) * TAB_WIDTH;
+                for column in self.column..stop.min(self.columns) {
+                    self.clear_cell(self.row, column);
+                }
+                self.column = stop.min(self.columns);
             }
             // backspace: step back and erase, like a terminal echoing it
             '\u{8}' => {
@@ -190,6 +195,12 @@ impl<'a> Console<'a> {
     /// Checks that the text cell at (`row`, `col`) shows exactly the glyph of `c`
     /// in the current colors
     pub fn cell_shows(&self, row: usize, col: usize, c: char) -> bool {
+        self.cell_shows_in(row, col, c, self.foreground, self.background)
+    }
+
+    /// Checks that the text cell at (`row`, `col`) shows exactly the glyph of `c`
+    /// drawn with `foreground` on `background`
+    pub fn cell_shows_in(&self, row: usize, col: usize, c: char, foreground: Color, background: Color) -> bool {
         if row >= self.rows || col >= self.columns {
             return false;
         }
@@ -197,7 +208,7 @@ impl<'a> Console<'a> {
         glyph(c).raster().iter().enumerate().all(|(dy, line)| {
             line.iter().enumerate().all(|(dx, &intensity)| {
                 let offset = self.pixel_offset(x0 + dx, y0 + dy);
-                let (expected, len) = self.encode(self.background.blend(self.foreground, intensity));
+                let (expected, len) = self.encode(background.blend(foreground, intensity));
                 self.buffer[offset..offset + len] == expected[..len]
             })
         })
@@ -517,6 +528,133 @@ mod tests {
         assert!(console.cell_shows(0, 8, 'c'));
         assert!(console.cell_shows(0, 16, 'd'));
         assert!(console.cell_shows(0, 2, ' '));
+        write!(console, "\t").unwrap();
+        assert_eq!(console.cursor(), (0, 20), "the last tab stops at the line end");
+    }
+
+    #[test]
+    fn tab_near_line_end_does_not_wrap() {
+        let info = screen_info();
+        let mut buffer = buffer(&info);
+        let mut console = console(&mut buffer, info);
+        write!(console, "012345678\tX").unwrap();
+        assert!(console.cell_shows(0, 9, ' '));
+        assert!(console.cell_shows(1, 0, 'X'), "the char after the tab wraps normally");
+    }
+
+    #[test]
+    fn tab_after_full_line_starts_on_the_next_line() {
+        let info = screen_info();
+        let mut buffer = buffer(&info);
+        let mut console = console(&mut buffer, info);
+        write!(console, "0123456789\tX").unwrap();
+        assert!(row_text_is(&console, 0, "0123456789"));
+        assert!(console.cell_shows(1, 8, 'X'));
+        assert_eq!(console.cursor(), (1, 9));
+    }
+
+    #[test]
+    fn tab_on_a_one_cell_screen() {
+        let info = info(PixelFormat::Rgb, 3, CHAR_WIDTH, LINE_HEIGHT, CHAR_WIDTH);
+        let mut buffer = buffer(&info);
+        let mut console = console(&mut buffer, info);
+        write!(console, "\t\t\tx").unwrap();
+        assert!(console.cell_shows(0, 0, 'x'));
+        drop(console);
+        assert_guard_untouched(&buffer, &info);
+    }
+
+    #[test]
+    fn carriage_return_after_full_line() {
+        let info = screen_info();
+        let mut buffer = buffer(&info);
+        let mut console = console(&mut buffer, info);
+        write!(console, "0123456789\rX").unwrap();
+        assert!(row_text_is(&console, 0, "X123456789"));
+        assert_eq!(console.cursor(), (0, 1));
+    }
+
+    #[test]
+    fn clear_moves_the_cursor_home() {
+        let info = screen_info();
+        let mut buffer = buffer(&info);
+        let mut console = console(&mut buffer, info);
+        write!(console, "ab\ncd").unwrap();
+        console.clear();
+        assert_eq!(console.cursor(), (0, 0));
+        write!(console, "x").unwrap();
+        assert!(console.cell_shows(0, 0, 'x'));
+    }
+
+    #[test]
+    fn scrolling_and_erasing_use_the_background_color() {
+        let info = screen_info();
+        let mut buffer = buffer(&info);
+        let mut console = console(&mut buffer, info);
+        console.set_colors(Color::WHITE, Color::RED);
+        console.clear();
+        for _ in 0..20 {
+            writeln!(console, "line").unwrap();
+        }
+        write!(console, "ab\u{8}").unwrap();
+        let bottom = (console.rows() - 1) * LINE_HEIGHT;
+        for y in bottom..bottom + LINE_HEIGHT {
+            for x in CHAR_WIDTH..info.width {
+                assert_eq!(console.read_pixel(x, y), Some(Color::RED), "{x},{y}");
+            }
+        }
+    }
+
+    #[test]
+    fn cell_shows_with_other_colors() {
+        let info = screen_info();
+        let mut buffer = buffer(&info);
+        let mut console = console(&mut buffer, info);
+        write!(console, "a").unwrap();
+        console.set_colors(Color::WHITE, Color::RED);
+        assert!(!console.cell_shows(0, 0, 'a'), "drawn in the old colors");
+        assert!(console.cell_shows_in(0, 0, 'a', Color::GREEN, Color::BLACK));
+    }
+
+    #[test]
+    fn cell_shows_checks_the_column() {
+        let info = screen_info();
+        let mut buffer = vec![0; info.byte_len];
+        let console = console(&mut buffer, info);
+        // the right margin is black like a blank cell, but it is no cell
+        assert!(!console.cell_shows(0, console.columns(), ' '));
+        assert!(console.cell_shows(0, console.columns() - 1, ' '));
+    }
+
+    #[test]
+    fn scrolling_keeps_stride_padding() {
+        let info = screen_info();
+        let mut buffer = buffer(&info);
+        let mut console = console(&mut buffer, info);
+        for _ in 0..20 {
+            writeln!(console, "0123456789").unwrap();
+        }
+        drop(console);
+        for y in 0..info.height {
+            let row = y * info.stride * info.bytes_per_pixel;
+            let padding = row + info.width * info.bytes_per_pixel..row + info.stride * info.bytes_per_pixel;
+            assert!(buffer[padding].iter().all(|&b| b == SENTINEL), "row {y}");
+        }
+    }
+
+    #[test]
+    fn stride_must_cover_width() {
+        let mut buffer = vec![0; 640 * 480 * 4];
+        let narrow = info(PixelFormat::Rgb, 4, 640, 480, 639);
+        assert_eq!(Console::new(&mut buffer, narrow).err(), Some(ConsoleError::InvalidStride));
+        let exact = info(PixelFormat::Rgb, 4, 640, 480, 640);
+        assert!(Console::new(&mut buffer, exact).is_ok());
+    }
+
+    #[test]
+    fn gray_is_the_channel_average() {
+        assert_eq!(encode(PixelFormat::U8, Color::new(30, 90, 0)), [40, 0, 0, 0]);
+        assert_eq!(encode(PixelFormat::U8, Color::WHITE), [255, 0, 0, 0]);
     }
 
     #[test]

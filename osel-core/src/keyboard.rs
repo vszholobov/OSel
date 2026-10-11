@@ -55,6 +55,7 @@ impl<T: Copy, const N: usize> RingBuffer<T, N> {
         self.dropped
     }
 
+    /// Drops all items, the `dropped` count stays: it is a statistic since boot
     pub fn clear(&mut self) {
         self.head = 0;
         self.len = 0;
@@ -162,6 +163,42 @@ mod tests {
         assert!(buffer.is_empty());
         assert!(buffer.push(3));
         assert_eq!(buffer.pop(), Some(3));
+    }
+
+    #[test]
+    fn ring_buffer_without_capacity() {
+        let mut buffer = RingBuffer::<u8, 0>::new(0);
+        assert!(!buffer.push(1));
+        assert_eq!(buffer.dropped(), 1);
+        assert_eq!(buffer.pop(), None);
+    }
+
+    #[test]
+    fn ring_buffer_of_one() {
+        let mut buffer = RingBuffer::<u8, 1>::new(0);
+        for i in 0..5 {
+            assert!(buffer.push(i));
+            assert!(!buffer.push(100));
+            assert_eq!(buffer.pop(), Some(i));
+        }
+        assert_eq!(buffer.dropped(), 5);
+    }
+
+    #[test]
+    fn clear_keeps_the_dropped_count() {
+        let mut buffer = RingBuffer::<u8, 1>::new(0);
+        buffer.push(1);
+        buffer.push(2);
+        buffer.clear();
+        assert_eq!(buffer.dropped(), 1);
+    }
+
+    #[test]
+    fn pause_and_print_screen_leave_no_modifiers_behind() {
+        // Pause, then c: a stuck Ctrl from E1 1D would turn c into \x03
+        assert_eq!(type_fresh(&[0xe1, 0x1d, 0x45, 0xe1, 0x9d, 0xc5, 0x2e, 0xae]), "c");
+        // Print Screen press and release, then c
+        assert_eq!(type_fresh(&[0xe0, 0x2a, 0xe0, 0x37, 0xe0, 0xb7, 0xe0, 0xaa, 0x2e, 0xae]), "c");
     }
 
     #[test]

@@ -98,19 +98,38 @@ fn align_up(address: u64) -> Option<u64> {
     (aligned < PHYS_ADDR_LIMIT).then_some(aligned)
 }
 
-/// Maps `size` bytes starting at `start` to freshly allocated frames
+#[derive(Debug)]
+pub enum MapRangeError {
+    /// The range overflows the address space or crosses the non-canonical hole
+    InvalidRange,
+    Map(MapToError<Size4KiB>),
+}
+
+impl From<MapToError<Size4KiB>> for MapRangeError {
+    fn from(error: MapToError<Size4KiB>) -> Self {
+        MapRangeError::Map(error)
+    }
+}
+
+/// Maps `size` bytes starting at `start` to freshly allocated frames.
+/// Pages mapped before an error stay mapped.
 pub fn map_range(
     mapper: &mut impl Mapper<Size4KiB>,
     frame_allocator: &mut impl FrameAllocator<Size4KiB>,
     start: VirtAddr,
     size: u64,
     flags: PageTableFlags,
-) -> Result<(), MapToError<Size4KiB>> {
+) -> Result<(), MapRangeError> {
     if size == 0 {
         return Ok(());
     }
+    let last = start.as_u64().checked_add(size - 1).ok_or(MapRangeError::InvalidRange)?;
+    let last = VirtAddr::try_new(last).map_err(|_| MapRangeError::InvalidRange)?;
+    if (start.as_u64() < USER_END) != (last.as_u64() < USER_END) {
+        return Err(MapRangeError::InvalidRange);
+    }
     let first = Page::<Size4KiB>::containing_address(start);
-    let last = Page::<Size4KiB>::containing_address(start + (size - 1));
+    let last = Page::<Size4KiB>::containing_address(last);
     for page in Page::range_inclusive(first, last) {
         let frame = frame_allocator.allocate_frame().ok_or(MapToError::FrameAllocationFailed)?;
         unsafe { mapper.map_to(page, frame, flags, frame_allocator)?.ignore() };
@@ -321,7 +340,7 @@ mod tests {
         let start = VirtAddr::new(0x40_0000);
         map_range(&mut mapper, &mut frames, start, PAGE_SIZE, PageTableFlags::PRESENT).unwrap();
         let error = map_range(&mut mapper, &mut frames, start, PAGE_SIZE, PageTableFlags::PRESENT).unwrap_err();
-        assert!(matches!(error, MapToError::PageAlreadyMapped(_)), "{error:?}");
+        assert!(matches!(error, MapRangeError::Map(MapToError::PageAlreadyMapped(_))), "{error:?}");
     }
 
     #[test]
@@ -331,6 +350,60 @@ mod tests {
         let error =
             map_range(&mut mapper, &mut frames, VirtAddr::new(0x40_0000), 4 * PAGE_SIZE, PageTableFlags::PRESENT)
                 .unwrap_err();
-        assert!(matches!(error, MapToError::FrameAllocationFailed), "{error:?}");
+        assert!(matches!(error, MapRangeError::Map(MapToError::FrameAllocationFailed)), "{error:?}");
+    }
+
+    #[test]
+    fn map_range_of_whole_pages_maps_no_extra_page() {
+        let mut mapper = host_mapper();
+        let mut frames = HostFrames { handed_out: 0, limit: 100 };
+        let start = VirtAddr::new(HEAP_START);
+        map_range(&mut mapper, &mut frames, start, 2 * PAGE_SIZE, PageTableFlags::PRESENT).unwrap();
+        assert!(mapper.translate_addr(start + PAGE_SIZE).is_some());
+        assert!(mapper.translate_addr(start + 2 * PAGE_SIZE).is_none());
+        // 2 data frames plus level 3, 2 and 1 tables
+        assert_eq!(frames.handed_out, 5);
+    }
+
+    #[test]
+    fn map_range_with_unaligned_start() {
+        let mut mapper = host_mapper();
+        let mut frames = HostFrames { handed_out: 0, limit: 100 };
+        let start = VirtAddr::new(HEAP_START + PAGE_SIZE - 1);
+        map_range(&mut mapper, &mut frames, start, 2, PageTableFlags::PRESENT).unwrap();
+        assert!(mapper.translate_addr(VirtAddr::new(HEAP_START)).is_some());
+        assert!(mapper.translate_addr(VirtAddr::new(HEAP_START + PAGE_SIZE)).is_some());
+        assert!(mapper.translate_addr(VirtAddr::new(HEAP_START + 2 * PAGE_SIZE)).is_none());
+    }
+
+    #[test]
+    fn map_range_refuses_invalid_ranges() {
+        let mut mapper = host_mapper();
+        let mut frames = HostFrames { handed_out: 0, limit: 100 };
+        let flags = PageTableFlags::PRESENT;
+        let crossing_hole = map_range(&mut mapper, &mut frames, VirtAddr::new(USER_END - PAGE_SIZE), 2 * PAGE_SIZE, flags);
+        assert!(matches!(crossing_hole, Err(MapRangeError::InvalidRange)));
+        let past_the_end = map_range(&mut mapper, &mut frames, VirtAddr::new(u64::MAX - PAGE_SIZE + 1), 2 * PAGE_SIZE, flags);
+        assert!(matches!(past_the_end, Err(MapRangeError::InvalidRange)));
+        assert_eq!(frames.handed_out, 0, "nothing is mapped for a bad range");
+    }
+
+    #[test]
+    fn reserved_region_up_to_the_end() {
+        let frames = all_frames(&[usable(MIB, MIB + 4 * PAGE_SIZE), reserved(MIB + PAGE_SIZE, u64::MAX)]);
+        assert_eq!(frames, [MIB]);
+    }
+
+    #[test]
+    fn inverted_region_is_harmless() {
+        let frames = all_frames(&[usable(MIB, MIB + 3 * PAGE_SIZE), reserved(MIB + 2 * PAGE_SIZE, MIB + PAGE_SIZE)]);
+        assert_eq!(frames, [MIB, MIB + PAGE_SIZE, MIB + 2 * PAGE_SIZE]);
+        assert!(all_frames(&[usable(MIB + PAGE_SIZE, MIB)]).is_empty());
+    }
+
+    #[test]
+    fn touching_usable_regions() {
+        let frames = all_frames(&[usable(MIB + 2 * PAGE_SIZE, MIB + 3 * PAGE_SIZE), usable(MIB, MIB + 2 * PAGE_SIZE)]);
+        assert_eq!(frames, [MIB, MIB + PAGE_SIZE, MIB + 2 * PAGE_SIZE]);
     }
 }

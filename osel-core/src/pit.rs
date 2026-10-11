@@ -9,9 +9,10 @@ pub fn divisor(hz: u32) -> u16 {
     (PIT_FREQUENCY_HZ / hz.max(1)).clamp(1, u16::MAX as u32) as u16
 }
 
-/// Frequency the PIT really runs at with `divisor`
+/// Frequency the PIT really runs at with `divisor` (a reload value of 0 means 65536)
 pub fn frequency_millihz(divisor: u16) -> u64 {
-    PIT_FREQUENCY_HZ as u64 * 1000 / divisor.max(1) as u64
+    let divisor = if divisor == 0 { 65536 } else { divisor as u64 };
+    PIT_FREQUENCY_HZ as u64 * 1000 / divisor
 }
 
 /// Milliseconds that `ticks` interrupts of a `hz` timer take
@@ -59,7 +60,8 @@ mod tests {
     fn real_frequency() {
         let millihz = frequency_millihz(divisor(100));
         assert!((99_900..100_100).contains(&millihz), "{millihz}");
-        assert_eq!(frequency_millihz(0), PIT_FREQUENCY_HZ as u64 * 1000);
+        assert_eq!(frequency_millihz(0), 18_206, "zero reloads 65536");
+        assert_eq!(frequency_millihz(1), PIT_FREQUENCY_HZ as u64 * 1000);
     }
 
     #[test]
@@ -75,6 +77,7 @@ mod tests {
         assert_eq!(pic_masks(&[0, 1]), (0b1111_1100, 0xff));
         assert_eq!(pic_masks(&[12]), (0b1111_1011, 0b1110_1111), "mouse needs the cascade");
         assert_eq!(pic_masks(&[0, 1, 8, 15, 16]), (0b1111_1000, 0b0111_1110));
+        assert_eq!(pic_masks(&[2]), (0b1111_1011, 0xff), "the cascade line alone");
     }
 
     #[test]
