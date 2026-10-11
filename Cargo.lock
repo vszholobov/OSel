@@ -67,10 +67,23 @@ dependencies = [
  "lazy_static",
  "linked_list_allocator",
  "noto-sans-mono-bitmap",
+ "osel-core",
  "pc-keyboard",
  "pic8259",
  "spin 0.5.2",
  "uart_16550",
+ "x86_64",
+]
+
+[[package]]
+name = "osel-core"
+version = "0.1.0"
+dependencies = [
+ "bootloader_api",
+ "linked_list_allocator",
+ "noto-sans-mono-bitmap",
+ "pc-keyboard",
+ "spin 0.5.2",
  "x86_64",
 ]
 

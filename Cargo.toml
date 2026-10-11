@@ -4,7 +4,13 @@ description = "OSel operating system"
 version = "0.1.0"
 edition = "2024"
 
+[workspace]
+members = ["osel-core"]
+# the runner is started by a nested cargo while the kernel build holds target/
+exclude = ["runner"]
+
 [dependencies]
+osel-core = { path = "osel-core" }
 bootloader_api = "0.11.17"
 spin = "0.5.2"
 x86_64 = "0.15.5"

@@ -16,8 +16,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  host-tests:
+    name: host unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain from rust-toolchain.toml
+        run: rustup toolchain install && rustc -V
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            runner -> target
+
+      - name: Kernel logic (osel-core)
+        run: cargo test-core
+
+      - name: Runner
+        run: cargo test-runner
+
   test:
     name: cargo test (${{ matrix.boot }})
+    needs: host-tests
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
