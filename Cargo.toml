@@ -77,3 +77,15 @@ harness = false
 [[test]]
 name = "nested_panic"
 harness = false
+
+[[test]]
+name = "overflow"
+harness = false
+
+[[test]]
+name = "write_protection"
+harness = false
+
+[[test]]
+name = "memory_reentrancy"
+harness = false

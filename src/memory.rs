@@ -6,7 +6,7 @@ use bootloader_api::info::MemoryRegion;
 use spin::Mutex;
 use x86_64::VirtAddr;
 use x86_64::registers::control::Cr3;
-use x86_64::structures::paging::{OffsetPageTable, PageTable};
+use x86_64::structures::paging::{FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, Size4KiB};
 
 pub use osel_core::memory::*;
 
@@ -20,6 +20,9 @@ static MEMORY: Mutex<Option<Memory>> = Mutex::new(None);
 /// Level 4 entries of the lower half the bootloader left behind, cleared by `init`
 static mut LOWER_HALF_ENTRIES_CLEARED: usize = 0;
 
+/// The memory map from the bootloader
+static mut MEMORY_REGIONS: &[MemoryRegion] = &[];
+
 /// Takes over the active page table and the usable memory reported by the bootloader
 ///
 /// # Safety
@@ -28,8 +31,12 @@ static mut LOWER_HALF_ENTRIES_CLEARED: usize = 0;
 pub unsafe fn init(physical_memory_offset: VirtAddr, memory_regions: &'static [MemoryRegion]) {
     let level_4_table = unsafe { active_level_4_table(physical_memory_offset) };
     let cleared = clear_lower_half(level_4_table);
-    unsafe { LOWER_HALF_ENTRIES_CLEARED = cleared };
-    let mapper = unsafe { OffsetPageTable::new(level_4_table, physical_memory_offset) };
+    unsafe {
+        LOWER_HALF_ENTRIES_CLEARED = cleared;
+        MEMORY_REGIONS = memory_regions;
+    }
+    let mut mapper = unsafe { OffsetPageTable::new(level_4_table, physical_memory_offset) };
+    unmap_double_fault_stack_guard(&mut mapper);
     let frame_allocator = unsafe { RegionFrameAllocator::new(memory_regions) };
     *MEMORY.lock() = Some(Memory { mapper, frame_allocator });
 }
@@ -47,6 +54,22 @@ fn clear_lower_half(level_4_table: &mut PageTable) -> usize {
     }
     x86_64::instructions::tlb::flush_all();
     cleared
+}
+
+/// The double fault stack is a kernel static with a spare page below it: unmapping
+/// that page turns a stack overflow in the panic path into a fault, not memory corruption
+fn unmap_double_fault_stack_guard(mapper: &mut OffsetPageTable) {
+    let guard = Page::<Size4KiB>::containing_address(crate::gdt::double_fault_stack_guard());
+    // the frame stays allocated to the kernel image, it is just not reachable anymore
+    let (_, flush) = mapper.unmap(guard).expect("double fault stack guard page is not a 4 KiB page");
+    flush.flush();
+}
+
+/// Number of frames the frame allocator can hand out in total, according to the memory map
+pub fn total_usable_frames() -> usize {
+    let regions = unsafe { MEMORY_REGIONS };
+    let mut allocator = unsafe { RegionFrameAllocator::new(regions) };
+    core::iter::from_fn(|| allocator.allocate_frame()).count()
 }
 
 /// Runs `f` with exclusive access to the page table and the frame allocator
@@ -111,9 +134,29 @@ mod tests {
             (m.frame_allocator.allocate_frame().unwrap(), m.frame_allocator.allocate_frame().unwrap())
         });
         assert_ne!(a, b);
+        let level_4 = Cr3::read().0;
+        let heap = with_memory(|m| m.mapper.translate_addr(VirtAddr::new(HEAP_START))).unwrap();
         for frame in [a, b] {
             assert!(frame.start_address().as_u64() >= LOW_MEMORY_END, "{:?}", frame);
+            assert_ne!(frame, level_4, "the active page table frame was handed out");
+            assert_ne!(frame.start_address(), heap, "a heap frame was handed out again");
         }
+    }
+
+    #[test_case]
+    fn test_double_fault_stack_guard_is_unmapped() {
+        let guard = crate::gdt::double_fault_stack_guard();
+        let translate = |address: VirtAddr| with_memory(|m| m.mapper.translate_addr(address));
+        assert!(translate(guard).is_none(), "guard page is mapped");
+        assert!(translate(guard + 4096u64).is_some(), "the stack itself is not mapped");
+        assert!(translate(crate::gdt::double_fault_stack_top() - 1u64).is_some());
+    }
+
+    #[test_case]
+    fn test_memory_lock_disables_interrupts() {
+        assert!(x86_64::instructions::interrupts::are_enabled());
+        with_memory(|_| assert!(!x86_64::instructions::interrupts::are_enabled()));
+        assert!(x86_64::instructions::interrupts::are_enabled(), "interrupts are back on");
     }
 
     #[test_case]
@@ -143,8 +186,7 @@ mod tests {
     }
 
     #[test_case]
-    fn test_with_memory_is_not_reentrant() {
-        // the lock is free again after a call
+    fn test_with_memory_releases_the_lock() {
         with_memory(|_| {});
         with_memory(|_| {});
     }

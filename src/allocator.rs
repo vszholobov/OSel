@@ -9,8 +9,7 @@ use osel_core::heap::FixedSizeBlockAllocator;
 use spin::Mutex;
 use x86_64::VirtAddr;
 use x86_64::instructions::interrupts;
-use x86_64::structures::paging::mapper::MapToError;
-use x86_64::structures::paging::{PageTableFlags, Size4KiB};
+use x86_64::structures::paging::PageTableFlags;
 
 pub use osel_core::heap::BLOCK_SIZES;
 
@@ -22,7 +21,7 @@ pub struct KernelAllocator {
 static ALLOCATOR: KernelAllocator = KernelAllocator { inner: Mutex::new(FixedSizeBlockAllocator::new()) };
 
 /// Maps the heap pages and hands them to the allocator
-pub fn init_heap() -> Result<(), MapToError<Size4KiB>> {
+pub fn init_heap() -> Result<(), memory::MapRangeError> {
     let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
     memory::with_memory(|memory| {
         memory::map_range(&mut memory.mapper, &mut memory.frame_allocator, VirtAddr::new(HEAP_START), HEAP_SIZE, flags)
@@ -54,6 +53,12 @@ mod tests {
     use alloc::alloc::{alloc, dealloc};
     use alloc::boxed::Box;
     use alloc::vec::Vec;
+
+    #[test_case]
+    fn test_allocator_lock_disables_interrupts() {
+        with_allocator(|_| assert!(!interrupts::are_enabled()));
+        assert!(interrupts::are_enabled());
+    }
 
     #[test_case]
     fn test_heap_is_initialized() {

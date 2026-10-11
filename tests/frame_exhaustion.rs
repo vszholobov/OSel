@@ -8,7 +8,7 @@
 
 use bootloader_api::{BootInfo, entry_point};
 use core::panic::PanicInfo;
-use osel::memory::{LOW_MEMORY_END, with_memory};
+use osel::memory::{LOW_MEMORY_END, total_usable_frames, with_memory};
 use x86_64::structures::paging::FrameAllocator;
 
 entry_point!(main, config = &osel::BOOTLOADER_CONFIG);
@@ -40,7 +40,8 @@ fn every_frame_once() {
         assert!(m.frame_allocator.allocate_frame().is_none(), "exhaustion is sticky");
         (count, before)
     });
-    // QEMU gives the machine 128 MiB by default
-    let mib = (count + before as u64) * 4096 / (1024 * 1024);
-    assert!((64..=128).contains(&mib), "{} MiB of usable frames", mib);
+    assert_eq!(count as usize + before, total_usable_frames(), "frames went missing");
+    // the runner gives test kernels 128 MiB
+    let mib = count * 4096 / (1024 * 1024);
+    assert!((64..=128).contains(&mib), "{} MiB of free frames", mib);
 }

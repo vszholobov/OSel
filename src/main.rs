@@ -45,7 +45,7 @@ fn echo_keyboard() -> ! {
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    osel::avganec::panic_screen(info);
+    let _ = osel::avganec::panic_screen(info);
     osel::hlt_loop();
 }
 

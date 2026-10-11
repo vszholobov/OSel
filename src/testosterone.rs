@@ -63,23 +63,47 @@ pub fn fail(reason: &str) -> ! {
     exit_qemu(QemuExitCode::Failed);
 }
 
+/// Address `expect_panic` requires as `rip: <address>` in the message, 0 for any.
+/// Tests write it from inline assembly right before the faulting instruction.
+pub static EXPECTED_RIP: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Makes `expect_panic` require `rip: <address>` in the message
+pub fn expect_rip(address: u64) {
+    EXPECTED_RIP.store(address, core::sync::atomic::Ordering::SeqCst);
+}
+
 /// Panic handler of tests that expect a panic: shows the panic screen, then passes
-/// if the message contains every `expected` part (and the screen turned red)
+/// if the message contains every `expected` part and the screen shows the crash
 pub fn expect_panic(info: &PanicInfo, expected: &[&str]) -> ! {
+    use crate::avganec::{self, Color};
     use core::fmt::Write;
     use osel_core::exception::FixedBuf;
 
-    crate::avganec::panic_screen(info);
+    if !avganec::panic_screen(info) {
+        // a panic inside the panic screen: the locks are taken, only the raw port is safe
+        crate::cereal::emergency_print(format_args!("[failed]\n\nError: nested panic: {}\n", info));
+        exit_qemu(QemuExitCode::Failed);
+    }
     // formatted without the heap: the panic may come from the allocator
     let mut message = FixedBuf::<2048>::new();
     let _ = write!(message, "{}", info.message());
-    if let Some(missing) = expected.iter().find(|part| !message.as_str().contains(*part)) {
+    let mut rip = FixedBuf::<32>::new();
+    let expected_rip = EXPECTED_RIP.load(core::sync::atomic::Ordering::SeqCst);
+    if expected_rip != 0 {
+        let _ = write!(rip, "rip: {:#018x}", expected_rip);
+    }
+    let rip = (expected_rip != 0).then_some(rip.as_str());
+    if let Some(missing) = expected.iter().copied().chain(rip).find(|part| !message.as_str().contains(part)) {
         serial_println!("[failed]\n\nError: `{}` is not in the panic message:\n{}\n", missing, message.as_str());
         exit_qemu(QemuExitCode::Failed);
     }
-    let has_screen = crate::avganec::with_console(|_| ()).is_some();
-    if has_screen && crate::avganec::read_pixel(0, 0) != Some(crate::avganec::Color::RED) {
-        fail("the panic screen is not red");
+    let screen_ok = avganec::with_console(|console| {
+        let header = "OSel crashed :(";
+        console.read_pixel(0, console.info().height - 1) == Some(Color::RED)
+            && header.chars().enumerate().all(|(i, c)| console.cell_shows_in(0, i, c, Color::WHITE, Color::RED))
+    });
+    if screen_ok == Some(false) {
+        fail("the panic screen does not show the crash");
     }
     pass();
 }

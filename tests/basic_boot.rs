@@ -29,4 +29,10 @@ fn panic(info: &PanicInfo) -> ! {
 #[test_case]
 fn test_println() {
     println!("test_println output");
+    // right after boot, without osel::init, the text is on the screen
+    let shown = osel::avganec::with_console(|console| {
+        let row = console.cursor().0 - 1;
+        "test_println output".chars().enumerate().all(|(i, c)| console.cell_shows(row, i, c))
+    });
+    assert_eq!(shown, Some(true));
 }

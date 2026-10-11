@@ -1,8 +1,7 @@
 //! cereal module provides serial port access methods
 
-use core::ops::Deref;
-use lazy_static::lazy_static;
-use spin::Mutex;
+use core::sync::atomic::{AtomicBool, Ordering};
+use spin::{Mutex, MutexGuard};
 use uart_16550::{Config, Uart16550Tty, backend::PioBackend};
 
 #[doc(hidden)]
@@ -10,7 +9,7 @@ pub fn _print(args: core::fmt::Arguments) {
     use core::fmt::Write;
     // an interrupt handler printing while we hold the lock would deadlock
     x86_64::instructions::interrupts::without_interrupts(|| {
-        if let Some(port) = SERIAL1.deref().lock().as_mut() {
+        if let Some(port) = port().as_mut() {
             let _ = port.write_fmt(args);
         }
     });
@@ -55,18 +54,29 @@ macro_rules! serial_println {
         concat!($fmt, "\n"), $($arg)*));
 }
 
-lazy_static! {
-    /// COM1, `None` when the machine has no working serial port (most laptops):
-    /// printing to it is skipped then instead of failing
-    pub static ref SERIAL1: Mutex<Option<Uart16550Tty<PioBackend>>> =
-        Mutex::new(unsafe { Uart16550Tty::new_port(0x3F8, Config::default()) }.ok());
+/// COM1, `None` when the machine has no working serial port (most laptops):
+/// printing to it is skipped then instead of failing
+pub static SERIAL1: Mutex<Option<Uart16550Tty<PioBackend>>> = Mutex::new(None);
+
+/// The port is probed once, on first use. Not a `lazy_static`: a panic during the
+/// probe would leave it half initialized and hang every later use, the panic path too.
+static PROBED: AtomicBool = AtomicBool::new(false);
+
+/// Locks COM1, probing it on the first call
+pub fn port() -> MutexGuard<'static, Option<Uart16550Tty<PioBackend>>> {
+    let mut port = SERIAL1.lock();
+    if !PROBED.swap(true, Ordering::SeqCst) {
+        *port = unsafe { Uart16550Tty::new_port(0x3F8, Config::default()) }.ok();
+    }
+    port
 }
 
 #[cfg(test)]
 mod tests {
     #[test_case]
     fn test_serial_port_is_present_in_qemu() {
-        assert!(super::SERIAL1.lock().is_some());
+        let present = x86_64::instructions::interrupts::without_interrupts(|| super::port().is_some());
+        assert!(present);
     }
 
     #[test_case]

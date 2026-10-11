@@ -43,6 +43,8 @@ pub const BOOTLOADER_CONFIG: BootloaderConfig = {
 /// Initializes the CPU tables, memory and interrupts.
 /// The framebuffer has to be taken from `boot_info` for `avganec` before.
 pub fn init(boot_info: &'static mut BootInfo) {
+    // the firmware should hand over with interrupts off, but nothing can handle them yet
+    x86_64::instructions::interrupts::disable();
     gdt::init();
     interrupts::init_idt();
 

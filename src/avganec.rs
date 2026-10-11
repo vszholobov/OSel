@@ -62,13 +62,14 @@ pub fn read_pixel(x: usize, y: usize) -> Option<Color> {
 /// Shows a fatal error white on red over the whole screen and mirrors it to the serial port.
 ///
 /// A panic while showing a panic (say, a broken `Display` in the message) only gets a raw
-/// line on the serial port: drawing again would most likely panic again.
-pub fn panic_screen(info: &PanicInfo) {
+/// line on the serial port: drawing again would most likely panic again. Returns `false`
+/// in that case, the caller must not touch the screen or serial locks anymore then.
+pub fn panic_screen(info: &PanicInfo) -> bool {
     use core::fmt::Write;
     interrupts::disable();
     if !crate::enter_panic() {
         crate::cereal::emergency_print(format_args!("\nnested panic: {}\n", info));
-        return;
+        return false;
     }
     // the panic could happen while printing, nobody would release this lock anymore
     unsafe { WRITER.force_unlock() };
@@ -79,6 +80,7 @@ pub fn panic_screen(info: &PanicInfo) {
     }
     unsafe { crate::cereal::SERIAL1.force_unlock() };
     crate::serial_println!("OSel crashed: {}", info);
+    true
 }
 
 #[cfg(test)]
@@ -88,6 +90,17 @@ mod tests {
     #[test_case]
     fn test_println_simple() {
         println!("test_println_simple output");
+        let shown = with_console(|console| {
+            let row = console.cursor().0 - 1;
+            "test_println_simple output".chars().enumerate().all(|(i, c)| console.cell_shows(row, i, c))
+        });
+        assert_eq!(shown, Some(true));
+    }
+
+    #[test_case]
+    fn test_console_lock_disables_interrupts() {
+        with_console(|_| assert!(!interrupts::are_enabled()));
+        assert!(interrupts::are_enabled());
     }
 
     #[test_case]

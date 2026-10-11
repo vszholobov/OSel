@@ -7,7 +7,7 @@ use bootloader_api::{BootInfo, entry_point};
 use core::fmt;
 use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicUsize, Ordering};
-use osel::testosterone::{fail, pass};
+use osel::testosterone::fail;
 
 entry_point!(main, config = &osel::BOOTLOADER_CONFIG);
 
@@ -38,8 +38,12 @@ fn panic(info: &PanicInfo) -> ! {
         }
         // the panic screen must notice the nesting and return without drawing
         1 => {
-            osel::avganec::panic_screen(info);
-            pass();
+            if osel::avganec::panic_screen(info) {
+                fail("the nested panic was drawn like a first one");
+            }
+            // the outer panic still holds the screen lock, only the raw port is safe
+            osel::cereal::emergency_print(format_args!("[ok]\n"));
+            osel::qemuno::exit_qemu(osel::qemuno::QemuExitCode::Success);
         }
         _ => fail("panic handler entered a third time"),
     }
