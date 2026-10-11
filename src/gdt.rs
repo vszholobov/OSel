@@ -58,32 +58,49 @@ lazy_static! {
 }
 
 pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
+pub const NMI_IST_INDEX: u16 = 1;
+pub const MACHINE_CHECK_IST_INDEX: u16 = 2;
 
 const PAGE_SIZE: usize = 4096;
-/// The double fault handler draws the whole panic screen on this stack
-pub const DOUBLE_FAULT_STACK_SIZE: usize = 8 * PAGE_SIZE;
+/// Each handler on these stacks may draw the whole panic screen
+pub const IST_STACK_SIZE: usize = 8 * PAGE_SIZE;
 
 /// The first page is unmapped by `memory::init`: overflowing the stack faults
 /// instead of silently overwriting the statics below it
 #[repr(C, align(4096))]
-struct GuardedStack([u8; PAGE_SIZE + DOUBLE_FAULT_STACK_SIZE]);
+struct GuardedStack([u8; PAGE_SIZE + IST_STACK_SIZE]);
 
-static mut DOUBLE_FAULT_STACK: GuardedStack = GuardedStack([0; PAGE_SIZE + DOUBLE_FAULT_STACK_SIZE]);
+static mut DOUBLE_FAULT_STACK: GuardedStack = GuardedStack([0; PAGE_SIZE + IST_STACK_SIZE]);
+static mut NMI_STACK: GuardedStack = GuardedStack([0; PAGE_SIZE + IST_STACK_SIZE]);
+static mut MACHINE_CHECK_STACK: GuardedStack = GuardedStack([0; PAGE_SIZE + IST_STACK_SIZE]);
 
-/// Address of the guard page below the double fault stack
-pub fn double_fault_stack_guard() -> VirtAddr {
-    VirtAddr::from_ptr(addr_of!(DOUBLE_FAULT_STACK))
+/// An interrupt stack table entry: its guard page and the top the stack grows down from
+#[derive(Debug, Clone, Copy)]
+pub struct IstStack {
+    pub index: u16,
+    pub guard: VirtAddr,
+    pub top: VirtAddr,
 }
 
-/// Top of the double fault stack, where it starts to grow down from
-pub fn double_fault_stack_top() -> VirtAddr {
-    double_fault_stack_guard() + (PAGE_SIZE + DOUBLE_FAULT_STACK_SIZE) as u64
+/// Every interrupt stack of the TSS
+pub fn ist_stacks() -> [IstStack; 3] {
+    let stack = |index, start: *const GuardedStack| {
+        let guard = VirtAddr::from_ptr(start);
+        IstStack { index, guard, top: guard + (PAGE_SIZE + IST_STACK_SIZE) as u64 }
+    };
+    [
+        stack(DOUBLE_FAULT_IST_INDEX, addr_of!(DOUBLE_FAULT_STACK)),
+        stack(NMI_IST_INDEX, addr_of!(NMI_STACK)),
+        stack(MACHINE_CHECK_IST_INDEX, addr_of!(MACHINE_CHECK_STACK)),
+    ]
 }
 
 lazy_static! {
     static ref TSS: TaskStateSegment = {
         let mut tss = TaskStateSegment::new();
-        tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = double_fault_stack_top();
+        for stack in ist_stacks() {
+            tss.interrupt_stack_table[stack.index as usize] = stack.top;
+        }
         tss
     };
 }
@@ -113,10 +130,16 @@ mod tests {
     }
 
     #[test_case]
-    fn test_double_fault_stack_is_in_the_tss() {
+    fn test_interrupt_stacks_are_in_the_tss() {
         // the TSS is packed, copy the field out before comparing
-        let ist = { TSS.interrupt_stack_table }[DOUBLE_FAULT_IST_INDEX as usize];
-        assert_eq!(ist, double_fault_stack_top());
-        assert_eq!(double_fault_stack_guard().as_u64() % PAGE_SIZE as u64, 0);
+        let table = { TSS.interrupt_stack_table };
+        let stacks = ist_stacks();
+        for stack in stacks {
+            assert_eq!(table[stack.index as usize], stack.top);
+            assert_eq!(stack.guard.as_u64() % PAGE_SIZE as u64, 0);
+        }
+        // separate stacks: a nested NMI during a double fault must not share one
+        assert!(stacks[0].top <= stacks[1].guard || stacks[1].top <= stacks[0].guard);
+        assert!(stacks[1].top <= stacks[2].guard || stacks[2].top <= stacks[1].guard);
     }
 }

@@ -47,6 +47,13 @@ impl<'a> RegionFrameAllocator<'a> {
         RegionFrameAllocator { regions, next: LOW_MEMORY_END, allocated: 0 }
     }
 
+    /// Number of frames an allocator over `regions` hands out in total
+    pub fn count_frames(regions: &[MemoryRegion]) -> usize {
+        // SAFETY: the frames are only counted, never handed to anybody
+        let mut allocator = unsafe { RegionFrameAllocator::new(regions) };
+        core::iter::from_fn(|| allocator.allocate_frame()).count()
+    }
+
     /// Number of frames handed out so far
     pub fn allocated(&self) -> usize {
         self.allocated
@@ -164,6 +171,7 @@ mod tests {
         let frames: Vec<u64> =
             core::iter::from_fn(|| allocator.allocate_frame()).map(|f| f.start_address().as_u64()).collect();
         assert_eq!(allocator.allocated(), frames.len());
+        assert_eq!(RegionFrameAllocator::count_frames(regions), frames.len());
         assert!(allocator.allocate_frame().is_none(), "exhaustion is sticky");
         frames
     }

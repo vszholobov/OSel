@@ -7,7 +7,7 @@ use bootloader_api::info::FrameBuffer;
 use core::fmt;
 use core::panic::PanicInfo;
 use osel_core::console::Console;
-use spin::Mutex;
+use crate::sync::IrqSpinlock;
 use x86_64::instructions::interrupts;
 
 pub use osel_core::console::Color;
@@ -26,16 +26,24 @@ macro_rules! println {
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
     use core::fmt::Write;
-    // an interrupt handler printing while we hold the lock would deadlock
-    interrupts::without_interrupts(|| {
-        // printing before `init` or without a framebuffer is a no-op
-        if let Some(console) = WRITER.lock().as_mut() {
-            let _ = console.write_fmt(args);
-        }
-    });
+    // printing before `init` or without a framebuffer is a no-op
+    if let Some(console) = WRITER.lock().as_mut() {
+        let _ = console.write_fmt(args);
+    }
 }
 
-pub static WRITER: Mutex<Option<Console<'static>>> = Mutex::new(None);
+/// Prints unless the console is busy: for exception handlers, which may interrupt
+/// code holding the console lock (interrupts being off doesn't stop exceptions)
+pub fn try_print(args: fmt::Arguments) {
+    use core::fmt::Write;
+    if let Some(mut console) = WRITER.try_lock()
+        && let Some(console) = console.as_mut()
+    {
+        let _ = console.write_fmt(args);
+    }
+}
+
+pub static WRITER: IrqSpinlock<Option<Console<'static>>> = IrqSpinlock::new("WRITER", None);
 
 /// Takes over the framebuffer handed over by the bootloader.
 /// An unusable framebuffer is reported to the serial port, printing then goes nowhere.
@@ -46,12 +54,13 @@ pub fn init(framebuffer: Option<FrameBuffer>) {
             .map_err(|error| crate::serial_println!("avganec: framebuffer {:?} is not usable: {:?}", info, error))
             .ok()
     });
-    interrupts::without_interrupts(|| *WRITER.lock() = console);
+    *WRITER.lock() = console;
 }
 
-/// Runs `f` with the console, `None` without a framebuffer
+/// Runs `f` with the console (and interrupts off), `None` without a framebuffer
+#[track_caller]
 pub fn with_console<R>(f: impl FnOnce(&mut Console<'static>) -> R) -> Option<R> {
-    interrupts::without_interrupts(|| WRITER.lock().as_mut().map(f))
+    WRITER.lock().as_mut().map(f)
 }
 
 /// Color of the pixel at (`x`, `y`), `None` without a framebuffer or outside of the screen
@@ -78,6 +87,8 @@ pub fn panic_screen(info: &PanicInfo) -> bool {
         console.clear();
         let _ = write!(console, "OSel crashed :(\n\n{}\n", info);
     }
+    // the framebuffer is never read back by the kernel, make sure the writes happen
+    core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
     unsafe { crate::cereal::SERIAL1.force_unlock() };
     crate::serial_println!("OSel crashed: {}", info);
     true

@@ -29,6 +29,7 @@ pub mod interrupts;
 pub mod gdt;
 pub mod keyboard;
 pub mod memory;
+pub mod sync;
 
 /// Bootloader settings shared by the kernel and all test kernels
 pub const BOOTLOADER_CONFIG: BootloaderConfig = {
@@ -40,15 +41,20 @@ pub const BOOTLOADER_CONFIG: BootloaderConfig = {
     config
 };
 
-/// Initializes the CPU tables, memory and interrupts.
+static INITIALIZED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static BOOT_INFO: core::sync::atomic::AtomicPtr<BootInfo> = core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+
+/// Initializes the CPU tables, memory and interrupts. Panics when called twice: a second
+/// run would create another `&mut` to the live page table and hand out used frames again.
 /// The framebuffer has to be taken from `boot_info` for `avganec` before.
-pub fn init(boot_info: &'static mut BootInfo) {
+pub fn init(boot_info: &'static BootInfo) {
     // the firmware should hand over with interrupts off, but nothing can handle them yet
     x86_64::instructions::interrupts::disable();
+    assert!(!INITIALIZED.swap(true, core::sync::atomic::Ordering::SeqCst), "osel::init called twice");
+    BOOT_INFO.store(boot_info as *const BootInfo as *mut BootInfo, core::sync::atomic::Ordering::SeqCst);
     gdt::init();
     interrupts::init_idt();
 
-    let boot_info: &'static BootInfo = boot_info;
     let physical_memory_offset = *boot_info
         .physical_memory_offset
         .as_ref()
@@ -58,6 +64,13 @@ pub fn init(boot_info: &'static mut BootInfo) {
 
     interrupts::init_pics();
     x86_64::instructions::interrupts::enable();
+}
+
+/// What the bootloader handed over (memory map, ramdisk, ACPI tables), after `init`
+pub fn boot_info() -> &'static BootInfo {
+    let boot_info = BOOT_INFO.load(core::sync::atomic::Ordering::SeqCst);
+    // SAFETY: set once from a `&'static BootInfo` by `init`, never changed afterwards
+    unsafe { boot_info.as_ref() }.expect("osel::init has not run yet")
 }
 
 static PANICKING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);

@@ -13,3 +13,4 @@ pub mod pit;
 pub mod memory;
 pub mod heap;
 pub mod exception;
+pub mod sync;

@@ -1,18 +1,15 @@
 //! cereal module provides serial port access methods
 
 use core::sync::atomic::{AtomicBool, Ordering};
-use spin::{Mutex, MutexGuard};
+use crate::sync::{IrqSpinlock, IrqSpinlockGuard};
 use uart_16550::{Config, Uart16550Tty, backend::PioBackend};
 
 #[doc(hidden)]
 pub fn _print(args: core::fmt::Arguments) {
     use core::fmt::Write;
-    // an interrupt handler printing while we hold the lock would deadlock
-    x86_64::instructions::interrupts::without_interrupts(|| {
-        if let Some(port) = port().as_mut() {
-            let _ = port.write_fmt(args);
-        }
-    });
+    if let Some(port) = port().as_mut() {
+        let _ = port.write_fmt(args);
+    }
 }
 
 /// Writes straight to COM1 without locks or initialization, for panics where the
@@ -56,14 +53,15 @@ macro_rules! serial_println {
 
 /// COM1, `None` when the machine has no working serial port (most laptops):
 /// printing to it is skipped then instead of failing
-pub static SERIAL1: Mutex<Option<Uart16550Tty<PioBackend>>> = Mutex::new(None);
+pub static SERIAL1: IrqSpinlock<Option<Uart16550Tty<PioBackend>>> = IrqSpinlock::new("SERIAL1", None);
 
 /// The port is probed once, on first use. Not a `lazy_static`: a panic during the
 /// probe would leave it half initialized and hang every later use, the panic path too.
 static PROBED: AtomicBool = AtomicBool::new(false);
 
-/// Locks COM1, probing it on the first call
-pub fn port() -> MutexGuard<'static, Option<Uart16550Tty<PioBackend>>> {
+/// Locks COM1 (and disables interrupts), probing it on the first call
+#[track_caller]
+pub fn port() -> IrqSpinlockGuard<'static, Option<Uart16550Tty<PioBackend>>> {
     let mut port = SERIAL1.lock();
     if !PROBED.swap(true, Ordering::SeqCst) {
         *port = unsafe { Uart16550Tty::new_port(0x3F8, Config::default()) }.ok();
@@ -75,8 +73,7 @@ pub fn port() -> MutexGuard<'static, Option<Uart16550Tty<PioBackend>>> {
 mod tests {
     #[test_case]
     fn test_serial_port_is_present_in_qemu() {
-        let present = x86_64::instructions::interrupts::without_interrupts(|| super::port().is_some());
-        assert!(present);
+        assert!(super::port().is_some());
     }
 
     #[test_case]

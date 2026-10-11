@@ -89,3 +89,11 @@ harness = false
 [[test]]
 name = "memory_reentrancy"
 harness = false
+
+[[test]]
+name = "init_twice"
+harness = false
+
+[[test]]
+name = "deadlock"
+harness = false

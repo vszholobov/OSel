@@ -1,12 +1,11 @@
 /// CPU interrupts module
 use crate::gdt;
 use crate::keyboard;
-use crate::println;
 use core::sync::atomic::{AtomicU64, Ordering};
 use osel_core::pit;
 use lazy_static::lazy_static;
 use pic8259::ChainedPics;
-use spin::Mutex;
+use crate::sync::IrqSpinlock;
 use x86_64::instructions::port::Port;
 use x86_64::registers::control::Cr2;
 use osel_core::exception::{Details, ExceptionReport, Frame};
@@ -16,7 +15,13 @@ use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, Pag
 pub const PIC_1_OFFSET: u8 = 32;
 pub const PIC_2_OFFSET: u8 = PIC_1_OFFSET + 8;
 
-pub static PICS: Mutex<ChainedPics> = Mutex::new(unsafe { ChainedPics::new(PIC_1_OFFSET, PIC_2_OFFSET) });
+static PICS: IrqSpinlock<ChainedPics> =
+    IrqSpinlock::new("PICS", unsafe { ChainedPics::new(PIC_1_OFFSET, PIC_2_OFFSET) });
+
+/// Runs `f` with the PICs locked (and interrupts off)
+pub fn with_pics<R>(f: impl FnOnce(&mut ChainedPics) -> R) -> R {
+    f(&mut PICS.lock())
+}
 
 #[derive(Debug, Clone, Copy)]
 #[repr(u8)]
@@ -43,14 +48,19 @@ lazy_static! {
         let mut idt = InterruptDescriptorTable::new();
         idt.breakpoint.set_handler_fn(breakpoint_handler);
         idt.debug.set_handler_fn(debug_handler);
-        idt.non_maskable_interrupt.set_handler_fn(non_maskable_interrupt_handler);
+        // NMI and machine check can arrive at any moment, even with a broken stack
+        unsafe {
+            idt.non_maskable_interrupt
+                .set_handler_fn(non_maskable_interrupt_handler)
+                .set_stack_index(gdt::NMI_IST_INDEX);
+            idt.machine_check.set_handler_fn(machine_check_handler).set_stack_index(gdt::MACHINE_CHECK_IST_INDEX);
+        }
         idt.overflow.set_handler_fn(overflow_handler);
         idt.bound_range_exceeded.set_handler_fn(bound_range_exceeded_handler);
         idt.device_not_available.set_handler_fn(device_not_available_handler);
         idt.invalid_tss.set_handler_fn(invalid_tss_handler);
         idt.x87_floating_point.set_handler_fn(x87_floating_point_handler);
         idt.alignment_check.set_handler_fn(alignment_check_handler);
-        idt.machine_check.set_handler_fn(machine_check_handler);
         idt.simd_floating_point.set_handler_fn(simd_floating_point_handler);
         idt.virtualization.set_handler_fn(virtualization_handler);
         idt.cp_protection_exception.set_handler_fn(control_protection_handler);
@@ -87,6 +97,10 @@ pub fn init_pics() {
     let (master_mask, slave_mask) = pit::pic_masks(&ENABLED_IRQS);
     let divisor = pit::divisor(TICK_HZ);
     let mut pics = PICS.lock();
+    // a byte left in the PS/2 controller (say, a key release from the boot menu) keeps
+    // IRQ 1 high; the PIC reset below then never sees a new edge and the keyboard
+    // stays silent forever
+    flush_keyboard_controller();
     unsafe {
         pics.initialize();
         // channel 0, low then high byte, rate generator
@@ -94,6 +108,19 @@ pub fn init_pics() {
         Port::<u8>::new(0x40).write(divisor as u8);
         Port::<u8>::new(0x40).write((divisor >> 8) as u8);
         pics.write_masks(master_mask, slave_mask);
+    }
+}
+
+/// Drops whatever waits in the PS/2 controller output buffer
+fn flush_keyboard_controller() {
+    let mut status = Port::<u8>::new(0x64);
+    let mut data = Port::<u8>::new(0x60);
+    // bounded: a broken controller may report a full buffer forever
+    for _ in 0..64 {
+        if unsafe { status.read() } & 1 == 0 {
+            break;
+        }
+        let _: u8 = unsafe { data.read() };
     }
 }
 
@@ -119,7 +146,8 @@ pub fn spurious_interrupts() -> u64 {
 
 extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
     BREAKPOINTS.fetch_add(1, Ordering::Relaxed);
-    println!("EXCEPTION: BREAKPOINT at {:#x}", stack_frame.instruction_pointer.as_u64());
+    // a breakpoint can hit code that holds the console lock: skip printing then
+    crate::avganec::try_print(format_args!("EXCEPTION: BREAKPOINT at {:#x}\n", stack_frame.instruction_pointer.as_u64()));
 }
 
 extern "x86-interrupt" fn double_fault_handler(stack_frame: InterruptStackFrame, error_code: u64) -> ! {
@@ -290,7 +318,7 @@ mod tests {
     #[test_case]
     fn test_pic_masks() {
         // the timer handler takes the same lock
-        let masks = x86_64::instructions::interrupts::without_interrupts(|| unsafe { PICS.lock().read_masks() });
+        let masks = with_pics(|pics| unsafe { pics.read_masks() });
         assert_eq!(masks, [0b1111_1100, 0b1111_1111]);
     }
 

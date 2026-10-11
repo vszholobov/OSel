@@ -6,19 +6,19 @@
 use crate::memory::{self, HEAP_SIZE, HEAP_START};
 use core::alloc::{GlobalAlloc, Layout};
 use osel_core::heap::FixedSizeBlockAllocator;
-use spin::Mutex;
+use crate::sync::IrqSpinlock;
 use x86_64::VirtAddr;
-use x86_64::instructions::interrupts;
 use x86_64::structures::paging::PageTableFlags;
 
 pub use osel_core::heap::BLOCK_SIZES;
 
 pub struct KernelAllocator {
-    inner: Mutex<FixedSizeBlockAllocator>,
+    inner: IrqSpinlock<FixedSizeBlockAllocator>,
 }
 
 #[global_allocator]
-static ALLOCATOR: KernelAllocator = KernelAllocator { inner: Mutex::new(FixedSizeBlockAllocator::new()) };
+static ALLOCATOR: KernelAllocator =
+    KernelAllocator { inner: IrqSpinlock::new("ALLOCATOR", FixedSizeBlockAllocator::new()) };
 
 /// Maps the heap pages and hands them to the allocator
 pub fn init_heap() -> Result<(), memory::MapRangeError> {
@@ -31,10 +31,10 @@ pub fn init_heap() -> Result<(), memory::MapRangeError> {
     Ok(())
 }
 
-/// Runs `f` with the heap allocator locked
+/// Runs `f` with the heap allocator locked (and interrupts off)
+#[track_caller]
 pub fn with_allocator<R>(f: impl FnOnce(&mut FixedSizeBlockAllocator) -> R) -> R {
-    // an interrupt handler allocating while we hold the lock would deadlock
-    interrupts::without_interrupts(|| f(&mut ALLOCATOR.inner.lock()))
+    f(&mut ALLOCATOR.inner.lock())
 }
 
 unsafe impl GlobalAlloc for KernelAllocator {
@@ -51,6 +51,7 @@ unsafe impl GlobalAlloc for KernelAllocator {
 mod tests {
     use super::*;
     use alloc::alloc::{alloc, dealloc};
+    use x86_64::instructions::interrupts;
     use alloc::boxed::Box;
     use alloc::vec::Vec;
 

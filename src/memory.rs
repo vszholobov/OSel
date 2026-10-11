@@ -3,10 +3,10 @@
 //! The address space layout and the frame allocator live in `osel_core::memory`.
 
 use bootloader_api::info::MemoryRegion;
-use spin::Mutex;
+use crate::sync::IrqSpinlock;
 use x86_64::VirtAddr;
 use x86_64::registers::control::Cr3;
-use x86_64::structures::paging::{FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, Size4KiB};
+use x86_64::structures::paging::{Mapper, OffsetPageTable, Page, PageTable, Size4KiB};
 
 pub use osel_core::memory::*;
 
@@ -15,7 +15,7 @@ pub struct Memory {
     pub frame_allocator: RegionFrameAllocator<'static>,
 }
 
-static MEMORY: Mutex<Option<Memory>> = Mutex::new(None);
+static MEMORY: IrqSpinlock<Option<Memory>> = IrqSpinlock::new("MEMORY", None);
 
 /// Level 4 entries of the lower half the bootloader left behind, cleared by `init`
 static mut LOWER_HALF_ENTRIES_CLEARED: usize = 0;
@@ -36,7 +36,7 @@ pub unsafe fn init(physical_memory_offset: VirtAddr, memory_regions: &'static [M
         MEMORY_REGIONS = memory_regions;
     }
     let mut mapper = unsafe { OffsetPageTable::new(level_4_table, physical_memory_offset) };
-    unmap_double_fault_stack_guard(&mut mapper);
+    unmap_interrupt_stack_guards(&mut mapper);
     let frame_allocator = unsafe { RegionFrameAllocator::new(memory_regions) };
     *MEMORY.lock() = Some(Memory { mapper, frame_allocator });
 }
@@ -56,30 +56,27 @@ fn clear_lower_half(level_4_table: &mut PageTable) -> usize {
     cleared
 }
 
-/// The double fault stack is a kernel static with a spare page below it: unmapping
+/// The interrupt stacks are kernel statics with a spare page below each: unmapping
 /// that page turns a stack overflow in the panic path into a fault, not memory corruption
-fn unmap_double_fault_stack_guard(mapper: &mut OffsetPageTable) {
-    let guard = Page::<Size4KiB>::containing_address(crate::gdt::double_fault_stack_guard());
-    // the frame stays allocated to the kernel image, it is just not reachable anymore
-    let (_, flush) = mapper.unmap(guard).expect("double fault stack guard page is not a 4 KiB page");
-    flush.flush();
+fn unmap_interrupt_stack_guards(mapper: &mut OffsetPageTable) {
+    for stack in crate::gdt::ist_stacks() {
+        let guard = Page::<Size4KiB>::containing_address(stack.guard);
+        // the frame stays allocated to the kernel image, it is just not reachable anymore
+        let (_, flush) = mapper.unmap(guard).expect("interrupt stack guard page is not a 4 KiB page");
+        flush.flush();
+    }
 }
 
 /// Number of frames the frame allocator can hand out in total, according to the memory map
 pub fn total_usable_frames() -> usize {
-    let regions = unsafe { MEMORY_REGIONS };
-    let mut allocator = unsafe { RegionFrameAllocator::new(regions) };
-    core::iter::from_fn(|| allocator.allocate_frame()).count()
+    RegionFrameAllocator::count_frames(unsafe { MEMORY_REGIONS })
 }
 
 /// Runs `f` with exclusive access to the page table and the frame allocator
+/// (and interrupts off). Nesting it is a deadlock, reported as a panic.
+#[track_caller]
 pub fn with_memory<R>(f: impl FnOnce(&mut Memory) -> R) -> R {
-    // page faults or other interrupts must not try to take the lock while we hold it
-    x86_64::instructions::interrupts::without_interrupts(|| {
-        // spinning here would hang forever with interrupts off, a panic at least shows where
-        let mut memory = MEMORY.try_lock().expect("with_memory is not reentrant");
-        f(memory.as_mut().expect("memory is not initialized"))
-    })
+    f(MEMORY.lock().as_mut().expect("memory is not initialized"))
 }
 
 unsafe fn active_level_4_table(physical_memory_offset: VirtAddr) -> &'static mut PageTable {
@@ -144,12 +141,13 @@ mod tests {
     }
 
     #[test_case]
-    fn test_double_fault_stack_guard_is_unmapped() {
-        let guard = crate::gdt::double_fault_stack_guard();
+    fn test_interrupt_stack_guards_are_unmapped() {
         let translate = |address: VirtAddr| with_memory(|m| m.mapper.translate_addr(address));
-        assert!(translate(guard).is_none(), "guard page is mapped");
-        assert!(translate(guard + 4096u64).is_some(), "the stack itself is not mapped");
-        assert!(translate(crate::gdt::double_fault_stack_top() - 1u64).is_some());
+        for stack in crate::gdt::ist_stacks() {
+            assert!(translate(stack.guard).is_none(), "guard page of IST {} is mapped", stack.index);
+            assert!(translate(stack.guard + 4096u64).is_some(), "IST {} is not mapped", stack.index);
+            assert!(translate(stack.top - 1u64).is_some());
+        }
     }
 
     #[test_case]

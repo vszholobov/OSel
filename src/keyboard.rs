@@ -1,15 +1,14 @@
 //! keyboard module decodes PS/2 scancodes and buffers typed characters
 
 use osel_core::keyboard::{RingBuffer, ScancodeDecoder};
-use spin::Mutex;
-use x86_64::instructions::interrupts;
+use crate::sync::IrqSpinlock;
 
 pub const BUFFER_SIZE: usize = 64;
 
-static DECODER: Mutex<ScancodeDecoder> = Mutex::new(ScancodeDecoder::new());
+static DECODER: IrqSpinlock<ScancodeDecoder> = IrqSpinlock::new("DECODER", ScancodeDecoder::new());
 
 /// Typed characters, filled by the keyboard interrupt handler
-static BUFFER: Mutex<RingBuffer<char, BUFFER_SIZE>> = Mutex::new(RingBuffer::new('\0'));
+static BUFFER: IrqSpinlock<RingBuffer<char, BUFFER_SIZE>> = IrqSpinlock::new("BUFFER", RingBuffer::new('\0'));
 
 /// Called from the keyboard interrupt handler with a raw scancode from port 0x60
 pub fn handle_scancode(scancode: u8) {
@@ -21,13 +20,12 @@ pub fn handle_scancode(scancode: u8) {
 
 /// Takes the oldest typed character, if any
 pub fn pop_char() -> Option<char> {
-    // the buffer is shared with the interrupt handler, so it must not fire while we hold the lock
-    interrupts::without_interrupts(|| BUFFER.lock().pop())
+    BUFFER.lock().pop()
 }
 
 /// Number of characters lost because nobody read them in time
 pub fn dropped_chars() -> usize {
-    interrupts::without_interrupts(|| BUFFER.lock().dropped())
+    BUFFER.lock().dropped()
 }
 
 #[cfg(test)]
