@@ -5,6 +5,8 @@
 #![test_runner(crate::testosterone::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
+extern crate alloc;
+
 #[cfg(not(test))]
 #[allow(unused_imports)]
 use crate::testosterone::test_main;
@@ -17,6 +19,7 @@ use bootloader_api::config::Mapping;
 use bootloader_api::{BootInfo, BootloaderConfig};
 use x86_64::VirtAddr;
 
+pub mod allocator;
 pub mod avganec;
 pub mod cereal;
 pub mod qemuno;
@@ -48,6 +51,7 @@ pub fn init(boot_info: &'static mut BootInfo) {
         .as_ref()
         .expect("bootloader did not map physical memory");
     unsafe { memory::init(VirtAddr::new(physical_memory_offset), &boot_info.memory_regions) };
+    allocator::init_heap().expect("heap initialization failed");
 
     interrupts::init_pics();
     x86_64::instructions::interrupts::enable();
