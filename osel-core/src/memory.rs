@@ -109,6 +109,9 @@ fn align_up(address: u64) -> Option<u64> {
 pub enum MapRangeError {
     /// The range overflows the address space or crosses the non-canonical hole
     InvalidRange,
+    /// User pages must be in the lower half and user accessible, kernel pages must not
+    /// be: a user accessible kernel page would also open the kernel's shared page tables
+    PermissionDenied,
     Map(MapToError<Size4KiB>),
 }
 
@@ -132,13 +135,19 @@ pub fn map_range(
     }
     let last = start.as_u64().checked_add(size - 1).ok_or(MapRangeError::InvalidRange)?;
     let last = VirtAddr::try_new(last).map_err(|_| MapRangeError::InvalidRange)?;
-    if (start.as_u64() < USER_END) != (last.as_u64() < USER_END) {
+    let user_range = start.as_u64() < USER_END;
+    if user_range != (last.as_u64() < USER_END) {
         return Err(MapRangeError::InvalidRange);
+    }
+    if user_range != flags.contains(PageTableFlags::USER_ACCESSIBLE) {
+        return Err(MapRangeError::PermissionDenied);
     }
     let first = Page::<Size4KiB>::containing_address(start);
     let last = Page::<Size4KiB>::containing_address(last);
     for page in Page::range_inclusive(first, last) {
         let frame = frame_allocator.allocate_frame().ok_or(MapToError::FrameAllocationFailed)?;
+        // `map_to` refuses pages that are already mapped, and the CPU never caches
+        // not present translations, so there is nothing stale to flush
         unsafe { mapper.map_to(page, frame, flags, frame_allocator)?.ignore() };
     }
     Ok(())
@@ -346,8 +355,9 @@ mod tests {
         let mut mapper = host_mapper();
         let mut frames = HostFrames { handed_out: 0, limit: 100 };
         let start = VirtAddr::new(0x40_0000);
-        map_range(&mut mapper, &mut frames, start, PAGE_SIZE, PageTableFlags::PRESENT).unwrap();
-        let error = map_range(&mut mapper, &mut frames, start, PAGE_SIZE, PageTableFlags::PRESENT).unwrap_err();
+        let user = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
+        map_range(&mut mapper, &mut frames, start, PAGE_SIZE, user).unwrap();
+        let error = map_range(&mut mapper, &mut frames, start, PAGE_SIZE, user).unwrap_err();
         assert!(matches!(error, MapRangeError::Map(MapToError::PageAlreadyMapped(_))), "{error:?}");
     }
 
@@ -355,9 +365,8 @@ mod tests {
     fn map_range_reports_out_of_frames() {
         let mut mapper = host_mapper();
         let mut frames = HostFrames { handed_out: 0, limit: 3 };
-        let error =
-            map_range(&mut mapper, &mut frames, VirtAddr::new(0x40_0000), 4 * PAGE_SIZE, PageTableFlags::PRESENT)
-                .unwrap_err();
+        let user = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
+        let error = map_range(&mut mapper, &mut frames, VirtAddr::new(0x40_0000), 4 * PAGE_SIZE, user).unwrap_err();
         assert!(matches!(error, MapRangeError::Map(MapToError::FrameAllocationFailed)), "{error:?}");
     }
 
@@ -394,6 +403,57 @@ mod tests {
         let past_the_end = map_range(&mut mapper, &mut frames, VirtAddr::new(u64::MAX - PAGE_SIZE + 1), 2 * PAGE_SIZE, flags);
         assert!(matches!(past_the_end, Err(MapRangeError::InvalidRange)));
         assert_eq!(frames.handed_out, 0, "nothing is mapped for a bad range");
+    }
+
+    /// Nikka 2-mm-5 `kernel_and_user_are_separated`
+    #[test]
+    fn kernel_and_user_are_separated() {
+        let mut mapper = host_mapper();
+        let mut frames = HostFrames { handed_out: 0, limit: 100 };
+        let kernel = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+        let user = kernel | PageTableFlags::USER_ACCESSIBLE;
+        let (user_page, kernel_page) = (VirtAddr::new(0x40_0000), VirtAddr::new(HEAP_START));
+        for (start, flags) in [(kernel_page, user), (user_page, kernel), (VirtAddr::new(USER_END - PAGE_SIZE), kernel)] {
+            let result = map_range(&mut mapper, &mut frames, start, PAGE_SIZE, flags);
+            assert!(matches!(result, Err(MapRangeError::PermissionDenied)), "{start:?} {flags:?}");
+        }
+        assert_eq!(frames.handed_out, 0, "nothing mapped for refused requests");
+        map_range(&mut mapper, &mut frames, user_page, PAGE_SIZE, user).unwrap();
+        map_range(&mut mapper, &mut frames, kernel_page, PAGE_SIZE, kernel).unwrap();
+    }
+
+    /// Nikka 2-mm-4 `no_excessive_intermediate_flags`: parent entries only get the
+    /// flags that make sense on all levels, NX on a parent would block the whole subtree
+    #[test]
+    fn intermediate_entries_get_only_access_flags() {
+        let mut mapper = host_mapper();
+        let mut frames = HostFrames { handed_out: 0, limit: 100 };
+        let flags = PageTableFlags::PRESENT
+            | PageTableFlags::WRITABLE
+            | PageTableFlags::NO_EXECUTE
+            | PageTableFlags::GLOBAL
+            | PageTableFlags::NO_CACHE;
+        let start = VirtAddr::new(HEAP_START);
+        map_range(&mut mapper, &mut frames, start, PAGE_SIZE, flags).unwrap();
+        let level_4_entry = &mapper.level_4_table()[start.p4_index()];
+        assert_eq!(level_4_entry.flags(), PageTableFlags::PRESENT | PageTableFlags::WRITABLE);
+    }
+
+    /// Nikka 2-mm-4 `check_map_intermediate`: a second mapping under the same parents
+    /// reuses the tables and widens their flags
+    #[test]
+    fn intermediate_entries_are_reused_and_widened() {
+        let mut mapper = host_mapper();
+        let mut frames = HostFrames { handed_out: 0, limit: 100 };
+        let read_only = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
+        let start = VirtAddr::new(0x40_0000);
+        map_range(&mut mapper, &mut frames, start, PAGE_SIZE, read_only).unwrap();
+        assert_eq!(mapper.level_4_table()[start.p4_index()].flags(), read_only);
+        let tables_and_frame = frames.handed_out;
+        map_range(&mut mapper, &mut frames, start + PAGE_SIZE, PAGE_SIZE, read_only | PageTableFlags::WRITABLE)
+            .unwrap();
+        assert_eq!(frames.handed_out, tables_and_frame + 1, "only a data frame, the tables are shared");
+        assert_eq!(mapper.level_4_table()[start.p4_index()].flags(), read_only | PageTableFlags::WRITABLE);
     }
 
     #[test]

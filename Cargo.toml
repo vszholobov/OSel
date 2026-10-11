@@ -97,3 +97,6 @@ harness = false
 [[test]]
 name = "deadlock"
 harness = false
+
+[[test]]
+name = "leak_detection"

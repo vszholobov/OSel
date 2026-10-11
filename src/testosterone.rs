@@ -17,9 +17,19 @@ where
 {
     fn run(&self) {
         serial_print!("{}...\t", core::any::type_name::<T>());
+        // every test must give back what it allocated (Nikka's forbid_leaks)
+        let heap_before = heap_in_use();
         self();
+        let heap_after = heap_in_use();
+        if heap_after != heap_before {
+            panic!("the test leaked {} heap bytes", heap_after as isize - heap_before as isize);
+        }
         serial_println!("[ok]");
     }
+}
+
+fn heap_in_use() -> usize {
+    crate::allocator::with_allocator(|allocator| allocator.in_use())
 }
 
 #[allow(dead_code)]

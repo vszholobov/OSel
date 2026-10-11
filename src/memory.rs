@@ -157,6 +157,67 @@ mod tests {
         assert!(x86_64::instructions::interrupts::are_enabled(), "interrupts are back on");
     }
 
+    /// Nikka 2-mm-4 `tlb_flush`: remapping a page shows the new frame right away
+    #[test_case]
+    fn test_remapped_page_shows_the_new_frame() {
+        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(SCRATCH + 0x1000));
+        let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
+        let marked = |mark: u64| {
+            with_memory(|m| {
+                let frame = m.frame_allocator.allocate_frame().unwrap();
+                let through_phys = m.mapper.phys_offset() + frame.start_address().as_u64();
+                unsafe { through_phys.as_mut_ptr::<u64>().write_volatile(mark) };
+                frame
+            })
+        };
+        let (old, new) = (marked(1111111), marked(2222222));
+        let read = || unsafe { page.start_address().as_ptr::<u64>().read_volatile() };
+
+        with_memory(|m| unsafe { m.mapper.map_to(page, old, flags, &mut m.frame_allocator) }.unwrap().flush());
+        assert_eq!(read(), 1111111);
+        with_memory(|m| m.mapper.unmap(page).unwrap().1.flush());
+        with_memory(|m| unsafe { m.mapper.map_to(page, new, flags, &mut m.frame_allocator) }.unwrap().flush());
+        assert_eq!(read(), 2222222, "a stale TLB entry still points to the old frame");
+        with_memory(|m| m.mapper.unmap(page).unwrap().1.flush());
+    }
+
+    /// Nikka 2-mm-4 `garbage_after_unmap`: an unmapped entry is all zero, not just not present
+    #[test_case]
+    fn test_unmapped_entry_is_cleared() {
+        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(SCRATCH + 0x2000));
+        let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
+        with_memory(|m| {
+            let frame = m.frame_allocator.allocate_frame().unwrap();
+            unsafe { m.mapper.map_to(page, frame, flags, &mut m.frame_allocator) }.unwrap().flush();
+            m.mapper.unmap(page).unwrap().1.flush();
+            // walk down to the level 1 table through the physical memory mapping
+            let offset = m.mapper.phys_offset();
+            let mut table: &PageTable = m.mapper.level_4_table();
+            for index in [page.p4_index(), page.p3_index(), page.p2_index()] {
+                let next = table[index].addr();
+                table = unsafe { &*(offset + next.as_u64()).as_ptr::<PageTable>() };
+            }
+            assert_eq!(table[page.p1_index()].addr().as_u64(), 0);
+            assert!(table[page.p1_index()].is_unused(), "{:?}", table[page.p1_index()]);
+        });
+    }
+
+    /// Nikka 2-mm-4 `huge_page`: the physical memory mapping uses 2 MiB pages, translation
+    /// through them gives the exact address
+    #[test_case]
+    fn test_translation_through_huge_pages() {
+        use x86_64::structures::paging::mapper::{MappedFrame, TranslateResult};
+        let phys = 0x20_1234u64;
+        let virt = with_memory(|m| m.mapper.phys_offset()) + phys;
+        match with_memory(|m| m.mapper.translate(virt)) {
+            TranslateResult::Mapped { frame, offset, .. } => {
+                assert!(matches!(frame, MappedFrame::Size2MiB(_)), "{:?}", frame);
+                assert_eq!(frame.start_address().as_u64() + offset, phys);
+            }
+            other => panic!("{:?}", other),
+        }
+    }
+
     #[test_case]
     fn test_lower_half_is_empty() {
         let used = with_memory(|m| m.mapper.level_4_table().iter().take(256).filter(|e| !e.is_unused()).count());

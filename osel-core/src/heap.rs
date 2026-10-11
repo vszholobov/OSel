@@ -31,6 +31,11 @@ pub fn list_index(layout: &Layout) -> Option<usize> {
     BLOCK_SIZES.iter().position(|&s| s >= required_block_size)
 }
 
+/// Heap bytes a block really takes: the linked list allocator never hands out less than 16
+fn block_cost(size: usize) -> usize {
+    size.max(16)
+}
+
 fn block_layout(index: usize) -> Layout {
     Layout::from_size_align(BLOCK_SIZES[index], BLOCK_SIZES[index]).unwrap()
 }
@@ -54,10 +59,24 @@ impl FixedSizeBlockAllocator {
     /// Returns a block for `layout` or null when the heap is exhausted
     pub fn allocate(&mut self, layout: Layout) -> *mut u8 {
         let ptr = self.try_allocate(layout);
-        if !ptr.is_null() || self.reclaim_free_blocks() == 0 {
+        // reclaiming can't help a request bigger than all free memory together
+        if !ptr.is_null() || self.fallback_free() + self.cached_bytes() < layout.size() {
+            return ptr;
+        }
+        if self.reclaim_free_blocks() == 0 {
             return ptr;
         }
         self.try_allocate(layout)
+    }
+
+    /// Bytes held by cached free blocks, as the linked list allocator counts them
+    pub fn cached_bytes(&self) -> usize {
+        BLOCK_SIZES.iter().zip(self.free_blocks).map(|(&size, count)| block_cost(size) * count).sum()
+    }
+
+    /// Bytes handed out and not freed yet, the number to compare for leak checks
+    pub fn in_use(&self) -> usize {
+        self.size() - self.fallback_free() - self.cached_bytes()
     }
 
     /// # Safety
@@ -419,6 +438,30 @@ mod tests {
             arena.free(ptr, 2048, 8);
         }
         assert!(!arena.alloc(8, 8).is_null());
+    }
+
+    #[test]
+    fn impossible_requests_keep_the_cache() {
+        let mut arena = Arena::new(ARENA_SIZE);
+        let blocks: Vec<*mut u8> = (0..100).map(|_| arena.alloc(64, 8)).collect();
+        for &ptr in &blocks {
+            arena.free(ptr, 64, 8);
+        }
+        assert!(arena.alloc(ARENA_SIZE * 2, 8).is_null());
+        assert_eq!(arena.allocator.free_blocks()[3], 100, "the cache was flushed for nothing");
+    }
+
+    #[test]
+    fn usage_accounting() {
+        let mut arena = Arena::new(ARENA_SIZE);
+        assert_eq!(arena.allocator.in_use(), 0);
+        let small = arena.alloc(8, 8);
+        let big = arena.alloc(5000, 8);
+        assert_eq!(arena.allocator.in_use(), 16 + 5000);
+        arena.free(small, 8, 8);
+        assert_eq!(arena.allocator.cached_bytes(), 16);
+        arena.free(big, 5000, 8);
+        assert_eq!(arena.allocator.in_use(), 0, "nothing leaks after freeing everything");
     }
 
     #[test]
