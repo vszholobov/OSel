@@ -14,7 +14,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use bootloader_api::{BootInfo, entry_point};
 use core::panic::PanicInfo;
-use osel::allocator::HEAP_SIZE;
+use osel::memory::HEAP_SIZE;
 
 entry_point!(main, config = &osel::BOOTLOADER_CONFIG);
 

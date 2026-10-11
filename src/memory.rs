@@ -1,26 +1,24 @@
 //! memory module manages page tables and physical frames
 //!
-//! Virtual address space layout:
-//! - lower half (`0x0000_...`) is left free for user programs;
-//! - `0xffff_8000_0000_0000..KERNEL_DYNAMIC_END`: everything the bootloader places itself
-//!   (kernel image, stack, boot info, framebuffer, physical memory mapping);
-//! - `HEAP_START..`: kernel heap, see `allocator`.
+//! The address space layout and the frame allocator live in `osel_core::memory`.
 
-use bootloader_api::info::{MemoryRegion, MemoryRegionKind};
+use bootloader_api::info::MemoryRegion;
 use spin::Mutex;
+use x86_64::VirtAddr;
 use x86_64::registers::control::Cr3;
-use x86_64::structures::paging::{FrameAllocator, OffsetPageTable, PageTable, PhysFrame, Size4KiB};
-use x86_64::{PhysAddr, VirtAddr};
+use x86_64::structures::paging::{OffsetPageTable, PageTable};
 
-pub const KERNEL_DYNAMIC_START: u64 = 0xffff_8000_0000_0000;
-pub const KERNEL_DYNAMIC_END: u64 = 0xffff_bfff_ffff_f000;
+pub use osel_core::memory::*;
 
 pub struct Memory {
     pub mapper: OffsetPageTable<'static>,
-    pub frame_allocator: BootInfoFrameAllocator,
+    pub frame_allocator: RegionFrameAllocator<'static>,
 }
 
 static MEMORY: Mutex<Option<Memory>> = Mutex::new(None);
+
+/// Level 4 entries of the lower half the bootloader left behind, cleared by `init`
+static mut LOWER_HALF_ENTRIES_CLEARED: usize = 0;
 
 /// Takes over the active page table and the usable memory reported by the bootloader
 ///
@@ -29,16 +27,34 @@ static MEMORY: Mutex<Option<Memory>> = Mutex::new(None);
 /// and the function must be called only once.
 pub unsafe fn init(physical_memory_offset: VirtAddr, memory_regions: &'static [MemoryRegion]) {
     let level_4_table = unsafe { active_level_4_table(physical_memory_offset) };
+    let cleared = clear_lower_half(level_4_table);
+    unsafe { LOWER_HALF_ENTRIES_CLEARED = cleared };
     let mapper = unsafe { OffsetPageTable::new(level_4_table, physical_memory_offset) };
-    let frame_allocator = unsafe { BootInfoFrameAllocator::new(memory_regions) };
+    let frame_allocator = unsafe { RegionFrameAllocator::new(memory_regions) };
     *MEMORY.lock() = Some(Memory { mapper, frame_allocator });
+}
+
+/// The bootloader identity maps a couple of its own pages (GDT, context switch code)
+/// in the lower half. Nothing of the kernel lives there, and the lower half belongs
+/// to user programs, so everything is removed. Returns the number of removed entries.
+fn clear_lower_half(level_4_table: &mut PageTable) -> usize {
+    let mut cleared = 0;
+    for entry in level_4_table.iter_mut().take(256) {
+        if !entry.is_unused() {
+            entry.set_unused();
+            cleared += 1;
+        }
+    }
+    x86_64::instructions::tlb::flush_all();
+    cleared
 }
 
 /// Runs `f` with exclusive access to the page table and the frame allocator
 pub fn with_memory<R>(f: impl FnOnce(&mut Memory) -> R) -> R {
     // page faults or other interrupts must not try to take the lock while we hold it
     x86_64::instructions::interrupts::without_interrupts(|| {
-        let mut memory = MEMORY.lock();
+        // spinning here would hang forever with interrupts off, a panic at least shows where
+        let mut memory = MEMORY.try_lock().expect("with_memory is not reentrant");
         f(memory.as_mut().expect("memory is not initialized"))
     })
 }
@@ -49,53 +65,13 @@ unsafe fn active_level_4_table(physical_memory_offset: VirtAddr) -> &'static mut
     unsafe { &mut *virt.as_mut_ptr() }
 }
 
-/// Hands out usable physical frames one by one, never reuses them
-pub struct BootInfoFrameAllocator {
-    memory_regions: &'static [MemoryRegion],
-    region: usize,
-    next: PhysAddr,
-}
-
-impl BootInfoFrameAllocator {
-    /// # Safety
-    /// Frames of regions marked usable must really be unused.
-    pub unsafe fn new(memory_regions: &'static [MemoryRegion]) -> Self {
-        BootInfoFrameAllocator {
-            memory_regions,
-            region: 0,
-            // keep the zero frame out: a zero physical address usually means a bug
-            next: PhysAddr::new(0x1000),
-        }
-    }
-
-    /// Number of usable bytes reported by the bootloader
-    pub fn usable_memory(&self) -> u64 {
-        self.memory_regions
-            .iter()
-            .filter(|r| r.kind == MemoryRegionKind::Usable)
-            .map(|r| r.end - r.start)
-            .sum()
-    }
-}
-
-unsafe impl FrameAllocator<Size4KiB> for BootInfoFrameAllocator {
-    fn allocate_frame(&mut self) -> Option<PhysFrame> {
-        while let Some(region) = self.memory_regions.get(self.region) {
-            let start = PhysAddr::new(region.start).align_up(4096u64).max(self.next);
-            if region.kind == MemoryRegionKind::Usable && start + 4096u64 <= PhysAddr::new(region.end) {
-                self.next = start + 4096u64;
-                return Some(PhysFrame::containing_address(start));
-            }
-            self.region += 1;
-        }
-        None
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use x86_64::structures::paging::{Mapper, Page, PageTableFlags, Translate};
+    use x86_64::structures::paging::{FrameAllocator, Mapper, Page, PageTableFlags, Size4KiB, Translate};
+
+    /// A free spot after the heap for test mappings
+    const SCRATCH: u64 = HEAP_START + HEAP_SIZE + 0x10_0000;
 
     #[test_case]
     fn test_translate_kernel_address() {
@@ -110,7 +86,7 @@ mod tests {
 
     #[test_case]
     fn test_map_page() {
-        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(0x1234_5000));
+        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(SCRATCH));
         let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
         let frame = with_memory(|m| {
             let frame = m.frame_allocator.allocate_frame().expect("out of frames");
@@ -126,14 +102,50 @@ mod tests {
         assert_eq!(unsafe { through_phys.as_ptr::<u64>().read_volatile() }, 0xf00d_cafe);
 
         with_memory(|m| m.mapper.unmap(page).expect("unmap failed").1.flush());
+        assert!(with_memory(|m| m.mapper.translate_addr(page.start_address())).is_none());
     }
 
     #[test_case]
-    fn test_frames_are_distinct() {
+    fn test_frames_are_distinct_and_above_low_memory() {
         let (a, b) = with_memory(|m| {
             (m.frame_allocator.allocate_frame().unwrap(), m.frame_allocator.allocate_frame().unwrap())
         });
         assert_ne!(a, b);
-        assert_ne!(a.start_address().as_u64(), 0);
+        for frame in [a, b] {
+            assert!(frame.start_address().as_u64() >= LOW_MEMORY_END, "{:?}", frame);
+        }
+    }
+
+    #[test_case]
+    fn test_lower_half_is_empty() {
+        let used = with_memory(|m| m.mapper.level_4_table().iter().take(256).filter(|e| !e.is_unused()).count());
+        assert_eq!(used, 0, "lower half level 4 entries in use");
+        assert!(unsafe { LOWER_HALF_ENTRIES_CLEARED } > 0, "the bootloader left nothing to clear?");
+    }
+
+    #[test_case]
+    fn test_heap_has_unmapped_neighbours() {
+        let translate = |address: u64| with_memory(|m| m.mapper.translate_addr(VirtAddr::new(address)));
+        assert!(translate(HEAP_START).is_some());
+        assert!(translate(HEAP_START + HEAP_SIZE - 1).is_some());
+        assert!(translate(HEAP_START - 1).is_none(), "page before the heap is mapped");
+        assert!(translate(HEAP_START + HEAP_SIZE).is_none(), "page after the heap is mapped");
+    }
+
+    #[test_case]
+    fn test_physical_memory_mapping_covers_low_4_gib() {
+        // the bootloader maps at least 4 GiB, so device memory (APIC, PCI) is reachable
+        let phys_offset = with_memory(|m| m.mapper.phys_offset());
+        for phys in [0u64, 0xfee0_0000, 0xffff_f000] {
+            let virt = phys_offset + phys;
+            assert!(with_memory(|m| m.mapper.translate_addr(virt)).is_some(), "{:#x}", phys);
+        }
+    }
+
+    #[test_case]
+    fn test_with_memory_is_not_reentrant() {
+        // the lock is free again after a call
+        with_memory(|_| {});
+        with_memory(|_| {});
     }
 }

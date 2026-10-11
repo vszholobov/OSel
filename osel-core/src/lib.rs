@@ -10,3 +10,5 @@ extern crate alloc;
 pub mod console;
 pub mod keyboard;
 pub mod pit;
+pub mod memory;
+pub mod heap;

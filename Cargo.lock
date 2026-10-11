@@ -83,7 +83,6 @@ dependencies = [
  "linked_list_allocator",
  "noto-sans-mono-bitmap",
  "pc-keyboard",
- "spin 0.5.2",
  "x86_64",
 ]
 
