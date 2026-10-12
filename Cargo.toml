@@ -4,11 +4,20 @@ description = "OSel operating system"
 version = "0.1.0"
 edition = "2024"
 
+[workspace]
+members = ["osel-core"]
+# the runner is started by a nested cargo while the kernel build holds target/
+exclude = ["runner"]
+
 [dependencies]
+osel-core = { path = "osel-core" }
 bootloader_api = "0.11.17"
 spin = "0.5.2"
 x86_64 = "0.15.5"
 uart_16550 = "0.6.0"
+pic8259 = "0.11"
+pc-keyboard = "0.9"
+linked_list_allocator = "0.10"
 
 [dependencies.noto-sans-mono-bitmap]
 version = "0.3.2"
@@ -32,3 +41,62 @@ doctest = false
 [[test]]
 name = "stack_overflow"
 harness = false
+
+[[test]]
+name = "panic_screen"
+harness = false
+
+[[test]]
+name = "divide_error"
+harness = false
+
+[[test]]
+name = "invalid_opcode"
+harness = false
+
+[[test]]
+name = "general_protection"
+harness = false
+
+[[test]]
+name = "unhandled_vector"
+harness = false
+
+[[test]]
+name = "double_fault"
+harness = false
+
+[[test]]
+name = "heap_oom"
+harness = false
+
+[[test]]
+name = "panic_while_printing"
+harness = false
+
+[[test]]
+name = "nested_panic"
+harness = false
+
+[[test]]
+name = "overflow"
+harness = false
+
+[[test]]
+name = "write_protection"
+harness = false
+
+[[test]]
+name = "memory_reentrancy"
+harness = false
+
+[[test]]
+name = "init_twice"
+harness = false
+
+[[test]]
+name = "deadlock"
+harness = false
+
+[[test]]
+name = "leak_detection"

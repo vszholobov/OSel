@@ -2,4 +2,9 @@
 target = "x86_64-unknown-none"
 
 [target.x86_64-unknown-none]
-runner = "cargo run --quiet --manifest-path runner/Cargo.toml --target host-tuple --"
+runner = "runner/run.sh"
+
+[alias]
+# host unit tests, no QEMU needed
+test-core = "test -p osel-core --target host-tuple"
+test-runner = "test --manifest-path runner/Cargo.toml --target host-tuple"

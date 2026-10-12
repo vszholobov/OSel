@@ -1,4 +1,6 @@
 [toolchain]
-channel = "nightly"
+# pinned so that CI and local builds match, bumped by hand after the weekly
+# latest-nightly check in CI passes
+channel = "nightly-2026-10-11"
 components = ["rust-src", "llvm-tools-preview"]
 targets = ["x86_64-unknown-none"]
