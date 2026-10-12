@@ -1,0 +1,55 @@
+title: OSel
+href: index.md
+items:
+  - name: Пользователю
+    expanded: true
+    items:
+      - href: start/quickstart.md
+      - href: start/usb.md
+      - href: start/crash-report.md
+  - name: Рецепты
+    items:
+      - href: guides/testing.md
+      - href: guides/debugging.md
+      - href: guides/troubleshooting.md
+      - href: guides/toolchain-and-ci.md
+      - href: guides/release.md
+      - href: guides/writing-docs.md
+  - name: Как устроено
+    items:
+      - href: architecture/overview.md
+      - href: architecture/testing.md
+      - name: Ядро
+        items:
+          - href: architecture/core/memory.md
+          - href: architecture/core/interrupts.md
+          - href: architecture/core/locking.md
+      - name: Драйверы
+        items:
+          - href: architecture/drivers/console.md
+          - href: architecture/drivers/serial.md
+          - href: architecture/drivers/keyboard.md
+  - name: Справочник
+    items:
+      - href: reference/runner.md
+      - href: reference/vectors.md
+      - name: Машины
+        items:
+          - href: reference/hardware/samsung-np530u4b.md
+          - href: reference/hardware/acer-nitro.md
+  - name: Решения
+    items:
+      - href: decisions/index.md
+      - href: decisions/0001-bootloader-0.11-and-uefi.md
+      - href: decisions/0002-osel-core-host-tests.md
+      - href: decisions/0003-irq-spinlock.md
+      - href: decisions/0004-pinned-nightly.md
+      - href: decisions/0005-linux-abi-for-go.md
+      - href: decisions/0006-higher-half-kernel.md
+  - name: Планы
+    items:
+      - href: roadmap.md
+      - href: design/stage-2-user-mode.md
+      - href: design/tetris.md
+      - href: debt.md
+      - href: nikka.md

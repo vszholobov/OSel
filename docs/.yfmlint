@@ -1,0 +1,4 @@
+# Lint rules of the docs build, see https://diplodoc.com/docs/ru/project/lint
+log-levels:
+  YFM003: 'error' # Link is unreachable
+  YFM010: 'error' # Autotitle anchor is missed

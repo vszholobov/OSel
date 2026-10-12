@@ -7,7 +7,7 @@ edition = "2024"
 [workspace]
 members = ["osel-core"]
 # the runner is started by a nested cargo while the kernel build holds target/
-exclude = ["runner"]
+exclude = ["runner", "tools/docs-check"]
 
 [dependencies]
 osel-core = { path = "osel-core" }
@@ -100,3 +100,7 @@ harness = false
 
 [[test]]
 name = "leak_detection"
+
+[[test]]
+name = "hv_injection"
+harness = false

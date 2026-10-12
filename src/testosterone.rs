@@ -108,9 +108,14 @@ pub fn expect_panic(info: &PanicInfo, expected: &[&str]) -> ! {
         exit_qemu(QemuExitCode::Failed);
     }
     let screen_ok = avganec::with_console(|console| {
-        let header = "OSel crashed :(";
+        let shows = |row: usize, text: &str| {
+            text.chars().enumerate().all(|(i, c)| console.cell_shows_in(row, i, c, Color::WHITE, Color::RED))
+        };
+        let mut version = FixedBuf::<64>::new();
+        let _ = write!(version, "OSel {}, commit {}", crate::VERSION, crate::COMMIT);
         console.read_pixel(0, console.info().height - 1) == Some(Color::RED)
-            && header.chars().enumerate().all(|(i, c)| console.cell_shows_in(0, i, c, Color::WHITE, Color::RED))
+            && shows(0, "OSel crashed :(")
+            && shows(1, version.as_str())
     });
     if screen_ok == Some(false) {
         fail("the panic screen does not show the crash");

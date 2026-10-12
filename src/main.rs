@@ -15,7 +15,7 @@ entry_point!(kernel_main, config = &osel::BOOTLOADER_CONFIG);
 
 fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     osel::avganec::init(boot_info.framebuffer.take());
-    println!("OSel woke up!");
+    println!("OSel {} (commit {}) woke up!", osel::VERSION, osel::COMMIT);
     osel::init(boot_info);
     #[cfg(test)]
     test_main();

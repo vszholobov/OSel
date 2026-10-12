@@ -85,12 +85,12 @@ pub fn panic_screen(info: &PanicInfo) -> bool {
     if let Some(console) = WRITER.lock().as_mut() {
         console.set_colors(Color::WHITE, Color::RED);
         console.clear();
-        let _ = write!(console, "OSel crashed :(\n\n{}\n", info);
+        let _ = write!(console, "OSel crashed :(\nOSel {}, commit {}\n\n{}\n", crate::VERSION, crate::COMMIT, info);
     }
     // the framebuffer is never read back by the kernel, make sure the writes happen
     core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
     unsafe { crate::cereal::SERIAL1.force_unlock() };
-    crate::serial_println!("OSel crashed: {}", info);
+    crate::serial_println!("OSel {} (commit {}) crashed: {}", crate::VERSION, crate::COMMIT, info);
     true
 }
 

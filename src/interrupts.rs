@@ -65,6 +65,8 @@ lazy_static! {
         idt.virtualization.set_handler_fn(virtualization_handler);
         idt.cp_protection_exception.set_handler_fn(control_protection_handler);
         idt.security_exception.set_handler_fn(security_exception_handler);
+        idt.hv_injection_exception.set_handler_fn(hv_injection_exception_handler);
+        idt.vmm_communication_exception.set_handler_fn(vmm_communication_exception_handler);
         idt.divide_error.set_handler_fn(divide_error_handler);
         idt.invalid_opcode.set_handler_fn(invalid_opcode_handler);
         idt.segment_not_present.set_handler_fn(segment_not_present_handler);
@@ -204,6 +206,14 @@ extern "x86-interrupt" fn control_protection_handler(stack_frame: InterruptStack
 
 extern "x86-interrupt" fn security_exception_handler(stack_frame: InterruptStackFrame, error_code: u64) {
     fatal_exception("SECURITY EXCEPTION", &stack_frame, Details::ErrorCode(error_code));
+}
+
+extern "x86-interrupt" fn hv_injection_exception_handler(stack_frame: InterruptStackFrame) {
+    fatal_exception("HYPERVISOR INJECTION EXCEPTION", &stack_frame, Details::None);
+}
+
+extern "x86-interrupt" fn vmm_communication_exception_handler(stack_frame: InterruptStackFrame, error_code: u64) {
+    fatal_exception("VMM COMMUNICATION EXCEPTION", &stack_frame, Details::ErrorCode(error_code));
 }
 
 extern "x86-interrupt" fn divide_error_handler(stack_frame: InterruptStackFrame) {
