@@ -17,7 +17,7 @@ description: Почему тулчейн Rust закреплён на конкр
 ## Решение
 
 - `channel` в `rust-toolchain.toml` — конкретная дата.
-- Задача CI «latest nightly» по расписанию раз в неделю и вручную гоняет все тесты с `RUSTUP_TOOLCHAIN=nightly`.
+- Задача CI «latest nightly» по расписанию раз в неделю и вручную гоняет на свежем nightly (`RUSTUP_TOOLCHAIN=nightly`) `cargo test-core`, `cargo test-runner` и `cargo test --no-fail-fast` в QEMU. Проверки документации и запуска настоящего ядра в ней нет.
 
 ## Рассмотренные альтернативы
 

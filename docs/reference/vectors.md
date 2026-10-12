@@ -6,7 +6,7 @@ description: Справочник векторов прерываний OSel —
 
 **Для кого:** все, кто читает отчёт об исключении или добавляет обработчик.
 
-**Коротко:** таблица всех записей IDT из `src/interrupts.rs`. Исключения процессора, кроме точки останова, заканчиваются экраном паники через `fatal_exception`. Аппаратные прерывания начинаются с вектора 32. Вектор без обработчика даёт «SEGMENT NOT PRESENT» с кодом ошибки, в котором указан номер вектора. Как это устроено — на странице [прерывания](../architecture/core/interrupts.md).
+**Коротко:** таблица всех записей IDT из `src/interrupts.rs`. Исключения процессора, кроме точки останова, заканчиваются экраном паники через `fatal_exception`. Аппаратные прерывания начинаются с вектора 32. Обработчик есть у каждого исключения, кроме зарезервированных векторов. Вектор без обработчика даёт «SEGMENT NOT PRESENT» с кодом ошибки, в котором указан номер вектора. Как это устроено — на странице [прерывания](../architecture/core/interrupts.md).
 
 ## Исключения процессора {#exceptions}
 
@@ -34,7 +34,11 @@ description: Справочник векторов прерываний OSel —
 | 19 | `simd_floating_point` | SIMD FLOATING POINT | — | нет | паника |
 | 20 | `virtualization` | VIRTUALIZATION | — | нет | паника |
 | 21 | `cp_protection_exception` | CONTROL PROTECTION | — | число | паника |
+| 28 | `hv_injection_exception` | HYPERVISOR INJECTION EXCEPTION | — | нет | паника |
+| 29 | `vmm_communication_exception` | VMM COMMUNICATION EXCEPTION | — | число | паника |
 | 30 | `security_exception` | SECURITY EXCEPTION | — | число | паника |
+
+Векторы 9, 15, 22–27 и 31 зарезервированы процессором, обработчиков у них нет. Если такой вектор всё же придёт (например, через `int`), он закончится «SEGMENT NOT PRESENT» с номером вектора в коде ошибки.
 
 Номера IST — индексы в TSS: 0 — `DOUBLE_FAULT_IST_INDEX`, 1 — `NMI_IST_INDEX`, 2 — `MACHINE_CHECK_IST_INDEX` (`src/gdt.rs`).
 
@@ -58,4 +62,4 @@ description: Справочник векторов прерываний OSel —
 3. Строка в этой таблице — `cargo docs-check` проверяет, что здесь упомянуто каждое поле IDT и каждый вариант `InterruptIndex`.
 4. Тест: интеграционный `panic_test!`, см. [рецепт тестов](../guides/testing.md).
 
-_Сверено с кодом: 2026-10-12, коммит ae1b2a6._
+_Сверено с кодом: 2026-10-12, коммит 2dee8ac._

@@ -6,7 +6,7 @@ description: Закреплённый nightly-тулчейн и порядок �
 
 **Для кого:** для разработчиков и агентов, которые обновляют компилятор или разбираются с CI.
 
-**Коротко:** версия nightly закреплена в `rust-toolchain.toml`, и обновляют её руками, только когда еженедельная проверка свежего nightly в CI зелёная. CI на каждый PR гоняет тесты на хосте, все тесты ядра в QEMU в режимах UEFI и BIOS, загрузку настоящего ядра, проверку документации и сборку сайта документации. После мёржа в `master` сайт публикуется на GitHub Pages.
+**Коротко:** версия nightly закреплена в `rust-toolchain.toml`, и обновляют её руками, только когда еженедельная проверка свежего nightly в CI зелёная. CI на каждый PR гоняет тесты на хосте вместе со сверкой документации с кодом, все тесты ядра в QEMU в режимах UEFI и BIOS, загрузку настоящего ядра и сборку сайта документации. После мёржа в `master` сайт публикуется на GitHub Pages.
 
 ## Тулчейн {#toolchain}
 
@@ -25,20 +25,21 @@ description: Закреплённый nightly-тулчейн и порядок �
 
 ## Задачи CI {#jobs}
 
-CI описан в `.github/workflows/test.yml`. Задача сборки и публикации документации описана там же или в отдельном файле в `.github/workflows/`.
+CI описан в двух файлах: тесты — в `.github/workflows/test.yml`, документация — в `.github/workflows/docs.yml`.
 
-| Задача | Когда | Что делает |
-|---|---|---|
-| `host unit tests` | каждый PR и push в `master` | `cargo test-core` и `cargo test-runner`: тесты без QEMU, быстро |
-| `cargo test (uefi)`, `cargo test (bios)` | после `host unit tests` | `cargo test --no-fail-fast` в QEMU и загрузка настоящего ядра: `OSEL_EXPECT="OSel ready to go!" cargo run` |
-| `latest nightly (uefi)`, `latest nightly (bios)` | по понедельникам и при ручном запуске | те же тесты на самом свежем nightly |
-| docs | каждый PR и push в `master` | собирает сайт документации на Diplodoc со строгой проверкой ссылок; проверяет, что документация совпадает с кодом (`cargo docs-check`); после мёржа в `master` публикует сайт на GitHub Pages |
+| Файл | Задача | Когда | Что делает |
+|---|---|---|---|
+| `test.yml` | `host unit tests` | каждый PR и push в `master` | `cargo test-core`, `cargo test-runner` и `cargo docs-check`: тесты без QEMU и сверка документации с кодом, быстро |
+| `test.yml` | `cargo test (uefi)`, `cargo test (bios)` | после `host unit tests` | `cargo test --no-fail-fast` в QEMU и загрузка настоящего ядра: `OSEL_EXPECT="OSel ready to go!" cargo run` |
+| `test.yml` | `latest nightly (uefi)`, `latest nightly (bios)` | по понедельникам и при ручном запуске | на самом свежем nightly: `cargo test-core`, `cargo test-runner` и `cargo test --no-fail-fast`; без сверки документации и без загрузки настоящего ядра, не ждёт `host unit tests` |
+| `docs.yml` | `build the site` | каждый PR и push в `master` | собирает сайт документации на Diplodoc; линтер роняет сборку на битых ссылках и якорях |
+| `docs.yml` | `publish to GitHub Pages` | push в `master` и ручной запуск | публикует собранный сайт на GitHub Pages |
 
 Новый push в PR отменяет устаревший прогон этого PR. Прогоны на `master` не отменяются никогда.
 
 ### Кэш {#cache}
 
-- Сборки Rust кэшируются действием `Swatinem/rust-cache` для обоих проектов: корневого и `runner/`.
+- Сборки Rust кэшируются действием `Swatinem/rust-cache` для трёх проектов: корневого, `runner/` и `tools/docs-check/`.
 - Прошивка OVMF кэшируется отдельно в `runner/.ovmf`, ключ кэша зависит от `runner/Cargo.lock`.
 
 ## Проверка документации {#docs-check}
@@ -52,4 +53,5 @@ CI описан в `.github/workflows/test.yml`. Задача сборки и п
 | Красный только `latest nightly` | см. [Как обновить nightly](#bump); обычный CI не затронут |
 | Тест таймера падает только в CI | [Что пошло не так](troubleshooting.md#symptoms) |
 | `failed to fetch OVMF firmware` в CI | сеть GitHub на время недоступна; перезапустите задачу |
-| Задача docs падает на ссылке | ссылка ведёт на страницу или якорь, которых нет; исправьте ссылку |
+| Задача `build the site` падает на ссылке | ссылка ведёт на страницу или якорь, которых нет; исправьте ссылку |
+| `host unit tests` падает на шаге `Docs match the code` | `cargo docs-check` нашёл расхождение документации с кодом; в сообщении сказано, что и на какой странице добавить |

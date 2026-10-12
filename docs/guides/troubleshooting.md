@@ -21,9 +21,13 @@ description: Что пошло не так — сообщения и симпт�
 | `failed: qemu exit code Some(0)` или `Some(1)` | QEMU завершился, но не через устройство выхода: обычно тройной сбой (с `-no-reboot` перезагрузка превращается в выход) | см. [Перезагрузка без экрана паники](debugging.md#triple-fault) |
 | `failed: N of M tests reported [ok]` | тестовое ядро завершилось успешно, но отчитались не все объявленные тесты (или лишние) | кто-то вызвал `exit_qemu` раньше времени или вывод теста смешался с другим выводом в одной строке |
 | `failed: no test reported [ok]` | тестовое ядро завершилось успешно, ничего не напечатав | тело теста не дошло до проверки, либо `harness = false` тест забыл вызвать `pass()` |
-| `failed: timed out after 60s` | тестовое ядро зависло, и runner его остановил | см. последний тест в выводе; если CI просто медленный, временно поднимите `OSEL_TIMEOUT` |
+| `failed: timed out after 60s` | тестовое ядро зависло, и runner его остановил (число — значение `OSEL_TIMEOUT`, по умолчанию 60) | см. последний тест в выводе; если CI просто медленный, временно поднимите `OSEL_TIMEOUT` |
+| ``failed: `<текст>` not printed within 60s`` | запуск с `OSEL_EXPECT` не дождался строки: ядро зависло или упало, не напечатав её в порт | посмотрите вывод выше; проверьте, что текст печатается через `serial_println!`, а не только на экран |
+| ``failed: kernel stopped with … before printing `<текст>` `` | при запуске с `OSEL_EXPECT` QEMU завершился раньше, чем появилась строка: обычно паника или тройной сбой | посмотрите вывод выше, см. [Отладка](debugging.md) |
+| ``unknown OSEL_BOOT value `x`, expected `uefi` or `bios` `` | неверное значение `OSEL_BOOT`, runner вышел до запуска QEMU | допустимы только `uefi` и `bios`, см. [Runner](../reference/runner.md) |
+| ``OSEL_TIMEOUT must be a positive number of seconds, got `x` `` | неверное значение `OSEL_TIMEOUT`, runner вышел до запуска QEMU | укажите целое число секунд больше нуля |
 | `failed to fetch OVMF firmware` | runner не смог скачать прошивку UEFI для QEMU | нужен интернет при первом запуске; прошивка сохраняется в `runner/.ovmf` (место меняет `OSEL_OVMF_DIR`), см. [Runner](../reference/runner.md) |
-| `warning: test arguments are not supported and ignored` | вы запустили `cargo test -- <фильтр>` | отбор по имени не поддерживается, запускайте одно тестовое ядро через `cargo test --test <имя>` |
+| `warning: test arguments are not supported and ignored` | вы запустили `cargo test -- <фильтр>` | см. [Runner](../reference/runner.md); одно тестовое ядро запускается через `cargo test --test <имя>` |
 
 ## Симптомы {#symptoms}
 

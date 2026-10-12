@@ -28,9 +28,10 @@ description: Память OSel — раскладка виртуальных а�
 `memory::init` (`src/memory.rs`) вызывается из `osel::init` один раз:
 
 1. берёт активную таблицу уровня 4 через регистр CR3 и смещение отображения физической памяти;
-2. очищает все 256 записей нижней половины и сбрасывает TLB (`clear_lower_half`);
-3. снимает отображение страниц-охранников под стеками IST (`unmap_interrupt_stack_guards`), см. [прерывания](interrupts.md#ist);
-4. создаёт `OffsetPageTable` и `RegionFrameAllocator` и кладёт их под блокировку `MEMORY`.
+2. очищает все 256 записей нижней половины и сбрасывает TLB (`clear_lower_half`), запоминает карту памяти;
+3. создаёт `OffsetPageTable` поверх этой таблицы;
+4. через него снимает отображение страниц-охранников под стеками IST (`unmap_interrupt_stack_guards`), см. [прерывания](interrupts.md#ist);
+5. создаёт `RegionFrameAllocator` и кладёт его вместе с `OffsetPageTable` под блокировку `MEMORY`.
 
 Всё дальнейшее — через `with_memory(|memory| …)`: внутри доступны `memory.mapper` и `memory.frame_allocator`, прерывания выключены.
 
@@ -106,4 +107,4 @@ description: Память OSel — раскладка виртуальных а�
 - [0006 — ядро в верхней половине](../../decisions/0006-higher-half-kernel.md)
 - [0002 — osel-core и тесты на хосте](../../decisions/0002-osel-core-host-tests.md)
 
-_Сверено с кодом: 2026-10-12, коммит ae1b2a6._
+_Сверено с кодом: 2026-10-12, коммит 2dee8ac._

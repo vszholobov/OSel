@@ -43,7 +43,7 @@ mod tests {
 
 1. В модуле ядра в `src/` добавьте функцию с атрибутом `#[test_case]`, лучше внутри `#[cfg(test)] mod tests`.
 2. Тест работает в уже инициализированном ядре: куча, прерывания и консоль готовы.
-3. Запустите `cargo test`. Строка теста в выводе: `osel::<модуль>::tests::<имя>...	[ok]`.
+3. Запустите `cargo test`. В выводе у теста строка вида `osel::<модуль>::tests::<имя>... [ok]`.
 
 ```rust
 #[cfg(test)]
@@ -70,7 +70,7 @@ mod tests {
 
 1. Создайте `tests/<имя>.rs` с собственной точкой входа (`entry_point!` с `osel::BOOTLOADER_CONFIG`), вызовом `osel::init`, `test_main()` и обработчиком паники `osel::testosterone::test_panic_handler`.
 2. Пишите тесты как `#[test_case]`.
-3. Регистрировать в `Cargo.toml` не нужно: cargo находит файлы в `tests/` сам.
+3. Регистрировать в `Cargo.toml` не нужно: cargo находит файлы в `tests/` сам. Регистрация нужна только тестам с `harness = false`, см. [тест падения](#panic-test).
 
 Если тест не вызывает `osel::avganec::init`, у ядра нет консоли: `println!` ничего не делает, и это нормально.
 
@@ -97,7 +97,7 @@ harness = false
 
 ### Проверка точного адреса падения {#expect-rip}
 
-Чтобы тест проверял не только название исключения, но и адрес инструкции, которая его вызвала, запишите этот адрес в `osel::testosterone::EXPECTED_RIP` прямо из ассемблера перед падающей инструкцией. Тогда `expect_panic` потребует в сообщении строку `rip: <адрес>`. Образец — `tests/divide_error.rs`:
+Чтобы тест проверял не только название исключения, но и адрес инструкции, которая его вызвала, запишите этот адрес в `osel::testosterone::EXPECTED_RIP` прямо из ассемблера перед падающей инструкцией. Тогда `expect_panic` потребует в сообщении строку `rip: <адрес>`. Образец — `tests/invalid_opcode.rs`:
 
 ```rust
 osel::panic_test!("invalid_opcode::is_reported", ["EXCEPTION: INVALID OPCODE"], {
@@ -126,18 +126,20 @@ osel::panic_test!("invalid_opcode::is_reported", ["EXCEPTION: INVALID OPCODE"], 
 | Одно тестовое ядро из `tests/` | `cargo test --test overflow` |
 | Дать тестам больше времени | `OSEL_TIMEOUT=120 cargo test` |
 
-Отбор тестов по имени (`cargo test -- имя`) не поддерживается: runner игнорирует такие аргументы и предупреждает об этом.
+Отбор тестов по имени после `--` не работает, см. [справочник runner](../reference/runner.md). Сузить прогон можно только до одного тестового ядра через `--test` или `--lib`.
 
 ## Как проверить перед PR {#before-pr}
 
 ```shell
 cargo test-core
 cargo test-runner
+cargo docs-check
 cargo test --no-fail-fast
 OSEL_BOOT=bios cargo test --no-fail-fast
+OSEL_EXPECT="OSel ready to go!" cargo run
 ```
 
-Всё это прогоняет и CI, но локальный прогон быстрее показывает ошибку.
+Последняя команда загружает настоящее ядро без окна и ждёт строку готовности. Всё это прогоняет и CI, но локальный прогон быстрее показывает ошибку.
 
 ## Частые ошибки {#errors}
 

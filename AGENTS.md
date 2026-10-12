@@ -11,7 +11,7 @@ cargo test-core                     # unit-тесты osel-core на хосте,
 cargo test-runner                   # тесты runner на хосте
 OSEL_BOOT=uefi cargo test           # все тесты ядра в QEMU, загрузка через UEFI
 OSEL_BOOT=bios cargo test           # то же через BIOS
-cargo test --test <имя>             # одно интеграционное ядро из tests/; `cargo test -- <фильтр>` не работает
+cargo test --test <имя>             # одно интеграционное ядро из tests/ (фильтр после -- не работает, см. docs/reference/runner.md)
 cargo docs-check                    # документация совпадает с кодом
 OSEL_EXPECT="OSel ready to go!" cargo run   # запуск настоящего ядра без окна, ждёт строку в последовательном порту
 ```
@@ -30,13 +30,15 @@ OSEL_EXPECT="OSel ready to go!" cargo run   # запуск настоящего 
 | Перенести тест из курса ШАДа | `docs/nikka.md` |
 | Упал CI или тест | `docs/guides/troubleshooting.md`, `docs/guides/debugging.md` |
 | Поменять память, прерывания или блокировки | `docs/architecture/core/memory.md`, `docs/architecture/core/interrupts.md`, `docs/architecture/core/locking.md` |
-| Поменять консоль, порт, клавиатуру | `docs/architecture/drivers/` |
+| Поменять консоль, порт, клавиатуру | `docs/architecture/drivers/console.md`, `docs/architecture/drivers/serial.md`, `docs/architecture/drivers/keyboard.md` |
+| Запустить ядро, снять скриншот | навык `run-kernel` (`.claude/skills/run-kernel/SKILL.md`), `docs/guides/debugging.md` |
+| Разобрать падение или зависание | навык `debug-qemu-crash`, `docs/guides/debugging.md` |
 | Писать документацию | `docs/guides/writing-docs.md` |
 | Понять, почему сделано так | `docs/decisions/index.md` |
 
 ## Перед задачей этапа N
 
-1. Раздел этапа в `docs/roadmap.md`.
+1. Раздел этапа в `docs/roadmap.md`: якоря `#stage-1` … `#stage-4`.
 2. Страница этапа в `docs/design/` (для этапа 2 — `docs/design/stage-2-user-mode.md`).
 3. `docs/architecture/overview.md` — карта модулей.
 4. Страницы подсистем, которые задача трогает, вместе с их разделами «Грабли».
@@ -47,7 +49,18 @@ OSEL_EXPECT="OSel ready to go!" cargo run   # запуск настоящего 
 - Тест на нужном уровне: чистая логика — в `osel-core` (`cargo test-core`), железо — тест ядра или интеграционное ядро в `tests/`. Интеграционное ядро с `harness = false` регистрируется в `Cargo.toml` как `[[test]]`.
 - Проходят `cargo test-core`, `cargo test-runner`, `cargo test` в обоих режимах загрузки, тест не оставляет утечек кучи.
 - Документация обновлена по таблице «куда класть знание» из `docs/guides/writing-docs.md`; новая страница добавлена в `docs/toc.yaml`; проходит `cargo docs-check`.
-- В `CHANGELOG.md` в разделе «Не выпущено» есть строка об изменении.
+- В `CHANGELOG.md` в разделе «Не выпущено» есть строка об изменении. Это касается каждого PR, в том числе только документации или тестов.
+- Запуск настоящего ядра проходит: `OSEL_EXPECT="OSel ready to go!" cargo run`.
+
+## Ветки и PR
+
+- Базовая ветка — `master`. На каждую тему — своя ветка от свежего `master`.
+- PR открывается по шаблону `.github/pull_request_template.md`, CI должен быть зелёным.
+- Коммиты и описания PR — без `Co-Authored-By` и без упоминаний ИИ.
+
+## Имена модулей
+
+У существующих модулей имена-каламбуры владельца: `avganec` (консоль), `cereal` (последовательный порт), `testosterone` (тестовый фреймворк), `qemuno` (выход из QEMU). Их не переименовывать. Новому модулю — понятное английское имя (`syscall`, `scheduler`, `elf`); каламбур — только если его предложил владелец. Каждый новый модуль попадает в карту модулей `docs/architecture/overview.md`.
 
 ## Правила проекта
 

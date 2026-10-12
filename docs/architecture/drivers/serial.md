@@ -38,4 +38,4 @@ description: Последовательный порт OSel — вывод в CO
 - `tests/panic_while_printing.rs` — паника при взятой `SERIAL1`.
 - `tests/nested_panic.rs` — аварийный вывод.
 
-_Сверено с кодом: 2026-10-12, коммит ae1b2a6._
+_Сверено с кодом: 2026-10-12, коммит 2dee8ac._

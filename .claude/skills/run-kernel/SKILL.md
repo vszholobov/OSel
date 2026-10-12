@@ -20,14 +20,6 @@ OSEL_BOOT=bios cargo test --no-fail-fast
 OSEL_EXPECT="OSel ready to go!" cargo run
 ```
 
-Скриншот экрана: запустить QEMU с монитором на сокете, затем через монитор сделать `screendump` и `quit`:
-
-```sh
-cargo run -- -display none -monitor unix:/tmp/osel-mon.sock,server,nowait &
-# подождать загрузки, затем:
-printf 'screendump /tmp/osel.png -f png\nquit\n' | nc -U /tmp/osel-mon.sock
-```
-
-Через монитор можно и нажимать клавиши: `sendkey h`, `sendkey shift-1`.
+Скриншот экрана и нажатия клавиш через монитор QEMU — рецепт в `docs/guides/debugging.md`, раздел «Скриншот экрана». Запускать там QEMU только без окна (`-display none`) и закрывать командой `quit` монитора.
 
 Не оставлять работающий QEMU: проверить `pgrep -fl qemu-system`. Подробности — `docs/guides/debugging.md`, переменные runner — `docs/reference/runner.md`.

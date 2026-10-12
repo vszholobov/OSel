@@ -70,4 +70,4 @@ description: Консоль OSel — вывод текста в framebuffer, м�
 
 - [0001 — bootloader 0.11 и UEFI](../../decisions/0001-bootloader-0.11-and-uefi.md)
 
-_Сверено с кодом: 2026-10-12, коммит ae1b2a6._
+_Сверено с кодом: 2026-10-12, коммит 2dee8ac._

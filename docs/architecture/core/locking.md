@@ -77,4 +77,4 @@ description: Блокировки OSel — IrqSpinlock, отчёт о взаим
 
 - [0003 — IrqSpinlock](../../decisions/0003-irq-spinlock.md)
 
-_Сверено с кодом: 2026-10-12, коммит ae1b2a6._
+_Сверено с кодом: 2026-10-12, коммит 2dee8ac._
