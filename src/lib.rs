@@ -31,6 +31,7 @@ pub mod gdt;
 pub mod keyboard;
 pub mod memory;
 pub mod program;
+pub mod user;
 pub mod sync;
 
 /// Version of the kernel from Cargo.toml

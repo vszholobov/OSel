@@ -43,6 +43,73 @@ impl InterruptIndex {
     }
 }
 
+/// Entry stub of an exception that a program can cause. From ring 0 it jumps to the
+/// kernel's handler with the stack untouched, so kernel exceptions behave as before. From
+/// ring 3 it pushes the vector (and a zero for a missing error code) and goes to
+/// `user::user_trap`, which ends the program's run.
+macro_rules! entry_stub {
+    ($stub:ident, $vector:literal, $handler:ident: HandlerFunc) => {
+        const _: x86_64::structures::idt::HandlerFunc = $handler;
+        #[unsafe(naked)]
+        unsafe extern "C" fn $stub() {
+            core::arch::naked_asm!(
+                // CS the CPU pushed: ring 0 or 3
+                "test qword ptr [rsp + 8], 3",
+                "jz {handler}",
+                "push 0",
+                "push {vector}",
+                "jmp {user_trap}",
+                handler = sym $handler,
+                vector = const $vector,
+                user_trap = sym crate::user::user_trap,
+            )
+        }
+    };
+    ($stub:ident, $vector:literal, $handler:ident: $kind:ident) => {
+        const _: x86_64::structures::idt::$kind = $handler;
+        #[unsafe(naked)]
+        unsafe extern "C" fn $stub() {
+            core::arch::naked_asm!(
+                // the error code sits below the CPU frame
+                "test qword ptr [rsp + 16], 3",
+                "jz {handler}",
+                "push {vector}",
+                "jmp {user_trap}",
+                handler = sym $handler,
+                vector = const $vector,
+                user_trap = sym crate::user::user_trap,
+            )
+        }
+    };
+}
+
+entry_stub!(divide_error_stub, 0, divide_error_handler: HandlerFunc);
+entry_stub!(debug_stub, 1, debug_handler: HandlerFunc);
+entry_stub!(breakpoint_stub, 3, breakpoint_handler: HandlerFunc);
+entry_stub!(overflow_stub, 4, overflow_handler: HandlerFunc);
+entry_stub!(bound_range_exceeded_stub, 5, bound_range_exceeded_handler: HandlerFunc);
+entry_stub!(invalid_opcode_stub, 6, invalid_opcode_handler: HandlerFunc);
+entry_stub!(device_not_available_stub, 7, device_not_available_handler: HandlerFunc);
+entry_stub!(invalid_tss_stub, 10, invalid_tss_handler: HandlerFuncWithErrCode);
+entry_stub!(segment_not_present_stub, 11, segment_not_present_handler: HandlerFuncWithErrCode);
+entry_stub!(stack_segment_fault_stub, 12, stack_segment_fault_handler: HandlerFuncWithErrCode);
+entry_stub!(general_protection_fault_stub, 13, general_protection_fault_handler: HandlerFuncWithErrCode);
+entry_stub!(page_fault_stub, 14, page_fault_handler: PageFaultHandlerFunc);
+entry_stub!(x87_floating_point_stub, 16, x87_floating_point_handler: HandlerFunc);
+entry_stub!(alignment_check_stub, 17, alignment_check_handler: HandlerFuncWithErrCode);
+entry_stub!(simd_floating_point_stub, 19, simd_floating_point_handler: HandlerFunc);
+entry_stub!(virtualization_stub, 20, virtualization_handler: HandlerFunc);
+entry_stub!(control_protection_stub, 21, control_protection_handler: HandlerFuncWithErrCode);
+entry_stub!(hv_injection_exception_stub, 28, hv_injection_exception_handler: HandlerFunc);
+entry_stub!(vmm_communication_exception_stub, 29, vmm_communication_exception_handler: HandlerFuncWithErrCode);
+entry_stub!(security_exception_stub, 30, security_exception_handler: HandlerFuncWithErrCode);
+
+/// Points `entry` at `stub` after `set_handler_fn` checked the handler's type. Resets the
+/// entry's options: set a stack index or a privilege level after this, not before.
+unsafe fn through_stub<F>(entry: &mut x86_64::structures::idt::Entry<F>, stub: unsafe extern "C" fn()) {
+    unsafe { entry.set_handler_addr(x86_64::VirtAddr::new(stub as usize as u64)) };
+}
+
 lazy_static! {
     static ref IDT: InterruptDescriptorTable = {
         let mut idt = InterruptDescriptorTable::new();
@@ -73,6 +140,29 @@ lazy_static! {
         idt.stack_segment_fault.set_handler_fn(stack_segment_fault_handler);
         idt.general_protection_fault.set_handler_fn(general_protection_fault_handler);
         idt.page_fault.set_handler_fn(page_fault_handler);
+        // the exceptions a program can cause enter through stubs that tell ring 3 from ring 0
+        unsafe {
+            through_stub(&mut idt.divide_error, divide_error_stub);
+            through_stub(&mut idt.debug, debug_stub);
+            through_stub(&mut idt.breakpoint, breakpoint_stub);
+            through_stub(&mut idt.overflow, overflow_stub);
+            through_stub(&mut idt.bound_range_exceeded, bound_range_exceeded_stub);
+            through_stub(&mut idt.invalid_opcode, invalid_opcode_stub);
+            through_stub(&mut idt.device_not_available, device_not_available_stub);
+            through_stub(&mut idt.invalid_tss, invalid_tss_stub);
+            through_stub(&mut idt.segment_not_present, segment_not_present_stub);
+            through_stub(&mut idt.stack_segment_fault, stack_segment_fault_stub);
+            through_stub(&mut idt.general_protection_fault, general_protection_fault_stub);
+            through_stub(&mut idt.page_fault, page_fault_stub);
+            through_stub(&mut idt.x87_floating_point, x87_floating_point_stub);
+            through_stub(&mut idt.alignment_check, alignment_check_stub);
+            through_stub(&mut idt.simd_floating_point, simd_floating_point_stub);
+            through_stub(&mut idt.virtualization, virtualization_stub);
+            through_stub(&mut idt.cp_protection_exception, control_protection_stub);
+            through_stub(&mut idt.hv_injection_exception, hv_injection_exception_stub);
+            through_stub(&mut idt.vmm_communication_exception, vmm_communication_exception_stub);
+            through_stub(&mut idt.security_exception, security_exception_stub);
+        }
         unsafe {
             idt.double_fault.set_handler_fn(double_fault_handler)
                 .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX); // new

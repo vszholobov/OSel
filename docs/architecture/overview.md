@@ -29,7 +29,8 @@ description: Обзор OSel — из каких крейтов и модуле�
 | `cereal` | `src/cereal.rs` | последовательный порт COM1: `serial_print!`, аварийный вывод | [Последовательный порт](drivers/serial.md) |
 | `keyboard` | `src/keyboard.rs` | PS/2: скан-коды из прерывания в буфер символов | [Клавиатура](drivers/keyboard.md) |
 | `interrupts` | `src/interrupts.rs` | IDT, обработчики исключений, PIC, таймер, ложные IRQ | [Прерывания](core/interrupts.md) |
-| `gdt` | `src/gdt.rs` | GDT, TSS, стеки IST для double fault, NMI и machine check | [Прерывания](core/interrupts.md) |
+| `gdt` | `src/gdt.rs` | GDT с сегментами кольца 3, TSS, стеки IST для double fault, NMI и machine check | [Прерывания](core/interrupts.md) |
+| `user` | `src/user.rs` | запуск программы в кольце 3, возврат при исключении | [Пользовательский режим](core/user-mode.md) |
 | `memory` | `src/memory.rs` | таблица страниц, пул физических страниц, `with_memory`, `UserSpace` | [Память](core/memory.md) |
 | `program` | `src/program.rs` | загрузка программы из файловой системы в `UserSpace`, стек главного потока | [Программы](core/programs.md) |
 | `fs` | `src/fs.rs` | монтирует ramdisk как корень, `lookup`, `read_file` | [Файлы и ramdisk](core/fs.md) |
@@ -56,6 +57,8 @@ description: Обзор OSel — из каких крейтов и модуле�
 | `vfs` | `osel-core/src/vfs.rs` | интерфейсы `FileSystem` и `Inode`, разрешение путей | [Файлы и ramdisk](core/fs.md#resolve) |
 | `elf` | `osel-core/src/elf.rs` | разбор и загрузка статических ELF64 через `ProgramMemory`, `ElfBuilder` | [Программы](core/programs.md#elf) |
 | `initial_stack` | `osel-core/src/initial_stack.rs` | стартовый стек: argv, envp, auxv | [Программы](core/programs.md#initial-stack) |
+| `trap` | `osel-core/src/trap.rs` | `TrapFrame` — регистры программы при входе в ядро | [Пользовательский режим](core/user-mode.md#trap-frame) |
+| `user_mem` | `osel-core/src/user_mem.rs` | проверка памяти, которую программа передала ядру | [Пользовательский режим](core/user-mode.md#user-mem) |
 | `cpio` | `osel-core/src/cpio.rs` | файловая система `CpioFs` над архивом cpio, `CpioBuilder` | [Файлы и ramdisk](core/fs.md#cpio) |
 
 ## Путь загрузки {#boot}
@@ -95,5 +98,6 @@ description: Обзор OSel — из каких крейтов и модуле�
 - [0008 — пул физических страниц](../decisions/0008-frame-pool.md)
 - [0009 — общая верхняя половина адресных пространств](../decisions/0009-shared-kernel-half.md)
 - [0010 — свой загрузчик статических ELF](../decisions/0010-static-elf-loader.md)
+- [0011 — запуск программы до исключения и заглушки входа](../decisions/0011-user-entry.md)
 
-_Сверено с кодом: 2026-10-12, коммит 07fbf95._
+_Сверено с кодом: 2026-10-12, коммит 347786c._

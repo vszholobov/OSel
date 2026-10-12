@@ -12,15 +12,15 @@ description: Прерывания OSel — GDT и TSS, IDT, обработка �
 
 ### GDT и TSS {#gdt}
 
-`gdt::init` (`src/gdt.rs`) загружает свою GDT из трёх записей (код ядра, данные ядра, TSS), затем:
+`gdt::init` (`src/gdt.rs`) загружает свою GDT: код ядра, данные ядра, данные и код программы (кольцо 3, порядок нужен `sysret`, см. [пользовательский режим](user-mode.md#segments)) и TSS. Затем:
 
 - CS — код ядра; SS, DS, ES — данные ядра; FS и GS — нулевой селектор;
 - загружает пустую LDT;
-- загружает TSS, в котором три стека IST.
+- загружает TSS, в котором три стека IST. RSP0 этого TSS меняет вход в программу, см. [пользовательский режим](user-mode.md#enter).
 
 ### Исключения {#exceptions}
 
-IDT строится в `src/interrupts.rs`. Обработчики исключений вызывают `fatal_exception`: она собирает `Frame` (rip, rsp, cs, ss, rflags) и паникует с текстом `ExceptionReport` (`osel-core/src/exception.rs`). В тексте:
+IDT строится в `src/interrupts.rs`. Исключения, которые может вызвать программа, сначала попадают в заглушки `entry_stub`: из кольца 0 они прыгают в обработчик ниже, из кольца 3 завершают программу, см. [пользовательский режим](user-mode.md#traps). Обработчики исключений ядра вызывают `fatal_exception`: она собирает `Frame` (rip, rsp, cs, ss, rflags) и паникует с текстом `ExceptionReport` (`osel-core/src/exception.rs`). В тексте:
 
 - `EXCEPTION: <имя>` и регистры;
 - для исключений с селектором (#TS, #NP, #SS, #GP) — расшифровка кода ошибки: какая таблица (GDT, LDT, IDT), какая запись, внешнее ли событие;
@@ -68,8 +68,8 @@ PIC сообщает о ложных прерываниях на IRQ 7 и IRQ 15
 
 ## Где в коде {#code}
 
-- `src/gdt.rs` — `init`, `selectors`, `ist_stacks`.
-- `src/interrupts.rs` — IDT, `init_idt`, `init_pics`, `with_pics`, обработчики, `fatal_exception`, `ticks`.
+- `src/gdt.rs` — `init`, `selectors`, `ist_stacks`, `kernel_stack_slot`, `reload_data_segments`.
+- `src/interrupts.rs` — IDT, `init_idt`, `init_pics`, `with_pics`, заглушки `entry_stub`, обработчики, `fatal_exception`, `ticks`.
 - `osel-core/src/exception.rs` — `ExceptionReport`, `SelectorError`, `PageFaultCause`, `FixedBuf`.
 - `osel-core/src/pit.rs` — `divisor`, `pic_masks`, `is_spurious`.
 - `src/avganec.rs` — `panic_screen`.
@@ -99,7 +99,7 @@ PIC сообщает о ложных прерываниях на IRQ 7 и IRQ 15
 ## Тесты {#tests}
 
 - `src/interrupts.rs` — точка останова возвращается, таймер тикает, маски PIC, ложные IRQ, частота таймера против часов реального времени.
-- `src/gdt.rs` — сегментные регистры, TR и LDT, стеки IST в TSS.
+- `src/gdt.rs` — сегментные регистры, TR и LDT, стеки IST в TSS, селекторы под `syscall`.
 - `tests/divide_error.rs`, `tests/invalid_opcode.rs`, `tests/general_protection.rs`, `tests/unhandled_vector.rs`, `tests/overflow.rs`, `tests/double_fault.rs`, `tests/stack_overflow.rs`, `tests/panic_screen.rs`, `tests/nested_panic.rs`, `tests/panic_while_printing.rs`.
 
 ## Связанные решения {#decisions}
@@ -107,4 +107,4 @@ PIC сообщает о ложных прерываниях на IRQ 7 и IRQ 15
 - [0001 — bootloader 0.11 и UEFI](../../decisions/0001-bootloader-0.11-and-uefi.md)
 - [0003 — IrqSpinlock](../../decisions/0003-irq-spinlock.md)
 
-_Сверено с кодом: 2026-10-12, коммит 2dee8ac._
+_Сверено с кодом: 2026-10-12, коммит 347786c._

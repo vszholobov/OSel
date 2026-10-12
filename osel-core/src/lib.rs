@@ -15,6 +15,8 @@ pub mod frames;
 pub mod address_space;
 pub mod elf;
 pub mod initial_stack;
+pub mod trap;
+pub mod user_mem;
 pub mod heap;
 pub mod exception;
 pub mod sync;

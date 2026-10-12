@@ -30,7 +30,7 @@ description: План развития OSel по этапам — от ядра 
 - [x] Освобождение физических страниц, проверка утечек страниц в тестах ([память](architecture/core/memory.md#frames), [решение 0008](decisions/0008-frame-pool.md)).
 - [x] Адресное пространство программы ([память](architecture/core/memory.md#address-spaces), [решение 0009](decisions/0009-shared-kernel-half.md)).
 - [x] Загрузка ELF из ramdisk, стартовый стек с argv, envp и auxv ([программы](architecture/core/programs.md), [решение 0010](decisions/0010-static-elf-loader.md)).
-- [ ] Пользовательский режим: сегменты кольца 3 в GDT, стек ядра в TSS, исключения программы не роняют ядро.
+- [x] Пользовательский режим: сегменты кольца 3 в GDT, стек ядра в TSS, исключения программы не роняют ядро ([пользовательский режим](architecture/core/user-mode.md), [решение 0011](decisions/0011-user-entry.md)).
 - [ ] Вход в ядро через `syscall`/`sysret`.
 - [ ] Системные вызовы `write` и `exit`. **Проверка:** программа на ассемблере печатает «hello».
 - [ ] SSE для пользовательских программ.

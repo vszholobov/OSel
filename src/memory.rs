@@ -6,6 +6,7 @@ use alloc::vec;
 use bootloader_api::info::MemoryRegion;
 use crate::sync::IrqSpinlock;
 use osel_core::errno::{Errno, KResult};
+use osel_core::user_mem::{self, Access};
 use x86_64::VirtAddr;
 use x86_64::registers::control::Cr3;
 use x86_64::structures::paging::{Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB};
@@ -103,6 +104,25 @@ impl UserSpace {
             x86_64::instructions::tlb::flush_all();
         }
         result
+    }
+
+    /// Reads memory a program handed to the kernel: every page must be the program's,
+    /// present and user accessible, otherwise `EFAULT` and nothing is read
+    pub fn copy_from_user(&mut self, address: u64, buffer: &mut [u8]) -> KResult<()> {
+        self.check_user(address, buffer.len(), Access::Read)?;
+        self.read_bytes(address, buffer)
+    }
+
+    /// Writes into memory a program handed to the kernel; the pages must also be writable
+    pub fn copy_to_user(&mut self, address: u64, bytes: &[u8]) -> KResult<()> {
+        self.check_user(address, bytes.len(), Access::Write)?;
+        self.write_bytes(address, bytes)
+    }
+
+    fn check_user(&mut self, address: u64, len: usize, access: Access) -> KResult<()> {
+        // the leaf flags are enough: the kernel gives every lower half table entry all
+        // the access flags its pages need
+        user_mem::check(address, len as u64, access, |page| self.page_flags(VirtAddr::new(page)))
     }
 
     /// Copies `bytes` to `address` in this space through the physical memory mapping,
@@ -333,6 +353,24 @@ mod tests {
         with_memory(|m| unmap_range(&mut m.mapper, &mut m.frame_allocator, address, 4096)).unwrap();
         x86_64::instructions::tlb::flush(address);
         assert!(space.translate(address).is_none());
+    }
+
+    #[test_case]
+    fn test_copy_from_and_to_user_checks_every_page() {
+        let mut space = UserSpace::new().unwrap();
+        let read_only = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
+        space.map(VirtAddr::new(0x40_0000), 4096, USER_RW).unwrap();
+        space.map(VirtAddr::new(0x40_1000), 4096, read_only).unwrap();
+        space.copy_to_user(0x40_0ffc, b"abcd").unwrap();
+        let mut buffer = [0u8; 8];
+        space.copy_from_user(0x40_0ffc, &mut buffer).unwrap();
+        assert_eq!(&buffer, b"abcd\0\0\0\0", "across into the read-only page");
+        assert!(matches!(space.copy_to_user(0x40_0ffc, b"abcde"), Err(Errno::EFAULT)), "into the read-only page");
+        assert!(matches!(space.copy_from_user(0x40_1ffc, &mut buffer), Err(Errno::EFAULT)), "past the mapped pages");
+        let kernel = VirtAddr::from_ptr(&USER_RW).as_u64();
+        assert!(matches!(space.copy_from_user(kernel, &mut buffer), Err(Errno::EFAULT)), "kernel memory");
+        // the kernel can still write there itself
+        space.write_bytes(0x40_1000, b"x").unwrap();
     }
 
     #[test_case]
