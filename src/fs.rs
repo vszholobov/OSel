@@ -9,6 +9,8 @@ use alloc::vec::Vec;
 use bootloader_api::BootInfo;
 use osel_core::block::MemBlockDevice;
 use osel_core::cpio::CpioFs;
+use osel_core::devices::{self, WithDevices};
+use osel_core::file::{FileLike, InodeFile, NullFile};
 
 pub use osel_core::errno::{Errno, KResult};
 pub use osel_core::vfs::*;
@@ -21,7 +23,7 @@ pub(crate) fn init(boot_info: &'static BootInfo) {
     let Some(data) = ramdisk(boot_info) else { return };
     let fs = CpioFs::mount(Arc::new(MemBlockDevice::new(data)))
         .unwrap_or_else(|e| panic!("the ramdisk is not a valid cpio archive: {e}"));
-    *ROOT_FS.lock() = Some(Arc::new(fs));
+    *ROOT_FS.lock() = Some(Arc::new(WithDevices::new(Arc::new(fs))));
 }
 
 /// The bytes of the ramdisk the bootloader loaded, `None` if there is none
@@ -42,6 +44,18 @@ pub fn root() -> Option<Arc<dyn FileSystem>> {
 pub fn lookup(path: &str) -> KResult<Arc<dyn Inode>> {
     let fs = root().ok_or(Errno::ENOENT)?;
     resolve_absolute(&fs.root(), path)
+}
+
+/// What a program reads and writes when it opens `inode`: the device for a device node,
+/// the file itself otherwise
+pub fn file_for(inode: Arc<dyn Inode>) -> KResult<Arc<dyn FileLike>> {
+    let stat = inode.stat();
+    Ok(match (stat.file_type, stat.rdev) {
+        (FileType::CharDevice, devices::NULL) => Arc::new(NullFile::new(stat)),
+        (FileType::CharDevice, devices::TTY) => Arc::new(crate::tty::Tty::new(stat)),
+        (FileType::CharDevice, _) => return Err(Errno::ENXIO),
+        _ => Arc::new(InodeFile::new(inode)),
+    })
 }
 
 /// Reads the whole file at `path`

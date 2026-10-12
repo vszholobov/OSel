@@ -26,3 +26,5 @@ pub mod errno;
 pub mod block;
 pub mod vfs;
 pub mod cpio;
+pub mod devices;
+pub mod file;

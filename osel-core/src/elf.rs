@@ -561,7 +561,7 @@ mod tests {
         struct Trickle(Vec<u8>);
         impl Inode for Trickle {
             fn stat(&self) -> Stat {
-                Stat { ino: 1, file_type: FileType::Regular, permissions: 0o755, size: self.0.len() as u64 }
+                Stat { ino: 1, file_type: FileType::Regular, permissions: 0o755, size: self.0.len() as u64, ..Stat::default() }
             }
             fn read_at(&self, offset: u64, buf: &mut [u8]) -> KResult<usize> {
                 let offset = offset as usize;

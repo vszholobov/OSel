@@ -36,7 +36,8 @@ description: Обзор OSel — из каких крейтов и модуле�
 | `user` | `src/user.rs` | запуск программы в кольце 3, возврат при исключении | [Пользовательский режим](core/user-mode.md) |
 | `memory` | `src/memory.rs` | таблица страниц, пул физических страниц, `with_memory`, `UserSpace` | [Память](core/memory.md) |
 | `program` | `src/program.rs` | загрузка программы из файловой системы в `UserSpace`, стек главного потока | [Программы](core/programs.md) |
-| `fs` | `src/fs.rs` | монтирует ramdisk как корень, `lookup`, `read_file` | [Файлы и ramdisk](core/fs.md) |
+| `fs` | `src/fs.rs` | монтирует ramdisk как корень с `/dev`, `lookup`, `file_for`, `read_file` | [Файлы и ramdisk](core/fs.md) |
+| `tty` | `src/tty.rs` | терминал: запись на экран и в порт, чтение клавиатуры | [Файлы и ramdisk](core/fs.md#open-files) |
 | `allocator` | `src/allocator.rs` | куча ядра и глобальный аллокатор | [Память](core/memory.md#heap) |
 | `sync` | `src/sync.rs` | `IrqSpinlock` — блокировка, выключающая прерывания | [Блокировки](core/locking.md) |
 | `qemuno` | `src/qemuno.rs` | выход из QEMU через устройство `isa-debug-exit` | [Как устроены тесты](testing.md) |
@@ -65,6 +66,8 @@ description: Обзор OSel — из каких крейтов и модуле�
 | `trap` | `osel-core/src/trap.rs` | `TrapFrame` — регистры программы при входе в ядро | [Пользовательский режим](core/user-mode.md#trap-frame) |
 | `user_mem` | `osel-core/src/user_mem.rs` | проверка памяти, которую программа передала ядру | [Пользовательский режим](core/user-mode.md#user-mem) |
 | `cpio` | `osel-core/src/cpio.rs` | файловая система `CpioFs` над архивом cpio, `CpioBuilder` | [Файлы и ramdisk](core/fs.md#cpio) |
+| `devices` | `osel-core/src/devices.rs` | каталог `/dev` поверх корня, номера устройств | [Файлы и ramdisk](core/fs.md#devices) |
+| `file` | `osel-core/src/file.rs` | `FileLike`, `OpenDescription`, `FdTable`, правила `openat`, `struct stat` | [Файлы и ramdisk](core/fs.md#open-files) |
 
 ## Путь загрузки {#boot}
 
@@ -79,7 +82,7 @@ description: Обзор OSel — из каких крейтов и модуле�
    6. `memory::init` — таблица страниц, очистка нижней половины, страницы-охранники стеков IST, пул страниц, таблицы уровня 3 для всей верхней половины;
    7. `allocator::init_heap` — куча;
    8. `memory::enable_frame_tracking` — битовая карта пула в куче, с этого момента страницы можно освобождать;
-   9. `fs::init` — ramdisk монтируется как корень `/`;
+   9. `fs::init` — ramdisk монтируется как корень `/` с каталогом устройств `/dev`;
    10. `interrupts::init_pics` — сброс буфера клавиатуры, PIC, таймер на 100 Гц;
    11. включает прерывания.
 4. Ядро печатает `/etc/motd` из ramdisk, запускает `/bin/hello` (он печатает «Hello from ring 3!»), затем «OSel ready to go!» на экран и в последовательный порт, затем `echo_keyboard` печатает нажатые клавиши и спит в `hlt`, пока нет ввода.
@@ -108,5 +111,6 @@ description: Обзор OSel — из каких крейтов и модуле�
 - [0011 — запуск программы до исключения и заглушки входа](../decisions/0011-user-entry.md)
 - [0012 — вход через syscall и программы из user/](../decisions/0012-syscall-entry-and-user-programs.md)
 - [0013 — состояние x87 и SSE программы](../decisions/0013-fpu-state.md)
+- [0014 — дескрипторы и устройства](../decisions/0014-file-descriptors.md)
 
-_Сверено с кодом: 2026-10-12, коммит 3b72bc3._
+_Сверено с кодом: 2026-10-12, коммит 2576dff._

@@ -24,8 +24,8 @@ description: Проектирование этапа 2 — пользовате�
 |---|---|---|---|---|
 | `BlockDevice` | блоки по номеру | `MemBlockDevice` (ramdisk) | AHCI, NVMe, virtio-blk | сделано |
 | `FileSystem`, `Inode` | дерево файлов | `CpioFs` | ext2, FAT, файлы устройств | сделано |
-| `FileLike` | открытый файл: `read`, `write`, `poll`, `ioctl`; по умолчанию ошибка | файл из `Inode`, `/dev/tty`, eventfd, epoll | pipe, сокеты (`as_socket`) | шаг 7 |
-| `FdTable` | дескрипторы процесса: наименьший свободный, `dup`, `O_CLOEXEC` | — | — | шаг 7 |
+| `FileLike` | открытый файл: `read`, `write`, `poll`, `ioctl`; по умолчанию ошибка | `InodeFile`, `NullFile`, `Tty`; потом eventfd, epoll | pipe, сокеты (`as_socket`) | сделано, `poll` и `ioctl` — с шагами 10 и этапом 3 |
+| `FdTable` | дескрипторы процесса: наименьший свободный, `dup`, `O_CLOEXEC` | `FdTable` в `osel-core` | — | сделано |
 | `FrameSource` | выдать и вернуть физическую страницу | `FramePool`: список свободных страниц | счётчики ссылок для копирования при записи | сделано |
 | `VmaSet` | области памяти программы: разрез, слияние, поиск места | анонимные области | файлы в памяти (`Backing::File`) | шаг 9 |
 | `UserMem` | копирование из памяти программы и в неё с проверкой | `user_mem::check`, `UserSpace::copy_from_user` и `copy_to_user` | — | сделано |
@@ -47,7 +47,7 @@ description: Проектирование этапа 2 — пользовате�
 4. **Пользовательский режим без системных вызовов.** Сделано: [пользовательский режим](../architecture/core/user-mode.md), [решение 0011](../decisions/0011-user-entry.md). Вместо `set_kernel_stack` RSP0 пишет сам вход в программу (`gdt::kernel_stack_slot`), `UserMem` — это `user_mem::check` и `UserSpace::copy_from_user` и `copy_to_user`.
 5. **Системные вызовы `write`, `exit`.** Сделано: [системные вызовы](../architecture/core/user-mode.md#syscall), [справочник](../reference/syscalls.md), [решение 0012](../decisions/0012-syscall-entry-and-user-programs.md). «Пыточные» проверки — тесты в `src/syscall.rs` и `src/user.rs`, а не отдельное ядро.
 6. **SSE.** Сделано: [x87 и SSE](../architecture/core/user-mode.md#fpu), [решение 0013](../decisions/0013-fpu-state.md). Область пока на запуск, а не на поток: потоки — шаг 8.
-7. **Файлы для программ.** `FileLike`, `FdTable`, `openat`, `read`, `close`, `fstat`, `/dev/tty` и `/dev/null`.
+7. **Файлы для программ.** Сделано: [открытые файлы](../architecture/core/fs.md#open-files), [устройства](../architecture/core/fs.md#devices), [решение 0014](../decisions/0014-file-descriptors.md). Сверх плана — `newfstatat` и `fcntl`: Go вызывает их при старте и в `os.Stat`.
 8. **Потоки и вытеснение.** Свой стек ядра на поток со страницей-охранником из отдельной области адресов, `switch_to` сохраняет только callee-saved регистры, поток простоя с `sti; hlt`, отложенное освобождение стека завершившегося потока. FS — база TLS. **Проверка:** два потока с разными узорами во всех регистрах, XMM, MXCSR и FS — 50 вытеснений без порчи; бесконечный цикл вытесняется; оба счётчика растут.
 9. **Память для Go.** `VmaSet`, `mmap` с подсказкой адреса без `MAP_FIXED`, `MAP_FIXED` поверх резерва `PROT_NONE`, `munmap`, `mprotect`, `madvise` как пустая операция; отложенное выделение страниц в обработчике page fault.
 10. **Время и ожидание.** `clone`, `futex`, `nanosleep`, `clock_gettime`, `epoll` и `eventfd2`. `time.Sleep` требует их с первого таймера: Go вызывает `epoll_create1`, `eventfd2` и `epoll_ctl`, а запись в eventfd должна будить `epoll_pwait`.
@@ -73,7 +73,7 @@ description: Проектирование этапа 2 — пользовате�
 
 | Группа | Вызовы |
 |---|---|
-| Ввод-вывод | `write`, `read`, `openat`, `close`, `fstat`, `fcntl` |
+| Ввод-вывод | `write`, `read`, `openat`, `close`, `fstat`, `newfstatat`, `fcntl` |
 | Память | `mmap`, `munmap`, `madvise`, `mprotect` |
 | Потоки | `clone`, `futex`, `gettid`, `tgkill`, `sched_yield`, `sched_getaffinity`, `exit`, `exit_group` |
 | Сигналы | `rt_sigaction`, `rt_sigprocmask`, `sigaltstack` |
@@ -82,12 +82,13 @@ description: Проектирование этапа 2 — пользовате�
 
 Что Go требует от них:
 
-- Падают при любой ошибке: `rt_sigprocmask`, `sigaltstack`, `munmap`, `arch_prctl(ARCH_SET_FS)`. `rt_sigaction` должен вернуть 0 для всех сигналов, кроме 32, 33 и 64; обработчик достаточно запомнить. `sigaltstack` возвращает `SS_DISABLE`.
+- Падают при любой ошибке: `rt_sigprocmask`, `sigaltstack`, `munmap`, `arch_prctl(ARCH_SET_FS)`, а `fcntl(F_GETFD)` для дескрипторов 0–2 — при любой, кроме `EBADF` (`checkfds`). `rt_sigaction` должен вернуть 0 для всех сигналов, кроме 32, 33 и 64; обработчик достаточно запомнить. `sigaltstack` возвращает `SS_DISABLE`.
 - `clone`: ребёнок получает `rax = 0` и новый `rsp`, остальные регистры — от родителя (Go держит в R9, R12, R13 свои указатели). Флаги Go: `VM | FS | FILES | SIGHAND | SYSVSEM | THREAD`, остальные сочетания — `EINVAL`.
 - `sched_getaffinity` возвращает 8 и маску с битом 0: тогда GOMAXPROCS = 1.
 - `tgkill(SIGURG)` — асинхронное вытеснение; делаем пустой операцией и передаём `GODEBUG=asyncpreemptoff=1`.
 - `nanosleep` из `sysmon` приходит постоянно (20 мкс – 10 мс): сон должен блокировать поток, а не крутиться.
 - Открытие `/sys/kernel/mm/transparent_hugepage/hpage_pmd_size` — `ENOENT` допустим.
+- `os.Open` и `os.ReadFile` регистрируют каждый файл в netpoller: без `epoll_create1` Go падает, а `epoll_ctl` для обычного файла должен отвечать `EPERM`. Значит, они работают только после шага 10.
 
 **Ограничение этапа:** сигналы не доставляются. Разыменование nil в Go не превратится в панику, процесс просто завершится.
 

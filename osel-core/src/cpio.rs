@@ -290,7 +290,7 @@ impl CpioInode {
             Kind::File { size, .. } => (FileType::Regular, size),
             Kind::Dir { .. } => (FileType::Directory, 0),
         };
-        Stat { ino: index as u64 + 1, file_type, permissions: node.permissions, size }
+        Stat { ino: index as u64 + 1, file_type, permissions: node.permissions, size, ..Stat::default() }
     }
 
     fn children(&self) -> KResult<&[(String, usize)]> {
@@ -715,6 +715,7 @@ mod tests {
                     walk(&*inode.lookup(&entry.name).unwrap(), depth + 1);
                 }
             }
+            other => panic!("cpio gave a {other:?}"),
         }
     }
 

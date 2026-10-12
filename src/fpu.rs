@@ -35,7 +35,7 @@ pub fn save(state: &mut FpuState) {
 mod tests {
     use super::*;
     use crate::user::tests::{code, kernel_is_fine, load};
-    use crate::user::{Stop, initial_frame, run_with_fpu};
+    use crate::user::{Stop, initial_frame, run_with, standard_files};
     use core::arch::global_asm;
     use osel_core::trap::TrapFrame;
 
@@ -43,7 +43,7 @@ mod tests {
         ".pushsection .rodata.osel_fpu_programs, \"a\"",
         // every XMM register gets a pattern (SSE2 only: QEMU's default CPU has no SSE4.1),
         // one x87 register is pushed, then a fault
-        "osel_xmm_patterns:",
+        ".global osel_xmm_patterns", "osel_xmm_patterns:",
         "mov rax, 0x101010101010101", "movq xmm0, rax", "punpcklqdq xmm0, xmm0",
         "mov rax, 0x202020202020202", "movq xmm1, rax", "punpcklqdq xmm1, xmm1",
         "mov rax, 0x303030303030303", "movq xmm2, rax", "punpcklqdq xmm2, xmm2",
@@ -62,9 +62,9 @@ mod tests {
         "mov rax, 0x1010101010101010", "movq xmm15, rax", "punpcklqdq xmm15, xmm15",
         "fld1",
         "mov qword ptr [0], rax",
-        "osel_xmm_patterns_end:",
+        ".global osel_xmm_patterns_end", "osel_xmm_patterns_end:",
         // what a new program finds: MXCSR in rax, FCW in rbx, xmm5 in rcx, FSW in rdx
-        "osel_fresh_state:",
+        ".global osel_fresh_state", "osel_fresh_state:",
         "sub rsp, 16",
         "stmxcsr [rsp]",
         "mov eax, [rsp]",
@@ -74,9 +74,9 @@ mod tests {
         "movzx edx, word ptr [rsp + 8]",
         "movq rcx, xmm5",
         "mov qword ptr [0], rax",
-        "osel_fresh_state_end:",
+        ".global osel_fresh_state_end", "osel_fresh_state_end:",
         // SSE division by zero with the exception unmasked
-        "osel_simd_divide:",
+        ".global osel_simd_divide", "osel_simd_divide:",
         "sub rsp, 8",
         "stmxcsr [rsp]",
         "and dword ptr [rsp], 0xfffffdff",
@@ -84,13 +84,13 @@ mod tests {
         "mov eax, 1",
         "cvtsi2ss xmm0, eax",
         "xorps xmm1, xmm1",
-        "osel_simd_divide_at:",
+        ".global osel_simd_divide_at", "osel_simd_divide_at:",
         "divss xmm0, xmm1",
-        "osel_simd_divide_next:",
+        ".global osel_simd_divide_next", "osel_simd_divide_next:",
         "mov qword ptr [0], rax",
-        "osel_simd_divide_end:",
+        ".global osel_simd_divide_end", "osel_simd_divide_end:",
         // x87 division by zero with the exception unmasked: reported at the next fwait
-        "osel_x87_divide:",
+        ".global osel_x87_divide", "osel_x87_divide:",
         "sub rsp, 8",
         "fnstcw [rsp]",
         "and word ptr [rsp], 0xfffb",
@@ -98,12 +98,12 @@ mod tests {
         "fld1",
         "fldz",
         "fdivp",
-        "osel_x87_divide_wait:",
+        ".global osel_x87_divide_wait", "osel_x87_divide_wait:",
         "fwait",
-        "osel_x87_divide_end:",
+        ".global osel_x87_divide_end", "osel_x87_divide_end:",
         // the same, but a system call between the division and fwait: the pending
         // exception must reach the program, not the kernel
-        "osel_x87_pending:",
+        ".global osel_x87_pending", "osel_x87_pending:",
         "sub rsp, 8",
         "fnstcw [rsp]",
         "and word ptr [rsp], 0xfffb",
@@ -114,9 +114,9 @@ mod tests {
         "mov eax, 39",
         "syscall",
         "fwait",
-        "osel_x87_pending_end:",
+        ".global osel_x87_pending_end", "osel_x87_pending_end:",
         // xmm3 survives a system call and timer interrupts
-        "osel_xmm_kept:",
+        ".global osel_xmm_kept", "osel_xmm_kept:",
         "mov rax, 0x3333333333333333",
         "movq xmm3, rax",
         "punpcklqdq xmm3, xmm3",
@@ -127,14 +127,14 @@ mod tests {
         "dec ecx",
         "jnz 2b",
         "mov qword ptr [0], rax",
-        "osel_xmm_kept_end:",
+        ".global osel_xmm_kept_end", "osel_xmm_kept_end:",
         ".popsection",
     );
 
     fn run_code(code: &[u8], fpu: &mut FpuState) -> (TrapFrame, Stop) {
         let mut loaded = load(code);
         let mut frame = initial_frame(loaded.entry, loaded.rsp);
-        let stop = run_with_fpu(&mut loaded.space, &mut frame, fpu);
+        let stop = run_with(&mut loaded.space, &mut standard_files(), &mut frame, fpu);
         (frame, stop)
     }
 

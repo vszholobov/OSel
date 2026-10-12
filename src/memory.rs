@@ -119,6 +119,27 @@ impl UserSpace {
         self.write_bytes(address, bytes)
     }
 
+    /// Reads a NUL-terminated string a program handed to the kernel, at most `max` bytes
+    /// with the NUL: page by page, so a short string just before an unmapped page is fine.
+    /// `EFAULT` on memory that is not the program's, `ENAMETOOLONG` without a NUL in `max`.
+    pub fn copy_string_from_user(&mut self, address: u64, max: usize) -> KResult<alloc::vec::Vec<u8>> {
+        let mut bytes = alloc::vec::Vec::new();
+        let mut at = address;
+        while bytes.len() < max {
+            let in_page = (PAGE_SIZE - at % PAGE_SIZE) as usize;
+            let len = in_page.min(max - bytes.len());
+            let start = bytes.len();
+            bytes.resize(start + len, 0);
+            self.copy_from_user(at, &mut bytes[start..])?;
+            if let Some(nul) = bytes[start..].iter().position(|&b| b == 0) {
+                bytes.truncate(start + nul);
+                return Ok(bytes);
+            }
+            at += len as u64;
+        }
+        Err(Errno::ENAMETOOLONG)
+    }
+
     /// Checks that `len` bytes at `address` are the program's memory, see `user_mem::check`
     pub fn check_user(&mut self, address: u64, len: usize, access: Access) -> KResult<()> {
         // the leaf flags are enough: the kernel gives every lower half table entry all

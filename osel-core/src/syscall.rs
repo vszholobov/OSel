@@ -6,13 +6,36 @@
 use crate::errno::KResult;
 use crate::trap::{GENERAL_PROTECTION, TrapFrame};
 
+pub const READ: u64 = 0;
 pub const WRITE: u64 = 1;
+pub const CLOSE: u64 = 3;
+pub const FSTAT: u64 = 5;
 pub const GETPID: u64 = 39;
 pub const EXIT: u64 = 60;
+pub const FCNTL: u64 = 72;
 pub const EXIT_GROUP: u64 = 231;
+pub const OPENAT: u64 = 257;
+pub const NEWFSTATAT: u64 = 262;
 
 /// Every system call OSel implements: Linux x86_64 number and name
-pub const SYSCALLS: &[(u64, &str)] = &[(WRITE, "write"), (GETPID, "getpid"), (EXIT, "exit"), (EXIT_GROUP, "exit_group")];
+pub const SYSCALLS: &[(u64, &str)] = &[
+    (READ, "read"),
+    (WRITE, "write"),
+    (CLOSE, "close"),
+    (FSTAT, "fstat"),
+    (GETPID, "getpid"),
+    (EXIT, "exit"),
+    (FCNTL, "fcntl"),
+    (EXIT_GROUP, "exit_group"),
+    (OPENAT, "openat"),
+    (NEWFSTATAT, "newfstatat"),
+];
+
+/// A descriptor argument: Linux takes it as a 32-bit `int`, the upper half of the register
+/// is whatever the program left there (Go loads `AT_FDCWD` with a 32-bit move)
+pub fn fd_arg(value: u64) -> i32 {
+    value as u32 as i32
+}
 
 /// `TrapFrame::vector` of an entry through `syscall`: not a CPU vector
 pub const SYSCALL_VECTOR: u64 = 256;
@@ -178,6 +201,14 @@ mod tests {
             assert_eq!(super::name(*nr), Some(*name));
         }
         assert_eq!(super::name(9999), None);
+    }
+
+    #[test]
+    fn descriptors_are_32_bit() {
+        assert_eq!(fd_arg(3), 3);
+        assert_eq!(fd_arg(0xffff_ff9c), -100, "AT_FDCWD as Go passes it");
+        assert_eq!(fd_arg(0xffff_ffff_ffff_ff9c), -100, "and sign extended");
+        assert_eq!(fd_arg(0xdead_0000_0000_0001), 1, "garbage above");
     }
 
     #[test]

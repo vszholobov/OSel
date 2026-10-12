@@ -9,6 +9,10 @@
 use crate::fpu;
 use crate::gdt;
 use crate::memory::{self, USER_END, UserSpace};
+use crate::tty::Tty;
+use alloc::sync::Arc;
+use osel_core::devices;
+use osel_core::file::{Access, FdTable, OpenDescription};
 use core::arch::naked_asm;
 use osel_core::fpu::FpuState;
 use osel_core::syscall::SYSCALL_VECTOR;
@@ -18,6 +22,8 @@ use osel_core::trap::{GENERAL_PROTECTION, TRAP_FRAME_WORDS, TrapFrame};
 pub(crate) static mut KERNEL_RSP: u64 = 0;
 /// The address space of the running program, for system calls
 static mut RUNNING: *mut UserSpace = core::ptr::null_mut();
+/// Its descriptors
+static mut RUNNING_FILES: *mut FdTable = core::ptr::null_mut();
 /// CR2 when the program trapped: the faulting address of a page fault
 static mut TRAP_CR2: u64 = 0;
 
@@ -71,12 +77,25 @@ pub fn initial_frame(entry: u64, rsp: u64) -> TrapFrame {
 /// The frame is forced to ring 3 first; a `rip` outside the lower half is a #GP of the
 /// program right away, without entering it.
 pub fn run(space: &mut UserSpace, frame: &mut TrapFrame) -> Stop {
-    run_with_fpu(space, frame, &mut FpuState::initial())
+    run_with(space, &mut standard_files(), frame, &mut FpuState::initial())
 }
 
-/// `run` with the program's x87 and SSE state: loaded before, saved after. `run` starts
-/// every program with the state after reset, so nothing of another program leaks in.
-pub fn run_with_fpu(space: &mut UserSpace, frame: &mut TrapFrame, fpu: &mut FpuState) -> Stop {
+/// Descriptors 0, 1 and 2 open on the terminal for reading and writing, like a shell
+/// leaves them
+pub fn standard_files() -> FdTable {
+    let stat = devices::device_stat(devices::TTY).expect("no tty device");
+    let tty = Arc::new(OpenDescription::new(Arc::new(Tty::new(stat)), Access { read: true, write: true }, 0));
+    let mut files = FdTable::new();
+    for _ in 0..3 {
+        files.insert(tty.clone(), false).expect("an empty table has room");
+    }
+    files
+}
+
+/// `run` with the program's descriptors and its x87 and SSE state: loaded before, saved
+/// after. `run` starts every program with the state after reset, so nothing of another
+/// program leaks in.
+pub fn run_with(space: &mut UserSpace, files: &mut FdTable, frame: &mut TrapFrame, fpu: &mut FpuState) -> Stop {
     assert!(x86_64::instructions::interrupts::are_enabled(), "entering a program with interrupts off or a lock held");
     // one saved kernel stack and one running space: a run inside a system call would lose them
     assert!(unsafe { RUNNING.is_null() }, "a program is already running");
@@ -91,8 +110,10 @@ pub fn run_with_fpu(space: &mut UserSpace, frame: &mut TrapFrame, fpu: &mut FpuS
     fpu::restore(fpu);
     unsafe {
         RUNNING = space;
+        RUNNING_FILES = files;
         enter_user(frame, gdt::kernel_stack_slot());
         RUNNING = core::ptr::null_mut();
+        RUNNING_FILES = core::ptr::null_mut();
     }
     fpu::save(fpu);
     memory::activate_kernel_space();
@@ -112,6 +133,14 @@ pub fn run_with_fpu(space: &mut UserSpace, frame: &mut TrapFrame, fpu: &mut FpuS
 /// touch it until the program leaves; one CPU, so nothing else does either.
 pub(crate) unsafe fn running_space() -> &'static mut UserSpace {
     unsafe { RUNNING.as_mut() }.expect("no program is running")
+}
+
+/// The descriptors of the program whose system call is running
+///
+/// # Safety
+/// As `running_space`.
+pub(crate) unsafe fn running_files() -> &'static mut FdTable {
+    unsafe { RUNNING_FILES.as_mut() }.expect("no program is running")
 }
 
 /// Saves the callee-saved registers and the flags, makes the current stack the one the
@@ -232,7 +261,7 @@ pub(crate) mod tests {
     global_asm!(
         ".pushsection .rodata.osel_user_programs, \"a\"",
         // every register gets a pattern, then a write to address 0
-        "osel_patterns:",
+        ".global osel_patterns", "osel_patterns:",
         "mov rax, 0x0101010101010101",
         "mov rbx, 0x0202020202020202",
         "mov rcx, 0x0303030303030303",
@@ -248,46 +277,46 @@ pub(crate) mod tests {
         "mov r13, 0x0d0d0d0d0d0d0d0d",
         "mov r14, 0x0e0e0e0e0e0e0e0e",
         "mov r15, 0x0f0f0f0f0f0f0f0f",
-        "osel_patterns_fault:",
+        ".global osel_patterns_fault", "osel_patterns_fault:",
         "mov qword ptr [0], rax",
-        "osel_patterns_end:",
+        ".global osel_patterns_end", "osel_patterns_end:",
         // the start state: argc from the stack into rax, then fault
-        "osel_start_state:",
+        ".global osel_start_state", "osel_start_state:",
         "mov rax, [rsp]",
         "mov qword ptr [0], rax",
-        "osel_start_state_end:",
+        ".global osel_start_state_end", "osel_start_state_end:",
         // Nikka `user_mode_page_fault`: no stack at all
-        "osel_no_stack:",
+        ".global osel_no_stack", "osel_no_stack:",
         "xor esp, esp",
         "push rax",
-        "osel_no_stack_end:",
+        ".global osel_no_stack_end", "osel_no_stack_end:",
         // spins long enough for timer ticks even on fast hardware, with DF set, then faults
-        "osel_spin:",
+        ".global osel_spin", "osel_spin:",
         "std",
         "mov rcx, 200000000",
         "2:",
         "dec rcx",
         "jnz 2b",
         "mov qword ptr [0], rax",
-        "osel_spin_end:",
-        "osel_hlt:", "hlt", "osel_hlt_end:",
-        "osel_cli:", "cli", "osel_cli_end:",
-        "osel_in:", "in al, 0x60", "osel_in_end:",
-        "osel_int80:", "int 0x80", "osel_int80_end:",
-        "osel_int3:", "int3", "osel_int3_end:",
-        "osel_ud2:", "ud2", "osel_ud2_end:",
-        "osel_wrmsr:", "xor eax, eax", "xor edx, edx", "mov ecx, 0xc0000080", "wrmsr", "osel_wrmsr_end:",
-        "osel_rdmsr:", "mov ecx, 0xc0000080", "rdmsr", "osel_rdmsr_end:",
-        "osel_out:", "out 0x80, al", "osel_out_end:",
+        ".global osel_spin_end", "osel_spin_end:",
+        ".global osel_hlt", "osel_hlt:", "hlt", ".global osel_hlt_end", "osel_hlt_end:",
+        ".global osel_cli", "osel_cli:", "cli", ".global osel_cli_end", "osel_cli_end:",
+        ".global osel_in", "osel_in:", "in al, 0x60", ".global osel_in_end", "osel_in_end:",
+        ".global osel_int80", "osel_int80:", "int 0x80", ".global osel_int80_end", "osel_int80_end:",
+        ".global osel_int3", "osel_int3:", "int3", ".global osel_int3_end", "osel_int3_end:",
+        ".global osel_ud2", "osel_ud2:", "ud2", ".global osel_ud2_end", "osel_ud2_end:",
+        ".global osel_wrmsr", "osel_wrmsr:", "xor eax, eax", "xor edx, edx", "mov ecx, 0xc0000080", "wrmsr", ".global osel_wrmsr_end", "osel_wrmsr_end:",
+        ".global osel_rdmsr", "osel_rdmsr:", "mov ecx, 0xc0000080", "rdmsr", ".global osel_rdmsr_end", "osel_rdmsr_end:",
+        ".global osel_out", "osel_out:", "out 0x80, al", ".global osel_out_end", "osel_out_end:",
         // calls itself until the stack runs into the guard page below it
-        "osel_recursion:", "2:", "call 2b", "osel_recursion_end:",
-        "osel_divide:", "xor ecx, ecx", "div rcx", "osel_divide_end:",
-        "osel_kernel_jump:", "mov rax, 0xffff800000000000", "jmp rax", "osel_kernel_jump_end:",
-        "osel_kernel_read:", "mov rax, 0xffff800000000000", "mov rax, [rax]", "osel_kernel_read_end:",
-        "osel_write_text:", "lea rax, [rip]", "mov byte ptr [rax], 0", "osel_write_text_end:",
-        "osel_run_data:", "mov rax, 0x600000", "jmp rax", "osel_run_data_end:",
-        "osel_bad_stack:", "mov rsp, 0x800000000008", "push rax", "osel_bad_stack_end:",
-        "osel_trap_flag:", "pushfq", "or qword ptr [rsp], 0x100", "popfq", "nop", "nop", "osel_trap_flag_end:",
+        ".global osel_recursion", "osel_recursion:", "2:", "call 2b", ".global osel_recursion_end", "osel_recursion_end:",
+        ".global osel_divide", "osel_divide:", "xor ecx, ecx", "div rcx", ".global osel_divide_end", "osel_divide_end:",
+        ".global osel_kernel_jump", "osel_kernel_jump:", "mov rax, 0xffff800000000000", "jmp rax", ".global osel_kernel_jump_end", "osel_kernel_jump_end:",
+        ".global osel_kernel_read", "osel_kernel_read:", "mov rax, 0xffff800000000000", "mov rax, [rax]", ".global osel_kernel_read_end", "osel_kernel_read_end:",
+        ".global osel_write_text", "osel_write_text:", "lea rax, [rip]", "mov byte ptr [rax], 0", ".global osel_write_text_end", "osel_write_text_end:",
+        ".global osel_run_data", "osel_run_data:", "mov rax, 0x600000", "jmp rax", ".global osel_run_data_end", "osel_run_data_end:",
+        ".global osel_bad_stack", "osel_bad_stack:", "mov rsp, 0x800000000008", "push rax", ".global osel_bad_stack_end", "osel_bad_stack_end:",
+        ".global osel_trap_flag", "osel_trap_flag:", "pushfq", "or qword ptr [rsp], 0x100", "popfq", "nop", "nop", ".global osel_trap_flag_end", "osel_trap_flag_end:",
         ".popsection",
     );
 

@@ -34,6 +34,7 @@ pub mod program;
 pub mod user;
 pub mod syscall;
 pub mod fpu;
+pub mod tty;
 pub mod sync;
 
 /// Version of the kernel from Cargo.toml

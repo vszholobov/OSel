@@ -80,7 +80,8 @@ fn errors_are_linux_errors() {
     assert_eq!(fs::lookup("").err(), Some(Errno::ENOENT));
 }
 
-/// Reads every file of the ramdisk and checks its size, returns the number of files
+/// Reads every file of the ramdisk and checks its size, returns the number of files;
+/// device nodes under /dev are not files of the ramdisk
 fn walk(inode: &dyn Inode) -> usize {
     let stat = inode.stat();
     match stat.file_type {
@@ -93,6 +94,8 @@ fn walk(inode: &dyn Inode) -> usize {
             .iter()
             .map(|entry| walk(&*inode.lookup(&entry.name).unwrap()))
             .sum(),
+        // the /dev added on top of the ramdisk
+        FileType::CharDevice => 0,
         other => panic!("cpio gave a {other:?} node"),
     }
 }

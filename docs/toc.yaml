@@ -78,6 +78,7 @@ items:
       - href: decisions/0011-user-entry.md
       - href: decisions/0012-syscall-entry-and-user-programs.md
       - href: decisions/0013-fpu-state.md
+      - href: decisions/0014-file-descriptors.md
   - name: Планы
     items:
       - href: roadmap.md
