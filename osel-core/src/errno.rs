@@ -13,6 +13,10 @@ pub enum Errno {
     ENOENT = 2,
     /// Input/output error
     EIO = 5,
+    /// Argument list too long
+    E2BIG = 7,
+    /// Exec format error
+    ENOEXEC = 8,
     /// Bad file descriptor
     EBADF = 9,
     /// Out of memory
@@ -49,6 +53,8 @@ impl Errno {
             Errno::EPERM => "EPERM",
             Errno::ENOENT => "ENOENT",
             Errno::EIO => "EIO",
+            Errno::E2BIG => "E2BIG",
+            Errno::ENOEXEC => "ENOEXEC",
             Errno::EBADF => "EBADF",
             Errno::ENOMEM => "ENOMEM",
             Errno::EFAULT => "EFAULT",
@@ -84,6 +90,8 @@ mod tests {
             (Errno::EPERM, 1),
             (Errno::ENOENT, 2),
             (Errno::EIO, 5),
+            (Errno::E2BIG, 7),
+            (Errno::ENOEXEC, 8),
             (Errno::EBADF, 9),
             (Errno::ENOMEM, 12),
             (Errno::EFAULT, 14),

@@ -38,6 +38,7 @@ description: Курс ШАДа Nikka — как OSel им пользуется, 
 | 2-mm-5, адресное пространство | ядро и программы разделены | `osel-core/src/memory.rs`: `kernel_and_user_are_separated` |
 | 2-mm-5 | отображение поверх отображённой страницы — ошибка, старая страница цела | `osel-core/src/address_space.rs`: `mapping_over_a_mapped_page_rolls_back` |
 | 2-mm-6, 2-mm-7, копирование и удаление поддеревьев | у нового пространства только верхняя половина ядра, страницы одного не видны в другом, нехватка страниц на каждом шаге без утечек, удаление возвращает всё, снятие освобождает ровно опустевшие таблицы | `osel-core/src/address_space.rs`: `a_new_space_shares_the_kernel_half_only`, `spaces_do_not_see_each_others_pages`, `running_out_of_frames_at_every_step_leaks_nothing`, `destroy_frees_everything_of_the_lower_half`, `unmapping_frees_the_emptied_tables`; `src/memory.rs`: `test_out_of_frames_at_every_step`, `test_kernel_addresses_are_the_same_in_a_user_space` |
+| 4-process-2, загрузка ELF | плохие диапазоны и порядок сегментов, W+X — ошибка, права общей страницы, загрузка в поддельную память с проверкой каждого байта, создание процесса при нехватке страниц на каждом шаге | `osel-core/src/elf.rs`: `bad_segments_are_enoexec`, `a_shared_page_gets_both_sets_of_flags`, `loading_maps_zeroed_pages_and_copies_the_file`, `corrupted_files_never_panic`; `src/program.rs`: `test_loading_out_of_frames_at_every_step` |
 | 5-sync-2, спинлок | взаимоблокировка сообщается с местами захвата и ожидания, инвариант держится под конкуренцией | `osel-core/src/sync.rs`: `deadlock_is_reported_with_both_places`, `invariant_holds_under_contention`; `tests/deadlock.rs`, `tests/memory_reentrancy.rs` |
 | 3-allocator, проверка утечек | после каждого теста куча возвращается в исходное состояние | `src/testosterone.rs` (проверка в запуске каждого теста), `tests/leak_detection.rs` |
 | 2-mm, `forbid_frame_leaks` | после каждого теста число выданных физических страниц то же | `src/testosterone.rs`: `forbid_frame_leaks`; `tests/frame_leak_detection.rs` |
@@ -46,4 +47,4 @@ description: Курс ШАДа Nikka — как OSel им пользуется, 
 
 - 1-hw-1 — разбор форматов часов реального времени (BCD, 12-часовой режим), когда появится драйвер часов. См. [техдолг](debt.md).
 - 2-mm-1 — счётчики ссылок на страницы, когда появятся общие страницы.
-- 4-process — пользовательский режим, системные вызовы, планировщик.
+- 4-process — пользовательский режим, системные вызовы, планировщик (загрузка ELF уже перенесена).

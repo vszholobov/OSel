@@ -29,8 +29,9 @@ description: План развития OSel по этапам — от ядра 
 - [x] Ramdisk: архив cpio из папки `ramdisk/`, интерфейсы блочного устройства и файловой системы, ошибки Linux ([файлы и ramdisk](architecture/core/fs.md), [решение 0007](decisions/0007-storage-interfaces.md)).
 - [x] Освобождение физических страниц, проверка утечек страниц в тестах ([память](architecture/core/memory.md#frames), [решение 0008](decisions/0008-frame-pool.md)).
 - [x] Адресное пространство программы ([память](architecture/core/memory.md#address-spaces), [решение 0009](decisions/0009-shared-kernel-half.md)).
+- [x] Загрузка ELF из ramdisk, стартовый стек с argv, envp и auxv ([программы](architecture/core/programs.md), [решение 0010](decisions/0010-static-elf-loader.md)).
 - [ ] Пользовательский режим: сегменты кольца 3 в GDT, стек ядра в TSS, исключения программы не роняют ядро.
-- [ ] Загрузка ELF из ramdisk, стартовый стек с argv, envp и auxv; вход через `syscall`/`sysret`.
+- [ ] Вход в ядро через `syscall`/`sysret`.
 - [ ] Системные вызовы `write` и `exit`. **Проверка:** программа на ассемблере печатает «hello».
 - [ ] SSE для пользовательских программ.
 - [ ] Потоки и планировщик с вытеснением по таймеру, `clone`, `futex`.

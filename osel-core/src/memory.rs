@@ -139,6 +139,16 @@ pub enum MapRangeError {
     Map(MapToError<Size4KiB>),
 }
 
+/// What a system call reports: running out of frames is `ENOMEM`, the rest is a bad request
+impl From<MapRangeError> for crate::errno::Errno {
+    fn from(error: MapRangeError) -> Self {
+        match error {
+            MapRangeError::Map(MapToError::FrameAllocationFailed) => crate::errno::Errno::ENOMEM,
+            _ => crate::errno::Errno::EINVAL,
+        }
+    }
+}
+
 impl From<MapToError<Size4KiB>> for MapRangeError {
     fn from(error: MapToError<Size4KiB>) -> Self {
         MapRangeError::Map(error)

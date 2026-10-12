@@ -13,6 +13,8 @@ pub mod pit;
 pub mod memory;
 pub mod frames;
 pub mod address_space;
+pub mod elf;
+pub mod initial_stack;
 pub mod heap;
 pub mod exception;
 pub mod sync;

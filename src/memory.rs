@@ -5,6 +5,7 @@
 use alloc::vec;
 use bootloader_api::info::MemoryRegion;
 use crate::sync::IrqSpinlock;
+use osel_core::errno::{Errno, KResult};
 use x86_64::VirtAddr;
 use x86_64::registers::control::Cr3;
 use x86_64::structures::paging::{Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB};
@@ -102,6 +103,50 @@ impl UserSpace {
             x86_64::instructions::tlb::flush_all();
         }
         result
+    }
+
+    /// Copies `bytes` to `address` in this space through the physical memory mapping,
+    /// whatever the page flags. Only the lower half: `EFAULT` for the kernel half and at
+    /// the first page that is not mapped.
+    pub fn write_bytes(&mut self, address: u64, bytes: &[u8]) -> KResult<()> {
+        self.copy(address, bytes.len(), |memory, done, len| unsafe {
+            core::ptr::copy_nonoverlapping(bytes[done..].as_ptr(), memory, len)
+        })
+    }
+
+    /// Copies from `address` in this space into `buffer`, like `write_bytes`
+    pub fn read_bytes(&mut self, address: u64, buffer: &mut [u8]) -> KResult<()> {
+        let len = buffer.len();
+        self.copy(address, len, |memory, done, len| unsafe {
+            core::ptr::copy_nonoverlapping(memory, buffer[done..].as_mut_ptr(), len)
+        })
+    }
+
+    /// Calls `copy(kernel pointer, bytes done, chunk length)` for every page of the range
+    fn copy(&mut self, address: u64, len: usize, mut copy: impl FnMut(*mut u8, usize, usize)) -> KResult<()> {
+        let offset = with_memory(|m| m.mapper.phys_offset());
+        let mut done = 0;
+        while done < len {
+            let at = address.checked_add(done as u64).ok_or(Errno::EFAULT)?;
+            if at >= USER_END {
+                return Err(Errno::EFAULT);
+            }
+            let virt = VirtAddr::new(at);
+            let phys = self.translate(virt).ok_or(Errno::EFAULT)?;
+            let chunk = (len - done).min((PAGE_SIZE - at % PAGE_SIZE) as usize);
+            copy((offset + phys.as_u64()).as_mut_ptr(), done, chunk);
+            done += chunk;
+        }
+        Ok(())
+    }
+
+    /// Flags of the page at `address`, `None` if it is not mapped
+    pub fn page_flags(&mut self, address: VirtAddr) -> Option<PageTableFlags> {
+        use x86_64::structures::paging::mapper::{Translate, TranslateResult};
+        match self.space().mapper().translate(address) {
+            TranslateResult::Mapped { flags, .. } => Some(flags),
+            _ => None,
+        }
     }
 
     /// Physical address `address` is mapped to in this space

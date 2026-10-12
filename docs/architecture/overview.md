@@ -31,6 +31,7 @@ description: Обзор OSel — из каких крейтов и модуле�
 | `interrupts` | `src/interrupts.rs` | IDT, обработчики исключений, PIC, таймер, ложные IRQ | [Прерывания](core/interrupts.md) |
 | `gdt` | `src/gdt.rs` | GDT, TSS, стеки IST для double fault, NMI и machine check | [Прерывания](core/interrupts.md) |
 | `memory` | `src/memory.rs` | таблица страниц, пул физических страниц, `with_memory`, `UserSpace` | [Память](core/memory.md) |
+| `program` | `src/program.rs` | загрузка программы из файловой системы в `UserSpace`, стек главного потока | [Программы](core/programs.md) |
 | `fs` | `src/fs.rs` | монтирует ramdisk как корень, `lookup`, `read_file` | [Файлы и ramdisk](core/fs.md) |
 | `allocator` | `src/allocator.rs` | куча ядра и глобальный аллокатор | [Память](core/memory.md#heap) |
 | `sync` | `src/sync.rs` | `IrqSpinlock` — блокировка, выключающая прерывания | [Блокировки](core/locking.md) |
@@ -53,6 +54,8 @@ description: Обзор OSel — из каких крейтов и модуле�
 | `errno` | `osel-core/src/errno.rs` | коды ошибок Linux `Errno`, `KResult` | [Файлы и ramdisk](core/fs.md) |
 | `block` | `osel-core/src/block.rs` | интерфейс `BlockDevice`, `MemBlockDevice`, `read_bytes` | [Файлы и ramdisk](core/fs.md#layers) |
 | `vfs` | `osel-core/src/vfs.rs` | интерфейсы `FileSystem` и `Inode`, разрешение путей | [Файлы и ramdisk](core/fs.md#resolve) |
+| `elf` | `osel-core/src/elf.rs` | разбор и загрузка статических ELF64 через `ProgramMemory`, `ElfBuilder` | [Программы](core/programs.md#elf) |
+| `initial_stack` | `osel-core/src/initial_stack.rs` | стартовый стек: argv, envp, auxv | [Программы](core/programs.md#initial-stack) |
 | `cpio` | `osel-core/src/cpio.rs` | файловая система `CpioFs` над архивом cpio, `CpioBuilder` | [Файлы и ramdisk](core/fs.md#cpio) |
 
 ## Путь загрузки {#boot}
@@ -91,5 +94,6 @@ description: Обзор OSel — из каких крейтов и модуле�
 - [0007 — интерфейсы хранения и ramdisk в cpio](../decisions/0007-storage-interfaces.md)
 - [0008 — пул физических страниц](../decisions/0008-frame-pool.md)
 - [0009 — общая верхняя половина адресных пространств](../decisions/0009-shared-kernel-half.md)
+- [0010 — свой загрузчик статических ELF](../decisions/0010-static-elf-loader.md)
 
-_Сверено с кодом: 2026-10-12, коммит afba000._
+_Сверено с кодом: 2026-10-12, коммит 07fbf95._
