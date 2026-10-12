@@ -14,6 +14,9 @@ use x86_64::structures::paging::{FrameAllocator, FrameDeallocator, PhysFrame, Si
 pub trait FrameSource: FrameAllocator<Size4KiB> + FrameDeallocator<Size4KiB> {
     /// Frames handed out and not given back yet
     fn used_frames(&self) -> usize;
+
+    /// Whether `frame` came from this source and may be given back now
+    fn can_free(&self, frame: PhysFrame) -> bool;
 }
 
 /// The pool never hands out memory this far above its lowest frame, so a broken or
@@ -145,6 +148,11 @@ impl FrameDeallocator<Size4KiB> for FramePool<'_> {
 impl FrameSource for FramePool<'_> {
     fn used_frames(&self) -> usize {
         self.used
+    }
+
+    /// False for every frame before `enable_tracking`: nothing can be freed yet
+    fn can_free(&self, frame: PhysFrame) -> bool {
+        self.bitmap.is_some() && self.is_handed_out(frame.start_address().as_u64())
     }
 }
 

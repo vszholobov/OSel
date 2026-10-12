@@ -30,7 +30,7 @@ description: Обзор OSel — из каких крейтов и модуле�
 | `keyboard` | `src/keyboard.rs` | PS/2: скан-коды из прерывания в буфер символов | [Клавиатура](drivers/keyboard.md) |
 | `interrupts` | `src/interrupts.rs` | IDT, обработчики исключений, PIC, таймер, ложные IRQ | [Прерывания](core/interrupts.md) |
 | `gdt` | `src/gdt.rs` | GDT, TSS, стеки IST для double fault, NMI и machine check | [Прерывания](core/interrupts.md) |
-| `memory` | `src/memory.rs` | таблица страниц, пул физических страниц, `with_memory` | [Память](core/memory.md) |
+| `memory` | `src/memory.rs` | таблица страниц, пул физических страниц, `with_memory`, `UserSpace` | [Память](core/memory.md) |
 | `fs` | `src/fs.rs` | монтирует ramdisk как корень, `lookup`, `read_file` | [Файлы и ramdisk](core/fs.md) |
 | `allocator` | `src/allocator.rs` | куча ядра и глобальный аллокатор | [Память](core/memory.md#heap) |
 | `sync` | `src/sync.rs` | `IrqSpinlock` — блокировка, выключающая прерывания | [Блокировки](core/locking.md) |
@@ -44,7 +44,8 @@ description: Обзор OSel — из каких крейтов и модуле�
 | `console` | `osel-core/src/console.rs` | отрисовка текста в любой байтовый буфер | [Консоль](drivers/console.md) |
 | `keyboard` | `osel-core/src/keyboard.rs` | `RingBuffer`, `ScancodeDecoder` | [Клавиатура](drivers/keyboard.md) |
 | `pit` | `osel-core/src/pit.rs` | делитель таймера, маски PIC, распознавание ложных IRQ | [Прерывания](core/interrupts.md#pic-pit) |
-| `memory` | `osel-core/src/memory.rs` | раскладка адресов, `RegionFrameAllocator`, `map_range` | [Память](core/memory.md) |
+| `memory` | `osel-core/src/memory.rs` | раскладка адресов, `RegionFrameAllocator`, `map_range`, `unmap_range`, `prune_empty_tables` | [Память](core/memory.md) |
+| `address_space` | `osel-core/src/address_space.rs` | `AddressSpace` — таблица уровня 4 программы с общей верхней половиной | [Память](core/memory.md#address-spaces) |
 | `frames` | `osel-core/src/frames.rs` | интерфейс `FrameSource`, `FramePool` с освобождением страниц | [Память](core/memory.md#frames) |
 | `heap` | `osel-core/src/heap.rs` | `FixedSizeBlockAllocator` | [Память](core/memory.md#heap) |
 | `exception` | `osel-core/src/exception.rs` | текст отчёта об исключении, `FixedBuf` | [Прерывания](core/interrupts.md#exceptions) |
@@ -62,7 +63,7 @@ description: Обзор OSel — из каких крейтов и модуле�
    1. выключает прерывания;
    2. `gdt::init` — своя GDT, сегментные регистры, пустая LDT, TSS;
    3. `interrupts::init_idt` — IDT;
-   4. `memory::init` — таблица страниц, очистка нижней половины, страницы-охранники стеков IST, пул страниц;
+   4. `memory::init` — таблица страниц, очистка нижней половины, страницы-охранники стеков IST, пул страниц, таблицы уровня 3 для всей верхней половины;
    5. `allocator::init_heap` — куча;
    6. `memory::enable_frame_tracking` — битовая карта пула в куче, с этого момента страницы можно освобождать;
    7. `fs::init` — ramdisk монтируется как корень `/`;
@@ -76,7 +77,7 @@ description: Обзор OSel — из каких крейтов и модуле�
 
 | Область | Адреса |
 |---|---|
-| Программы (пока пусто) | нижняя половина, до `USER_END` |
+| Программы, у каждой своё адресное пространство | нижняя половина, до `USER_END` |
 | Всё, что размещает загрузчик: ядро, стек, сведения о загрузке, framebuffer, ramdisk, отображение физической памяти | `KERNEL_DYNAMIC_START..=KERNEL_DYNAMIC_END` |
 | Куча ядра, 16 МБ | с `HEAP_START` |
 
@@ -89,5 +90,6 @@ description: Обзор OSel — из каких крейтов и модуле�
 - [0006 — ядро в верхней половине](../decisions/0006-higher-half-kernel.md)
 - [0007 — интерфейсы хранения и ramdisk в cpio](../decisions/0007-storage-interfaces.md)
 - [0008 — пул физических страниц](../decisions/0008-frame-pool.md)
+- [0009 — общая верхняя половина адресных пространств](../decisions/0009-shared-kernel-half.md)
 
-_Сверено с кодом: 2026-10-12, коммит bbd6913._
+_Сверено с кодом: 2026-10-12, коммит afba000._

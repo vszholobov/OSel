@@ -7,14 +7,17 @@ use bootloader_api::info::MemoryRegion;
 use crate::sync::IrqSpinlock;
 use x86_64::VirtAddr;
 use x86_64::registers::control::Cr3;
-use x86_64::structures::paging::{Mapper, OffsetPageTable, Page, PageTable, Size4KiB};
+use x86_64::structures::paging::{Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB};
 
+pub use osel_core::address_space::AddressSpace;
 pub use osel_core::frames::{FramePool, FrameSource};
 pub use osel_core::memory::*;
 
 pub struct Memory {
     pub mapper: OffsetPageTable<'static>,
     pub frame_allocator: FramePool<'static>,
+    /// Level 4 table of the kernel, active whenever no program runs
+    pub kernel_level_4: PhysFrame,
 }
 
 static MEMORY: IrqSpinlock<Option<Memory>> = IrqSpinlock::new("MEMORY", None);
@@ -31,6 +34,7 @@ static mut MEMORY_REGIONS: &[MemoryRegion] = &[];
 /// The whole physical memory must be mapped at `physical_memory_offset`,
 /// and the function must be called only once.
 pub unsafe fn init(physical_memory_offset: VirtAddr, memory_regions: &'static [MemoryRegion]) {
+    let kernel_level_4 = Cr3::read().0;
     let level_4_table = unsafe { active_level_4_table(physical_memory_offset) };
     let cleared = clear_lower_half(level_4_table);
     unsafe {
@@ -39,8 +43,11 @@ pub unsafe fn init(physical_memory_offset: VirtAddr, memory_regions: &'static [M
     }
     let mut mapper = unsafe { OffsetPageTable::new(level_4_table, physical_memory_offset) };
     unmap_interrupt_stack_guards(&mut mapper);
-    let frame_allocator = unsafe { FramePool::new(memory_regions, physical_memory_offset.as_u64()) };
-    *MEMORY.lock() = Some(Memory { mapper, frame_allocator });
+    let mut frame_allocator = unsafe { FramePool::new(memory_regions, physical_memory_offset.as_u64()) };
+    // every address space copies the kernel half, so all of its level 3 tables exist from now on
+    osel_core::address_space::create_kernel_tables(mapper.level_4_table_mut(), &mut frame_allocator, physical_memory_offset)
+        .expect("no frames for the kernel page tables");
+    *MEMORY.lock() = Some(Memory { mapper, frame_allocator, kernel_level_4 });
 }
 
 /// Lets frames be freed. The bitmap of free frames lives on the heap, so this runs
@@ -55,6 +62,80 @@ pub fn enable_frame_tracking() {
 /// Frames handed out and not freed yet, 0 before `init` (a test kernel may skip it)
 pub fn used_frames() -> usize {
     MEMORY.lock().as_ref().map_or(0, |memory| memory.frame_allocator.used_frames())
+}
+
+/// Address space of a program: the lower half is its own, the upper half is the kernel's.
+/// Dropping it frees all of its frames; it must not be active then.
+pub struct UserSpace {
+    space: Option<AddressSpace>,
+}
+
+impl UserSpace {
+    /// An empty address space, `None` if there is no frame for its table
+    pub fn new() -> Option<UserSpace> {
+        let space = with_memory(|m| AddressSpace::new(m.mapper.level_4_table(), &mut m.frame_allocator, m.mapper.phys_offset()))?;
+        Some(UserSpace { space: Some(space) })
+    }
+
+    fn space(&mut self) -> &mut AddressSpace {
+        self.space.as_mut().expect("address space is destroyed")
+    }
+
+    /// Maps zeroed user pages, see `map_range`
+    pub fn map(&mut self, start: VirtAddr, size: u64, flags: PageTableFlags) -> Result<(), MapRangeError> {
+        let active = self.is_active();
+        let space = self.space();
+        let result = with_memory(|m| space.map(&mut m.frame_allocator, start, size, flags));
+        // the CPU may have cached the rolled back pages speculatively
+        if result.is_err() && active {
+            x86_64::instructions::tlb::flush_all();
+        }
+        result
+    }
+
+    /// Unmaps user pages and frees their frames, returns how many were mapped
+    pub fn unmap(&mut self, start: VirtAddr, size: u64) -> Result<usize, MapRangeError> {
+        let active = self.is_active();
+        let space = self.space();
+        let result = with_memory(|m| space.unmap(&mut m.frame_allocator, start, size));
+        if active {
+            x86_64::instructions::tlb::flush_all();
+        }
+        result
+    }
+
+    /// Physical address `address` is mapped to in this space
+    pub fn translate(&mut self, address: VirtAddr) -> Option<x86_64::PhysAddr> {
+        use x86_64::structures::paging::Translate;
+        self.space().mapper().translate_addr(address)
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.space.as_ref().is_some_and(|space| Cr3::read().0 == space.level_4_frame())
+    }
+
+    /// Switches to this address space. The kernel half stays the same, so kernel code,
+    /// stacks and data keep working.
+    pub fn activate(&mut self) {
+        let frame = self.space().level_4_frame();
+        unsafe { Cr3::write(frame, Cr3::read().1) };
+    }
+}
+
+impl Drop for UserSpace {
+    /// Takes `MEMORY`: dropping a space inside `with_memory` is a deadlock
+    fn drop(&mut self) {
+        assert!(!self.is_active(), "dropping the active address space");
+        if let Some(space) = self.space.take() {
+            with_memory(|m| unsafe { space.destroy(&mut m.frame_allocator) });
+        }
+    }
+}
+
+/// Switches back to the kernel's own level 4 table
+pub fn activate_kernel_space() {
+    let frame = with_memory(|m| m.kernel_level_4);
+    unsafe { Cr3::write(frame, Cr3::read().1) };
 }
 
 /// The bootloader identity maps a couple of its own pages (GDT, context switch code)
@@ -104,18 +185,156 @@ unsafe fn active_level_4_table(physical_memory_offset: VirtAddr) -> &'static mut
 #[cfg(test)]
 mod tests {
     use super::*;
-    use x86_64::structures::paging::mapper::CleanUp;
+    use alloc::vec::Vec;
     use x86_64::structures::paging::{FrameAllocator, FrameDeallocator, Mapper, Page, PageTableFlags, Size4KiB, Translate};
 
     /// A free spot after the heap for test mappings
     const SCRATCH: u64 = HEAP_START + HEAP_SIZE + 0x10_0000;
 
-    /// Frees the page tables test mappings created under `SCRATCH`. Only this range: an
-    /// empty table elsewhere may belong to the bootloader, not to the frame pool.
+    /// A kernel level 4 entry nothing uses: its level 3 table exists only since boot
+    const FRESH_ENTRY: u64 = HEAP_START + (1 << 39);
+
+    /// Frees the page tables test mappings created under `SCRATCH`
     fn free_scratch_tables(memory: &mut Memory) {
         let first = Page::containing_address(VirtAddr::new(SCRATCH));
-        let range = Page::range_inclusive(first, first + 15);
-        unsafe { memory.mapper.clean_up_addr_range(range, &mut memory.frame_allocator) };
+        prune_empty_tables(&mut memory.mapper, &mut memory.frame_allocator, first, first + 15);
+    }
+
+    const USER_RW: PageTableFlags =
+        PageTableFlags::PRESENT.union(PageTableFlags::WRITABLE).union(PageTableFlags::USER_ACCESSIBLE);
+
+    #[test_case]
+    fn test_every_kernel_entry_exists() {
+        with_memory(|m| {
+            for (index, entry) in m.mapper.level_4_table().iter().enumerate().skip(256) {
+                let flags = entry.flags() - PageTableFlags::ACCESSED - PageTableFlags::DIRTY;
+                assert_eq!(flags, PageTableFlags::PRESENT | PageTableFlags::WRITABLE, "level 4 entry {}", index);
+            }
+        });
+    }
+
+    /// Kernel pages are never user accessible, so `map_to` never widens a level 4 entry and
+    /// the copies in address spaces stay equal to the kernel's
+    #[test_case]
+    fn test_no_kernel_entry_is_user_accessible() {
+        fn check(table: &PageTable, level: u8, offset: VirtAddr) {
+            for entry in table.iter().filter(|e| !e.is_unused()) {
+                assert!(!entry.flags().contains(PageTableFlags::USER_ACCESSIBLE), "level {} entry {:?}", level, entry);
+                if level > 1 && !entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+                    check(unsafe { &*(offset + entry.addr().as_u64()).as_ptr::<PageTable>() }, level - 1, offset);
+                }
+            }
+        }
+        with_memory(|m| {
+            let offset = m.mapper.phys_offset();
+            for entry in m.mapper.level_4_table().iter().skip(256) {
+                check(unsafe { &*(offset + entry.addr().as_u64()).as_ptr::<PageTable>() }, 3, offset);
+            }
+        });
+    }
+
+    #[test_case]
+    fn test_user_space_runs_kernel_code_and_its_own_pages() {
+        let mut space = UserSpace::new().expect("out of frames");
+        let page = VirtAddr::new(0x40_0000);
+        space.map(page, 2 * 4096, USER_RW).unwrap();
+        assert!(!space.is_active());
+        space.activate();
+        assert!(space.is_active());
+        // the kernel half works: heap, statics, this stack
+        let values: Vec<u64> = (0..100).collect();
+        let pointer = page.as_mut_ptr::<u64>();
+        unsafe {
+            assert_eq!(pointer.read_volatile(), 0, "a fresh page is zeroed");
+            pointer.write_volatile(values.iter().sum());
+            assert_eq!(pointer.read_volatile(), 4950);
+        }
+        activate_kernel_space();
+        assert!(!space.is_active());
+        assert!(with_memory(|m| m.mapper.translate_addr(page)).is_none(), "the kernel table has no user pages");
+        drop(values);
+    }
+
+    #[test_case]
+    fn test_kernel_addresses_are_the_same_in_a_user_space() {
+        static VALUE: u64 = 1;
+        let local = 0u64;
+        let heap = alloc::boxed::Box::new(0u64);
+        let addresses = [
+            VirtAddr::from_ptr(&VALUE),
+            VirtAddr::from_ptr(&local),
+            VirtAddr::from_ptr(&*heap),
+            VirtAddr::new(activate_kernel_space as *const () as u64),
+            with_memory(|m| m.mapper.phys_offset()) + 0x20_0000u64,
+        ];
+        let mut space = UserSpace::new().unwrap();
+        for address in addresses {
+            let in_kernel = with_memory(|m| m.mapper.translate_addr(address));
+            assert!(in_kernel.is_some());
+            assert_eq!(space.translate(address), in_kernel, "{:?}", address);
+        }
+    }
+
+    /// The upper half is shared: a kernel mapping made after the space exists shows up in it
+    #[test_case]
+    fn test_later_kernel_mappings_reach_every_space() {
+        let mut space = UserSpace::new().unwrap();
+        let address = VirtAddr::new(FRESH_ENTRY);
+        let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
+        with_memory(|m| map_range(&mut m.mapper, &mut m.frame_allocator, address, 4096, flags)).unwrap();
+        let in_kernel = with_memory(|m| m.mapper.translate_addr(address));
+        assert!(in_kernel.is_some());
+        assert_eq!(space.translate(address), in_kernel);
+        with_memory(|m| unmap_range(&mut m.mapper, &mut m.frame_allocator, address, 4096)).unwrap();
+        x86_64::instructions::tlb::flush(address);
+        assert!(space.translate(address).is_none());
+    }
+
+    #[test_case]
+    fn test_user_spaces_are_separate() {
+        let (mut a, mut b) = (UserSpace::new().unwrap(), UserSpace::new().unwrap());
+        let page = VirtAddr::new(0x40_0000);
+        a.map(page, 4096, USER_RW).unwrap();
+        assert!(b.translate(page).is_none());
+        b.map(page, 4096, USER_RW).unwrap();
+        assert_ne!(a.translate(page), b.translate(page));
+        assert!(matches!(a.unmap(page, 4096), Ok(1)));
+        assert!(b.translate(page).is_some());
+    }
+
+    /// Nikka's steal-all-frames pattern: with k free frames for every k that is not enough,
+    /// creating a space and mapping a range fails without a leak
+    #[test_case]
+    fn test_out_of_frames_at_every_step() {
+        let start = VirtAddr::new((1 << 39) - 2 * 4096);
+        let size = 4 * 4096;
+        let used = used_frames();
+        let mut space = UserSpace::new().unwrap();
+        space.map(start, size, USER_RW).unwrap();
+        let needed = used_frames() - used;
+        drop(space);
+        let mut stolen = Vec::with_capacity(crate::memory::total_usable_frames());
+        for available in 0..needed {
+            with_memory(|m| {
+                while let Some(frame) = m.frame_allocator.allocate_frame() {
+                    stolen.push(frame);
+                }
+                for frame in stolen.drain(stolen.len() - available..) {
+                    unsafe { m.frame_allocator.deallocate_frame(frame) };
+                }
+            });
+            let guard = crate::testosterone::forbid_frame_leaks();
+            match UserSpace::new() {
+                None => assert_eq!(available, 0),
+                Some(mut space) => assert!(space.map(start, size, USER_RW).is_err(), "{} frames were enough", available),
+            }
+            drop(guard);
+            with_memory(|m| {
+                for frame in stolen.drain(..) {
+                    unsafe { m.frame_allocator.deallocate_frame(frame) };
+                }
+            });
+        }
     }
 
     #[test_case]

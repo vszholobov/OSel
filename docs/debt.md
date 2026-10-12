@@ -17,7 +17,6 @@ description: Список сознательно отложенной работ
 | KVM в CI | быстрее, но меняет поведение таймера; нужна хотя бы одна задача без KVM | [как устроены тесты](architecture/testing.md#ci) |
 | Фильтр тестов `cargo test -- <фильтр>` | тестовое ядро не умеет выбирать тесты по имени | [runner](reference/runner.md#test-args) |
 | Куча фиксирована, 16 МБ | не растёт; рост потребует брать `MEMORY` под `ALLOCATOR` | [память](architecture/core/memory.md#heap), [блокировки](architecture/core/locking.md#pitfalls) |
-| `map_range` не откатывает частичное отображение | при ошибке уже отображённые страницы остаются | [память](architecture/core/memory.md) |
 | Драйвер часов реального времени | нужен для `clock_gettime`; тесты форматов из курса ШАДа ждут его | [этап 2](design/stage-2-user-mode.md), [курс ШАДа](nikka.md) |
 | Свой ramdisk у отдельного тестового ядра | сейчас у всех ядер один `ramdisk/`; понадобится для тестовых программ этапа 2 | [файлы и ramdisk](architecture/core/fs.md), [этап 2](design/stage-2-user-mode.md) |
 | Символьные ссылки и файлы устройств в cpio | ядро понимает только файлы, жёсткие ссылки и каталоги, остальное отклоняется | [файлы и ramdisk](architecture/core/fs.md#cpio) |

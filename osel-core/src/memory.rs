@@ -7,8 +7,9 @@
 //! - `HEAP_START..HEAP_START + HEAP_SIZE`: kernel heap.
 
 use bootloader_api::info::{MemoryRegion, MemoryRegionKind};
+use crate::frames::FrameSource;
 use x86_64::structures::paging::mapper::MapToError;
-use x86_64::structures::paging::{FrameAllocator, Mapper, Page, PageTableFlags, PhysFrame, Size4KiB};
+use x86_64::structures::paging::{FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB};
 use x86_64::{PhysAddr, VirtAddr};
 
 pub const PAGE_SIZE: u64 = 4096;
@@ -144,36 +145,193 @@ impl From<MapToError<Size4KiB>> for MapRangeError {
     }
 }
 
-/// Maps `size` bytes starting at `start` to freshly allocated frames.
-/// Pages mapped before an error stay mapped.
+/// Maps `size` bytes starting at `start` to freshly allocated, zeroed frames.
+///
+/// On error nothing of this call stays: the pages it mapped are unmapped and their frames
+/// freed, and empty page tables in the range are freed (see `prune_empty_tables`). The CPU
+/// may cache present translations speculatively, so if the table is active, the caller
+/// flushes the TLB after an error, as after `unmap_range`.
 pub fn map_range(
-    mapper: &mut impl Mapper<Size4KiB>,
-    frame_allocator: &mut impl FrameAllocator<Size4KiB>,
+    mapper: &mut OffsetPageTable,
+    frames: &mut impl FrameSource,
     start: VirtAddr,
     size: u64,
     flags: PageTableFlags,
 ) -> Result<(), MapRangeError> {
-    if size == 0 {
+    let Some((first, last)) = check_range(start, size)? else {
         return Ok(());
-    }
-    let last = start.as_u64().checked_add(size - 1).ok_or(MapRangeError::InvalidRange)?;
-    let last = VirtAddr::try_new(last).map_err(|_| MapRangeError::InvalidRange)?;
-    let user_range = start.as_u64() < USER_END;
-    if user_range != (last.as_u64() < USER_END) {
-        return Err(MapRangeError::InvalidRange);
-    }
+    };
+    let user_range = first.start_address().as_u64() < USER_END;
     if user_range != flags.contains(PageTableFlags::USER_ACCESSIBLE) {
         return Err(MapRangeError::PermissionDenied);
     }
-    let first = Page::<Size4KiB>::containing_address(start);
-    let last = Page::<Size4KiB>::containing_address(last);
-    for page in Page::range_inclusive(first, last) {
-        let frame = frame_allocator.allocate_frame().ok_or(MapToError::FrameAllocationFailed)?;
-        // `map_to` refuses pages that are already mapped, and the CPU never caches
-        // not present translations, so there is nothing stale to flush
-        unsafe { mapper.map_to(page, frame, flags, frame_allocator)?.ignore() };
+    // a global user page would survive the switch to another address space
+    if user_range && flags.contains(PageTableFlags::GLOBAL) {
+        return Err(MapRangeError::PermissionDenied);
+    }
+    for page in pages(first, last) {
+        if let Err(error) = map_zeroed_page(mapper, frames, page, flags) {
+            if page > first {
+                unmap_pages(mapper, frames, first, page - 1u64);
+            }
+            prune_empty_tables(mapper, frames, first, last);
+            return Err(error);
+        }
     }
     Ok(())
+}
+
+/// Unmaps the mapped pages of `size` bytes at `start` and frees their frames, then frees
+/// the page tables left empty. Pages that are not mapped are skipped. Returns the number
+/// of unmapped pages; flushing their TLB entries is up to the caller.
+pub fn unmap_range(
+    mapper: &mut OffsetPageTable,
+    frames: &mut impl FrameSource,
+    start: VirtAddr,
+    size: u64,
+) -> Result<usize, MapRangeError> {
+    let Some((first, last)) = check_range(start, size)? else {
+        return Ok(0);
+    };
+    let unmapped = unmap_pages(mapper, frames, first, last);
+    prune_empty_tables(mapper, frames, first, last);
+    Ok(unmapped)
+}
+
+/// First and last page of a non-empty range that stays in one half of the address space
+fn check_range(start: VirtAddr, size: u64) -> Result<Option<(Page, Page)>, MapRangeError> {
+    if size == 0 {
+        return Ok(None);
+    }
+    let last = start.as_u64().checked_add(size - 1).ok_or(MapRangeError::InvalidRange)?;
+    let last = VirtAddr::try_new(last).map_err(|_| MapRangeError::InvalidRange)?;
+    if (start.as_u64() < USER_END) != (last.as_u64() < USER_END) {
+        return Err(MapRangeError::InvalidRange);
+    }
+    Ok(Some((Page::containing_address(start), Page::containing_address(last))))
+}
+
+fn map_zeroed_page(
+    mapper: &mut OffsetPageTable,
+    frames: &mut impl FrameSource,
+    page: Page,
+    flags: PageTableFlags,
+) -> Result<(), MapRangeError> {
+    let frame = frames.allocate_frame().ok_or(MapToError::FrameAllocationFailed)?;
+    // frames come back from the pool with the data of their previous owner
+    let bytes = (mapper.phys_offset() + frame.start_address().as_u64()).as_mut_ptr::<u8>();
+    unsafe { bytes.write_bytes(0, PAGE_SIZE as usize) };
+    // `map_to` refuses pages that are already mapped, and the CPU never caches
+    // not present translations, so there is nothing stale to flush
+    match unsafe { mapper.map_to(page, frame, flags, frames) } {
+        Ok(flush) => {
+            flush.ignore();
+            Ok(())
+        }
+        Err(error) => {
+            if frames.can_free(frame) {
+                unsafe { frames.deallocate_frame(frame) };
+            }
+            Err(error.into())
+        }
+    }
+}
+
+/// Pages `first..=last`. `Page::range_inclusive` steps past the last page of the lower
+/// half into the non-canonical hole and panics.
+fn pages(first: Page, last: Page) -> impl Iterator<Item = Page> {
+    (0..=last - first).map(move |index| first + index)
+}
+
+/// Unmaps the 4 KiB pages of `first..=last` by walking the tables, so absent subtrees of a
+/// huge range cost nothing. Huge pages are skipped: they are not ours to split.
+fn unmap_pages(mapper: &mut OffsetPageTable, frames: &mut impl FrameSource, first: Page, last: Page) -> usize {
+    let phys_offset = mapper.phys_offset();
+    let span = Span { first: linear(first.start_address()), last: linear(last.start_address()) };
+    unmap_level(mapper.level_4_table_mut(), 4, 0, span, phys_offset, frames)
+}
+
+fn unmap_level(table: &mut PageTable, level: u8, base: u64, span: Span, phys_offset: VirtAddr, frames: &mut impl FrameSource) -> usize {
+    let size = entry_size(level);
+    let mut unmapped = 0;
+    for (index, entry) in table.iter_mut().enumerate() {
+        let start = base + index as u64 * size;
+        if start + size - 1 < span.first || start > span.last {
+            continue;
+        }
+        if entry.is_unused() || entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+            continue;
+        }
+        if level == 1 {
+            let frame = PhysFrame::containing_address(entry.addr());
+            entry.set_unused();
+            if frames.can_free(frame) {
+                unsafe { frames.deallocate_frame(frame) };
+            }
+            unmapped += 1;
+        } else {
+            let child = unsafe { table_at(phys_offset, entry.addr()) };
+            unmapped += unmap_level(child, level - 1, start, span, phys_offset, frames);
+        }
+    }
+    unmapped
+}
+
+/// Frees the empty page tables that cover pages `first..=last`. Only frames the pool
+/// can take back are freed (not the bootloader's), huge page entries are skipped, and
+/// level 3 tables of the upper half stay: every address space shares them.
+pub fn prune_empty_tables(mapper: &mut OffsetPageTable, frames: &mut impl FrameSource, first: Page, last: Page) {
+    let phys_offset = mapper.phys_offset();
+    let span = Span { first: linear(first.start_address()), last: linear(last.start_address()) };
+    prune_level(mapper.level_4_table_mut(), 4, 0, span, phys_offset, frames);
+}
+
+/// Addresses without the sign extension: the upper half starts at `1 << 47`
+#[derive(Clone, Copy)]
+struct Span {
+    first: u64,
+    last: u64,
+}
+
+fn linear(address: VirtAddr) -> u64 {
+    address.as_u64() & ((1 << 48) - 1)
+}
+
+/// Bytes covered by one entry of a table of `level`
+fn entry_size(level: u8) -> u64 {
+    PAGE_SIZE << (9 * (level as u64 - 1))
+}
+
+fn prune_level(table: &mut PageTable, level: u8, base: u64, span: Span, phys_offset: VirtAddr, frames: &mut impl FrameSource) {
+    let size = entry_size(level);
+    for (index, entry) in table.iter_mut().enumerate() {
+        let start = base + index as u64 * size;
+        let end = start + size - 1;
+        if end < span.first || start > span.last {
+            continue;
+        }
+        if entry.is_unused() || entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+            continue;
+        }
+        // the children of a level 2 table are level 1 tables, which only hold pages
+        if level > 2 {
+            let child = unsafe { table_at(phys_offset, entry.addr()) };
+            prune_level(child, level - 1, start, span, phys_offset, frames);
+        }
+        let shared = level == 4 && start >= USER_END;
+        let frame = PhysFrame::containing_address(entry.addr());
+        let empty = unsafe { table_at(phys_offset, entry.addr()) }.iter().all(|e| e.is_unused());
+        if empty && !shared && frames.can_free(frame) {
+            entry.set_unused();
+            unsafe { frames.deallocate_frame(frame) };
+        }
+    }
+}
+
+/// # Safety
+/// `address` must be a page table reachable through `phys_offset`, not referenced elsewhere.
+pub unsafe fn table_at<'a>(phys_offset: VirtAddr, address: PhysAddr) -> &'a mut PageTable {
+    unsafe { &mut *(phys_offset + address.as_u64()).as_mut_ptr::<PageTable>() }
 }
 
 #[cfg(test)]
@@ -182,7 +340,7 @@ mod tests {
     use alloc::boxed::Box;
     use alloc::collections::BTreeSet;
     use alloc::vec::Vec;
-    use x86_64::structures::paging::{OffsetPageTable, PageTable, Translate};
+    use x86_64::structures::paging::{FrameDeallocator, Translate};
 
     const MIB: u64 = 1024 * 1024;
 
@@ -320,10 +478,18 @@ mod tests {
         }
     }
 
-    /// Frames backed by real host memory, so page tables built in them can be walked
+    /// Frames backed by real host memory, so page tables built in them can be walked.
+    /// Freed frames are only counted, never reused.
     struct HostFrames {
         handed_out: usize,
         limit: usize,
+        freed: usize,
+    }
+
+    impl HostFrames {
+        fn new(limit: usize) -> HostFrames {
+            HostFrames { handed_out: 0, limit, freed: 0 }
+        }
     }
 
     unsafe impl FrameAllocator<Size4KiB> for HostFrames {
@@ -337,6 +503,22 @@ mod tests {
         }
     }
 
+    impl FrameDeallocator<Size4KiB> for HostFrames {
+        unsafe fn deallocate_frame(&mut self, _frame: PhysFrame) {
+            self.freed += 1;
+        }
+    }
+
+    impl FrameSource for HostFrames {
+        fn used_frames(&self) -> usize {
+            self.handed_out - self.freed
+        }
+
+        fn can_free(&self, _frame: PhysFrame) -> bool {
+            true
+        }
+    }
+
     fn host_mapper() -> OffsetPageTable<'static> {
         let level_4 = Box::leak(Box::new(PageTable::new()));
         // with offset 0 a "physical" address is the host address itself
@@ -346,7 +528,7 @@ mod tests {
     #[test]
     fn map_range_maps_every_page() {
         let mut mapper = host_mapper();
-        let mut frames = HostFrames { handed_out: 0, limit: 100 };
+        let mut frames = HostFrames::new(100);
         let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
         let start = VirtAddr::new(HEAP_START);
         map_range(&mut mapper, &mut frames, start, 3 * PAGE_SIZE + 1, flags).unwrap();
@@ -369,14 +551,14 @@ mod tests {
     #[test]
     fn map_range_of_nothing() {
         let mut mapper = host_mapper();
-        let mut frames = HostFrames { handed_out: 0, limit: 0 };
+        let mut frames = HostFrames::new(0);
         map_range(&mut mapper, &mut frames, VirtAddr::new(HEAP_START), 0, PageTableFlags::PRESENT).unwrap();
     }
 
     #[test]
     fn map_range_reports_overlap() {
         let mut mapper = host_mapper();
-        let mut frames = HostFrames { handed_out: 0, limit: 100 };
+        let mut frames = HostFrames::new(100);
         let start = VirtAddr::new(0x40_0000);
         let user = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
         map_range(&mut mapper, &mut frames, start, PAGE_SIZE, user).unwrap();
@@ -387,16 +569,19 @@ mod tests {
     #[test]
     fn map_range_reports_out_of_frames() {
         let mut mapper = host_mapper();
-        let mut frames = HostFrames { handed_out: 0, limit: 3 };
+        let mut frames = HostFrames::new(3);
         let user = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
         let error = map_range(&mut mapper, &mut frames, VirtAddr::new(0x40_0000), 4 * PAGE_SIZE, user).unwrap_err();
         assert!(matches!(error, MapRangeError::Map(MapToError::FrameAllocationFailed)), "{error:?}");
+        assert_eq!(frames.used_frames(), 0, "rolled back");
+        assert!((0..4).all(|page| mapper.translate_addr(VirtAddr::new(0x40_0000 + page * PAGE_SIZE)).is_none()));
+        assert!(mapper.level_4_table()[0].is_unused(), "the tables are freed too");
     }
 
     #[test]
     fn map_range_of_whole_pages_maps_no_extra_page() {
         let mut mapper = host_mapper();
-        let mut frames = HostFrames { handed_out: 0, limit: 100 };
+        let mut frames = HostFrames::new(100);
         let start = VirtAddr::new(HEAP_START);
         map_range(&mut mapper, &mut frames, start, 2 * PAGE_SIZE, PageTableFlags::PRESENT).unwrap();
         assert!(mapper.translate_addr(start + PAGE_SIZE).is_some());
@@ -408,7 +593,7 @@ mod tests {
     #[test]
     fn map_range_with_unaligned_start() {
         let mut mapper = host_mapper();
-        let mut frames = HostFrames { handed_out: 0, limit: 100 };
+        let mut frames = HostFrames::new(100);
         let start = VirtAddr::new(HEAP_START + PAGE_SIZE - 1);
         map_range(&mut mapper, &mut frames, start, 2, PageTableFlags::PRESENT).unwrap();
         assert!(mapper.translate_addr(VirtAddr::new(HEAP_START)).is_some());
@@ -416,10 +601,36 @@ mod tests {
         assert!(mapper.translate_addr(VirtAddr::new(HEAP_START + 2 * PAGE_SIZE)).is_none());
     }
 
+    /// The page right below the non-canonical hole is the end of a range, not a step into it
+    #[test]
+    fn map_range_up_to_the_end_of_the_lower_half() {
+        let mut mapper = host_mapper();
+        let mut frames = HostFrames::new(100);
+        let user = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
+        let start = VirtAddr::new(USER_END - 2 * PAGE_SIZE);
+        map_range(&mut mapper, &mut frames, start, 2 * PAGE_SIZE, user).unwrap();
+        assert!(mapper.translate_addr(VirtAddr::new(USER_END - 1)).is_some());
+        assert_eq!(unmap_range(&mut mapper, &mut frames, start, 2 * PAGE_SIZE).unwrap(), 2);
+        assert_eq!(frames.used_frames(), 0);
+    }
+
+    #[test]
+    fn unmapping_a_huge_range_skips_the_holes() {
+        let mut mapper = host_mapper();
+        let mut frames = HostFrames::new(100);
+        let user = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
+        map_range(&mut mapper, &mut frames, VirtAddr::new(0x40_0000), PAGE_SIZE, user).unwrap();
+        map_range(&mut mapper, &mut frames, VirtAddr::new(USER_END - PAGE_SIZE), PAGE_SIZE, user).unwrap();
+        // 2^35 pages: page by page this would never finish
+        assert_eq!(unmap_range(&mut mapper, &mut frames, VirtAddr::new(0), USER_END).unwrap(), 2);
+        assert_eq!(frames.used_frames(), 0);
+        assert!(mapper.level_4_table().iter().all(|entry| entry.is_unused()));
+    }
+
     #[test]
     fn map_range_refuses_invalid_ranges() {
         let mut mapper = host_mapper();
-        let mut frames = HostFrames { handed_out: 0, limit: 100 };
+        let mut frames = HostFrames::new(100);
         let flags = PageTableFlags::PRESENT;
         let crossing_hole = map_range(&mut mapper, &mut frames, VirtAddr::new(USER_END - PAGE_SIZE), 2 * PAGE_SIZE, flags);
         assert!(matches!(crossing_hole, Err(MapRangeError::InvalidRange)));
@@ -432,7 +643,7 @@ mod tests {
     #[test]
     fn kernel_and_user_are_separated() {
         let mut mapper = host_mapper();
-        let mut frames = HostFrames { handed_out: 0, limit: 100 };
+        let mut frames = HostFrames::new(100);
         let kernel = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
         let user = kernel | PageTableFlags::USER_ACCESSIBLE;
         let (user_page, kernel_page) = (VirtAddr::new(0x40_0000), VirtAddr::new(HEAP_START));
@@ -450,7 +661,7 @@ mod tests {
     #[test]
     fn intermediate_entries_get_only_access_flags() {
         let mut mapper = host_mapper();
-        let mut frames = HostFrames { handed_out: 0, limit: 100 };
+        let mut frames = HostFrames::new(100);
         let flags = PageTableFlags::PRESENT
             | PageTableFlags::WRITABLE
             | PageTableFlags::NO_EXECUTE
@@ -467,7 +678,7 @@ mod tests {
     #[test]
     fn intermediate_entries_are_reused_and_widened() {
         let mut mapper = host_mapper();
-        let mut frames = HostFrames { handed_out: 0, limit: 100 };
+        let mut frames = HostFrames::new(100);
         let read_only = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
         let start = VirtAddr::new(0x40_0000);
         map_range(&mut mapper, &mut frames, start, PAGE_SIZE, read_only).unwrap();

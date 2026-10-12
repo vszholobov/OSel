@@ -70,6 +70,7 @@ items:
       - href: decisions/0006-higher-half-kernel.md
       - href: decisions/0007-storage-interfaces.md
       - href: decisions/0008-frame-pool.md
+      - href: decisions/0009-shared-kernel-half.md
   - name: Планы
     items:
       - href: roadmap.md
