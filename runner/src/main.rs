@@ -9,7 +9,8 @@
 //! - `OSEL_TIMEOUT=<seconds>`: limit for tests and `OSEL_EXPECT` runs (default: 60)
 //! - `OSEL_OVMF_DIR=<dir>`: where to cache the UEFI firmware (default: runner/.ovmf)
 //! - `OSEL_RAMDISK=<dir>`: directory packed into the ramdisk as a cpio archive
-//!   (default: ramdisk/ of the repository; relative paths start there too)
+//!   (default: ramdisk/ of the repository; relative paths start there too). The programs
+//!   of user/ are built and added as /bin/<name>.
 
 use bootloader::{BootConfig, DiskImageBuilder};
 use bootloader_boot_config::LevelFilter;
@@ -33,6 +34,10 @@ const TEST_MEMORY: &str = "128M";
 const DEFAULT_RAMDISK_DIR: &str = "ramdisk";
 /// Where the bootloader looks for the ramdisk in the image, `RAMDISK_FILE_NAME` of `bootloader`
 const RAMDISK_FILE_NAME: &str = "ramdisk";
+/// Programs in user/ of the repository, each a crate of its own, added as /bin/<name>
+const USER_PROGRAMS: &[&str] = &["hello"];
+/// Their target: `ET_EXEC` at a fixed address, the kernel loads no position independent code
+const USER_TARGET: &str = "x86_64-unknown-none";
 /// Files the host leaves behind that must not make the ramdisk differ between machines
 const IGNORED_FILES: &[&str] = &[".DS_Store"];
 
@@ -60,7 +65,8 @@ fn main() -> ExitCode {
     let config = parse_boot(env::var("OSEL_BOOT").ok().as_deref()).and_then(|boot| {
         let timeout = parse_timeout(env::var("OSEL_TIMEOUT").ok().as_deref())?;
         let ramdisk_dir = ramdisk_dir(env::var_os("OSEL_RAMDISK").as_deref(), &repository());
-        let ramdisk = pack_ramdisk(&ramdisk_dir)?;
+        let programs = build_user_programs(&repository())?;
+        let ramdisk = pack_ramdisk(&ramdisk_dir, &programs)?;
         Ok((boot, timeout, ramdisk))
     });
     let (boot, timeout, ramdisk) = match config {
@@ -223,18 +229,60 @@ fn ramdisk_dir(value: Option<&std::ffi::OsStr>, repository: &Path) -> PathBuf {
     }
 }
 
+/// Builds every program of `USER_PROGRAMS` and returns its name and bytes. A nested cargo
+/// with its own target directory: the kernel build that started the runner holds target/.
+fn build_user_programs(repository: &Path) -> Result<Vec<(String, Vec<u8>)>, String> {
+    let target_dir = repository.join("user/target");
+    let mut programs = Vec::new();
+    for name in USER_PROGRAMS {
+        let manifest = repository.join("user").join(name).join("Cargo.toml");
+        let status = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
+            .args(["build", "--quiet", "--release", "--target", USER_TARGET])
+            .arg("--manifest-path")
+            .arg(&manifest)
+            .arg("--target-dir")
+            .arg(&target_dir)
+            // what the outer cargo set for the kernel must not leak into the program
+            .env_remove("RUSTFLAGS")
+            .env_remove("CARGO_TARGET_DIR")
+            .env_remove("CARGO_BUILD_TARGET")
+            .env("CARGO_ENCODED_RUSTFLAGS", "-Crelocation-model=static")
+            .status()
+            .map_err(|e| format!("cannot start cargo to build user/{name}: {e}"))?;
+        if !status.success() {
+            return Err(format!("building user/{name} failed"));
+        }
+        let binary = target_dir.join(USER_TARGET).join("release").join(name);
+        let data = std::fs::read(&binary).map_err(|e| format!("cannot read {}: {e}", binary.display()))?;
+        programs.push((name.to_string(), data));
+    }
+    Ok(programs)
+}
+
 /// Packs `dir` into a cpio archive: directories and regular files with their
-/// permission bits, sorted by name, so the same tree always gives the same bytes
-fn pack_ramdisk(dir: &Path) -> Result<Vec<u8>, String> {
+/// permission bits, sorted by name, so the same tree always gives the same bytes.
+/// `programs` go to /bin after it; a file of the same name in `dir` is an error.
+fn pack_ramdisk(dir: &Path, programs: &[(String, Vec<u8>)]) -> Result<Vec<u8>, String> {
     if !dir.is_dir() {
         return Err(format!("ramdisk directory {} does not exist, see OSEL_RAMDISK", dir.display()));
     }
     let mut builder = CpioBuilder::new();
-    pack_dir(dir, "", &mut builder)?;
+    let mut packed = Vec::new();
+    pack_dir(dir, "", &mut builder, &mut packed)?;
+    if !programs.is_empty() && !packed.iter().any(|name| name == "bin") {
+        builder.add_dir("bin", 0o755);
+    }
+    for (name, data) in programs {
+        let path = format!("bin/{name}");
+        if packed.contains(&path) {
+            return Err(format!("{path} is in the ramdisk directory and also a program of user/"));
+        }
+        builder.add_file(&path, 0o755, data);
+    }
     Ok(builder.finish())
 }
 
-fn pack_dir(dir: &Path, prefix: &str, builder: &mut CpioBuilder) -> Result<(), String> {
+fn pack_dir(dir: &Path, prefix: &str, builder: &mut CpioBuilder, packed: &mut Vec<String>) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
 
     let read_error = |path: &Path, e: std::io::Error| format!("cannot read {}: {e}", path.display());
@@ -253,12 +301,13 @@ fn pack_dir(dir: &Path, prefix: &str, builder: &mut CpioBuilder) -> Result<(), S
             continue;
         }
         let name = format!("{prefix}{name}");
+        packed.push(name.clone());
         // symlinks are not followed: the kernel has no symlinks yet
         let metadata = std::fs::symlink_metadata(&path).map_err(|e| read_error(&path, e))?;
         let permissions = metadata.permissions().mode() & 0o7777;
         if metadata.is_dir() {
             builder.add_dir(&name, permissions);
-            pack_dir(&path, &format!("{name}/"), builder)?;
+            pack_dir(&path, &format!("{name}/"), builder, packed)?;
         } else if metadata.is_file() {
             if metadata.len() > u64::from(u32::MAX) {
                 return Err(format!("{} is 4 GiB or more, cpio can't store it", path.display()));
@@ -536,8 +585,8 @@ mod tests {
         std::fs::set_permissions(dir.0.join("suid"), std::fs::Permissions::from_mode(0o4755)).unwrap();
         std::fs::write(dir.0.join(".DS_Store"), b"finder").unwrap();
 
-        let archive = pack_ramdisk(&dir.0).unwrap();
-        assert_eq!(archive, pack_ramdisk(&dir.0).unwrap(), "packing is deterministic");
+        let archive = pack_ramdisk(&dir.0, &[]).unwrap();
+        assert_eq!(archive, pack_ramdisk(&dir.0, &[]).unwrap(), "packing is deterministic");
         let fs = mount(archive);
         let root = fs.root();
         let read = |path| read_to_end(&*resolve(&root, path).unwrap()).unwrap();
@@ -551,19 +600,41 @@ mod tests {
     }
 
     #[test]
+    fn programs_go_to_bin() {
+        use osel_core::vfs::{FileSystem, read_to_end, resolve_absolute as resolve};
+
+        let programs = [("hello".to_string(), b"\x7fELF".to_vec())];
+        let dir = TempDir::new("programs");
+        let fs = mount(pack_ramdisk(&dir.0, &programs).unwrap());
+        let hello = resolve(&fs.root(), "/bin/hello").unwrap();
+        assert_eq!(read_to_end(&*hello).unwrap(), b"\x7fELF");
+        assert_eq!(hello.stat().permissions, 0o755);
+
+        // a bin/ of the ramdisk directory gets the programs too
+        std::fs::create_dir(dir.0.join("bin")).unwrap();
+        std::fs::write(dir.0.join("bin/tool"), b"x").unwrap();
+        let fs = mount(pack_ramdisk(&dir.0, &programs).unwrap());
+        assert!(resolve(&fs.root(), "/bin/tool").is_ok() && resolve(&fs.root(), "/bin/hello").is_ok());
+
+        std::fs::write(dir.0.join("bin/hello"), b"mine").unwrap();
+        let error = pack_ramdisk(&dir.0, &programs).unwrap_err();
+        assert!(error.contains("bin/hello"), "{error}");
+    }
+
+    #[test]
     fn empty_directory_gives_an_empty_archive() {
         let dir = TempDir::new("empty");
-        let fs = mount(pack_ramdisk(&dir.0).unwrap());
+        let fs = mount(pack_ramdisk(&dir.0, &[]).unwrap());
         assert_eq!(fs.node_count(), 1);
     }
 
     #[test]
     fn missing_directory_is_an_error() {
         let dir = TempDir::new("missing");
-        let error = pack_ramdisk(&dir.0.join("nope")).unwrap_err();
+        let error = pack_ramdisk(&dir.0.join("nope"), &[]).unwrap_err();
         assert!(error.contains("does not exist") && error.contains("OSEL_RAMDISK"), "{error}");
         std::fs::write(dir.0.join("file"), b"").unwrap();
-        assert!(pack_ramdisk(&dir.0.join("file")).is_err(), "a file is not a directory");
+        assert!(pack_ramdisk(&dir.0.join("file"), &[]).is_err(), "a file is not a directory");
     }
 
     #[test]
@@ -571,13 +642,13 @@ mod tests {
         let dir = TempDir::new("symlink");
         std::fs::write(dir.0.join("target"), b"x").unwrap();
         std::os::unix::fs::symlink("target", dir.0.join("link")).unwrap();
-        let error = pack_ramdisk(&dir.0).unwrap_err();
+        let error = pack_ramdisk(&dir.0, &[]).unwrap_err();
         assert!(error.contains("only files and directories"), "{error}");
     }
 
     #[test]
     fn the_repository_ramdisk_packs() {
-        let fs = mount(pack_ramdisk(&ramdisk_dir(None, &repository())).unwrap());
+        let fs = mount(pack_ramdisk(&ramdisk_dir(None, &repository()), &[]).unwrap());
         assert!(fs.node_count() > 1, "ramdisk/ of the repository is empty");
     }
 

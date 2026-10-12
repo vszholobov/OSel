@@ -22,6 +22,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     #[cfg(test)]
     test_main();
     print_motd();
+    run_hello();
     println!("OSel ready to go!");
     // the smoke test in CI waits for this line on the serial port
     osel::serial_println!("OSel ready to go!");
@@ -32,6 +33,21 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
 fn print_motd() {
     if let Ok(motd) = osel::fs::read_file("/etc/motd") {
         print!("{}", alloc::string::String::from_utf8_lossy(&motd));
+    }
+}
+
+/// Runs the first program, /bin/hello from the ramdisk, if it is there
+fn run_hello() {
+    match osel::program::run("/bin/hello", &[b"/bin/hello"], &[]) {
+        Ok(osel::user::Stop::Exit(0)) | Err(osel::fs::Errno::ENOENT) => {}
+        Ok(stop) => {
+            println!("/bin/hello ended with {:?}", stop);
+            osel::serial_println!("/bin/hello ended with {:?}", stop);
+        }
+        Err(error) => {
+            println!("/bin/hello did not start: {}", error);
+            osel::serial_println!("/bin/hello did not start: {}", error);
+        }
     }
 }
 

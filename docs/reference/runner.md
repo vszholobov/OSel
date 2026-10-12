@@ -22,7 +22,11 @@ description: Справочник runner — переменные окружен
 | `OSEL_OVMF_DIR` | путь к папке | папка .ovmf внутри runner | куда скачать и где хранить прошивку UEFI для QEMU |
 | `OSEL_RAMDISK` | путь к папке | `ramdisk` в корне репозитория | какую папку упаковать в ramdisk (архив cpio). Относительный путь считается от корня репозитория, а не от текущей папки. Пустое значение — то же, что не задано |
 
-Неверное значение `OSEL_BOOT` или `OSEL_TIMEOUT` — ошибка до запуска QEMU: runner печатает `unknown OSEL_BOOT value …` или `OSEL_TIMEOUT must be a positive number of seconds, got …` и завершается с провалом. Так же runner останавливается, если папки ramdisk нет (`ramdisk directory … does not exist, see OSEL_RAMDISK`) или в ней есть что-то кроме каталогов и обычных файлов (`…: only files and directories can go to the ramdisk`).
+Неверное значение `OSEL_BOOT` или `OSEL_TIMEOUT` — ошибка до запуска QEMU: runner печатает `unknown OSEL_BOOT value …` или `OSEL_TIMEOUT must be a positive number of seconds, got …` и завершается с провалом. Так же runner останавливается, если не собралась программа из `user/`, если папки ramdisk нет (`ramdisk directory … does not exist, see OSEL_RAMDISK`) или в ней есть что-то кроме каталогов и обычных файлов (`…: only files and directories can go to the ramdisk`).
+
+## Программы из user/ {#user-programs}
+
+Перед упаковкой ramdisk runner собирает каждую программу из `USER_PROGRAMS` (`runner/src/main.rs`): `cargo build --release --target x86_64-unknown-none` для `user/<имя>/Cargo.toml` в отдельную папку `user/target`, с `-Crelocation-model=static`, потому что ядро загружает только `ET_EXEC`. `RUSTFLAGS`, `CARGO_TARGET_DIR` и `CARGO_BUILD_TARGET` внешнего cargo программе не передаются. Результат добавляется в архив как `/bin/<имя>` с правами `0755`, после файлов из папки ramdisk. Если в этой папке уже есть `bin/<имя>`, runner останавливается с ошибкой `bin/<имя> is in the ramdisk directory and also a program of user/`. Ошибка сборки программы — тоже остановка до запуска QEMU (`building user/<имя> failed`).
 
 ## Режимы {#modes}
 
@@ -79,4 +83,4 @@ description: Справочник runner — переменные окружен
 - `runner/run.sh` — обёртка для cargo.
 - `runner/src/main.rs` — `parse_boot`, `parse_timeout`, `ramdisk_dir`, `pack_ramdisk`, `is_test_binary`, `image_path`, `create_disk_image`, `ovmf_firmware`, `forward_serial_output`, `test_outcome`, `expect_outcome`, `wait_with_timeout`.
 
-_Сверено с кодом: 2026-10-12, коммит 8a4d3e2._
+_Сверено с кодом: 2026-10-12, коммит 8f15c54._

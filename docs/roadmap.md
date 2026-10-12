@@ -31,8 +31,7 @@ description: План развития OSel по этапам — от ядра 
 - [x] Адресное пространство программы ([память](architecture/core/memory.md#address-spaces), [решение 0009](decisions/0009-shared-kernel-half.md)).
 - [x] Загрузка ELF из ramdisk, стартовый стек с argv, envp и auxv ([программы](architecture/core/programs.md), [решение 0010](decisions/0010-static-elf-loader.md)).
 - [x] Пользовательский режим: сегменты кольца 3 в GDT, стек ядра в TSS, исключения программы не роняют ядро ([пользовательский режим](architecture/core/user-mode.md), [решение 0011](decisions/0011-user-entry.md)).
-- [ ] Вход в ядро через `syscall`/`sysret`.
-- [ ] Системные вызовы `write` и `exit`. **Проверка:** программа на ассемблере печатает «hello».
+- [x] Вход в ядро через `syscall`/`sysret`, системные вызовы `write` и `exit`. **Проверка:** программа на ассемблере из ramdisk печатает «Hello from ring 3!» ([системные вызовы](reference/syscalls.md), [решение 0012](decisions/0012-syscall-entry-and-user-programs.md)).
 - [ ] SSE для пользовательских программ.
 - [ ] Потоки и планировщик с вытеснением по таймеру, `clone`, `futex`.
 - [ ] Системные вызовы Linux для рантайма Go (около 30). **Проверка:** Go-программа «hello world».

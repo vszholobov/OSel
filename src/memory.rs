@@ -119,7 +119,8 @@ impl UserSpace {
         self.write_bytes(address, bytes)
     }
 
-    fn check_user(&mut self, address: u64, len: usize, access: Access) -> KResult<()> {
+    /// Checks that `len` bytes at `address` are the program's memory, see `user_mem::check`
+    pub fn check_user(&mut self, address: u64, len: usize, access: Access) -> KResult<()> {
         // the leaf flags are enough: the kernel gives every lower half table entry all
         // the access flags its pages need
         user_mem::check(address, len as u64, access, |page| self.page_flags(VirtAddr::new(page)))

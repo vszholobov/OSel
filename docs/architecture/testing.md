@@ -25,7 +25,7 @@ description: Как устроены тесты OSel — три уровня (х
 - **модульные тесты** — функции `#[test_case]` в `src/`, собираются в одно ядро вместе с библиотекой; точка входа `test_kernel_main` в `src/lib.rs`;
 - **интеграционные тесты** — каждый файл в `tests/` — своё ядро. Файл с собственной функцией `main` без тестового фреймворка помечается `harness = false` в `Cargo.toml`.
 
-Cargo запускает каждый бинарник через runner (`runner/run.sh`), runner собирает из него образ диска с ramdisk из папки `ramdisk/` (одинаковый у всех ядер, см. [файлы и ramdisk](core/fs.md)) и загружает в QEMU с устройством `isa-debug-exit`. Ядро завершает QEMU записью в порт `0xf4` (функция `exit_qemu` в `src/qemuno.rs`): код `0x10` — успех, QEMU выходит с кодом 33; код `0x11` — провал, QEMU выходит с кодом 35. Подробности — в [справочнике runner](../reference/runner.md).
+Cargo запускает каждый бинарник через runner (`runner/run.sh`), runner собирает из него образ диска с ramdisk из папки `ramdisk/` и программами из `user/` в `/bin` (одинаковый у всех ядер, см. [файлы и ramdisk](core/fs.md)) и загружает в QEMU с устройством `isa-debug-exit`. Ядро завершает QEMU записью в порт `0xf4` (функция `exit_qemu` в `src/qemuno.rs`): код `0x10` — успех, QEMU выходит с кодом 33; код `0x11` — провал, QEMU выходит с кодом 35. Подробности — в [справочнике runner](../reference/runner.md).
 
 ## Фреймворк testosterone {#testosterone}
 

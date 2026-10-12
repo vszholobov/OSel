@@ -9,14 +9,46 @@
 use crate::gdt;
 use crate::memory::{self, USER_END, UserSpace};
 use core::arch::naked_asm;
+use osel_core::syscall::SYSCALL_VECTOR;
 use osel_core::trap::{GENERAL_PROTECTION, TRAP_FRAME_WORDS, TrapFrame};
 
 /// Kernel stack pointer of the `enter_user` that runs the current program
-static mut KERNEL_RSP: u64 = 0;
+pub(crate) static mut KERNEL_RSP: u64 = 0;
+/// The address space of the running program, for system calls
+static mut RUNNING: *mut UserSpace = core::ptr::null_mut();
 /// CR2 when the program trapped: the faulting address of a page fault
 static mut TRAP_CR2: u64 = 0;
 
-/// How a program left ring 3
+/// How a program's run ended
+#[derive(Debug, Clone, Copy)]
+pub enum Stop {
+    /// `exit` or `exit_group` with this status
+    Exit(u8),
+    /// An exception the program caused
+    Fault(Trap),
+}
+
+impl Stop {
+    /// The exception, panics if the program exited
+    #[track_caller]
+    pub fn fault(self) -> Trap {
+        match self {
+            Stop::Fault(trap) => trap,
+            Stop::Exit(code) => panic!("the program exited with {} instead of a fault", code),
+        }
+    }
+
+    /// The exit status, panics if the program faulted
+    #[track_caller]
+    pub fn exit_code(self) -> u8 {
+        match self {
+            Stop::Exit(code) => code,
+            Stop::Fault(trap) => panic!("the program faulted with vector {} instead of exiting", trap.vector),
+        }
+    }
+}
+
+/// An exception that ended a program
 #[derive(Debug, Clone, Copy)]
 pub struct Trap {
     pub vector: u64,
@@ -31,25 +63,44 @@ pub fn initial_frame(entry: u64, rsp: u64) -> TrapFrame {
     TrapFrame::new_user(entry, rsp, selectors.user_code_selector.0, selectors.user_data_selector.0)
 }
 
-/// Runs the program in `space` from `frame` until it traps. The frame then holds every
-/// register of the program at the trap. The kernel's own page table is active again
+/// Runs the program in `space` from `frame` until it exits or traps. The frame then holds
+/// every register of the program at that moment. The kernel's own page table is active again
 /// afterwards. Interrupts must be on: a held `IrqSpinlock` would deadlock the timer.
 /// The frame is forced to ring 3 first; a `rip` outside the lower half is a #GP of the
 /// program right away, without entering it.
-pub fn run(space: &mut UserSpace, frame: &mut TrapFrame) -> Trap {
+pub fn run(space: &mut UserSpace, frame: &mut TrapFrame) -> Stop {
     assert!(x86_64::instructions::interrupts::are_enabled(), "entering a program with interrupts off or a lock held");
+    // one saved kernel stack and one running space: a run inside a system call would lose them
+    assert!(unsafe { RUNNING.is_null() }, "a program is already running");
     let selectors = gdt::selectors();
     if !frame.make_user(selectors.user_code_selector.0, selectors.user_data_selector.0, USER_END) {
         frame.vector = GENERAL_PROTECTION;
         frame.error_code = 0;
-        return Trap { vector: GENERAL_PROTECTION, error_code: 0, cr2: 0 };
+        return Stop::Fault(Trap { vector: GENERAL_PROTECTION, error_code: 0, cr2: 0 });
     }
     space.activate();
-    unsafe { enter_user(frame, gdt::kernel_stack_slot()) };
+    unsafe {
+        RUNNING = space;
+        enter_user(frame, gdt::kernel_stack_slot());
+        RUNNING = core::ptr::null_mut();
+    }
     memory::activate_kernel_space();
     gdt::reload_data_segments();
+    if frame.vector == SYSCALL_VECTOR {
+        // `exit` keeps its argument where the program put it
+        return Stop::Exit(frame.rdi as u8);
+    }
     let cr2 = if frame.vector == osel_core::trap::PAGE_FAULT { unsafe { TRAP_CR2 } } else { 0 };
-    Trap { vector: frame.vector, error_code: frame.error_code, cr2 }
+    Stop::Fault(Trap { vector: frame.vector, error_code: frame.error_code, cr2 })
+}
+
+/// The address space of the program whose system call is running
+///
+/// # Safety
+/// Only from a system call: `run` is on the stack below and holds the space, but does not
+/// touch it until the program leaves; one CPU, so nothing else does either.
+pub(crate) unsafe fn running_space() -> &'static mut UserSpace {
+    unsafe { RUNNING.as_mut() }.expect("no program is running")
 }
 
 /// Saves the callee-saved registers and the flags, makes the current stack the one the
@@ -97,7 +148,7 @@ unsafe extern "C" fn enter_user(frame: *mut TrapFrame, kernel_stack_slot: *mut u
 
 /// Reached by a `jmp` from an entry stub after a trap from ring 3, with the vector and the
 /// error code pushed on top of what the CPU pushed. Completes the `TrapFrame` on the
-/// stack, copies it to the frame `enter_user` got and returns from `enter_user`.
+/// stack and leaves the run.
 #[unsafe(naked)]
 pub(crate) unsafe extern "C" fn user_trap() {
     naked_asm!(
@@ -116,6 +167,16 @@ pub(crate) unsafe extern "C" fn user_trap() {
         "push r13",
         "push r14",
         "push r15",
+        "jmp {leave_user}",
+        leave_user = sym leave_user,
+    )
+}
+
+/// Reached by a `jmp` with a complete `TrapFrame` at the stack pointer and interrupts off:
+/// copies it to the frame `enter_user` got and returns from `enter_user`
+#[unsafe(naked)]
+pub(crate) unsafe extern "C" fn leave_user() {
+    naked_asm!(
         // the program may have left DF set, and `rep movsq` follows
         "cld",
         "mov rax, cr2",
@@ -143,7 +204,7 @@ pub(crate) unsafe extern "C" fn user_trap() {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::program::{self, Loaded};
     use alloc::vec::Vec;
@@ -152,7 +213,7 @@ mod tests {
     use osel_core::trap::RFLAGS_IF;
     use x86_64::VirtAddr;
 
-    const TEXT: u64 = 0x40_0000;
+    pub(crate) const TEXT: u64 = 0x40_0000;
     const DATA: u64 = 0x60_0000;
 
     // Test programs: machine code between labels, copied into an ELF at `TEXT`. Only
@@ -205,7 +266,10 @@ mod tests {
         "osel_int3:", "int3", "osel_int3_end:",
         "osel_ud2:", "ud2", "osel_ud2_end:",
         "osel_wrmsr:", "xor eax, eax", "xor edx, edx", "mov ecx, 0xc0000080", "wrmsr", "osel_wrmsr_end:",
-        "osel_syscall:", "syscall", "osel_syscall_end:",
+        "osel_rdmsr:", "mov ecx, 0xc0000080", "rdmsr", "osel_rdmsr_end:",
+        "osel_out:", "out 0x80, al", "osel_out_end:",
+        // calls itself until the stack runs into the guard page below it
+        "osel_recursion:", "2:", "call 2b", "osel_recursion_end:",
         "osel_divide:", "xor ecx, ecx", "div rcx", "osel_divide_end:",
         "osel_kernel_jump:", "mov rax, 0xffff800000000000", "jmp rax", "osel_kernel_jump_end:",
         "osel_kernel_read:", "mov rax, 0xffff800000000000", "mov rax, [rax]", "osel_kernel_read_end:",
@@ -216,6 +280,7 @@ mod tests {
         ".popsection",
     );
 
+    /// The machine code between two labels of a `global_asm!` test program
     macro_rules! code {
         ($start:ident, $end:ident) => {{
             unsafe extern "C" {
@@ -227,20 +292,27 @@ mod tests {
             unsafe { core::slice::from_raw_parts(start, len) }
         }};
     }
+    pub(crate) use code;
 
-    fn load(code: &[u8]) -> Loaded {
+    /// `code` as a program: text at `TEXT`, a data page at `DATA`
+    pub(crate) fn load(code: &[u8]) -> Loaded {
         let file = ElfBuilder::new(TEXT).segment(TEXT, PF_R | PF_X, code, code.len() as u64).segment(DATA, PF_R | PF_W, &[0xc3], 0x1000).build();
         program::load_file(&file[..], &[b"test"], &[]).expect("the test program does not load")
     }
 
     fn run_code(code: &[u8]) -> (TrapFrame, Trap, Loaded) {
-        let mut loaded = load(code);
-        let mut frame = initial_frame(loaded.entry, loaded.rsp);
-        let trap = run(&mut loaded.space, &mut frame);
-        (frame, trap, loaded)
+        let (frame, stop, loaded) = run_program(code);
+        (frame, stop.fault(), loaded)
     }
 
-    fn kernel_is_fine() {
+    pub(crate) fn run_program(code: &[u8]) -> (TrapFrame, Stop, Loaded) {
+        let mut loaded = load(code);
+        let mut frame = initial_frame(loaded.entry, loaded.rsp);
+        let stop = run(&mut loaded.space, &mut frame);
+        (frame, stop, loaded)
+    }
+
+    pub(crate) fn kernel_is_fine() {
         assert!(x86_64::instructions::interrupts::are_enabled(), "interrupts are back on");
         let flags = x86_64::registers::rflags::read();
         assert!(!flags.contains(x86_64::registers::rflags::RFlags::DIRECTION_FLAG), "the program's DF leaked");
@@ -308,7 +380,7 @@ mod tests {
         let mut loaded = load(code!(osel_spin, osel_spin_end));
         let mut frame = initial_frame(loaded.entry, loaded.rsp);
         let before = crate::interrupts::ticks();
-        let trap = run(&mut loaded.space, &mut frame);
+        let trap = run(&mut loaded.space, &mut frame).fault();
         kernel_is_fine();
         assert_eq!(trap.vector, 14);
         assert!(crate::interrupts::ticks() > before, "no timer interrupt while the program ran");
@@ -319,7 +391,7 @@ mod tests {
     #[test_case]
     fn test_forbidden_instructions_end_the_program() {
         // a non-canonical stack address is #SS on hardware, QEMU raises #GP
-        let cases: [(&str, &[u8], &[u64], Option<u64>); 15] = [
+        let cases: [(&str, &[u8], &[u64], Option<u64>); 16] = [
             ("hlt", code!(osel_hlt, osel_hlt_end), &[13], Some(0)),
             ("cli", code!(osel_cli, osel_cli_end), &[13], Some(0)),
             ("in", code!(osel_in, osel_in_end), &[13], Some(0)),
@@ -327,8 +399,8 @@ mod tests {
             ("int3", code!(osel_int3, osel_int3_end), &[13], Some(3 * 8 + 2)),
             ("ud2", code!(osel_ud2, osel_ud2_end), &[6], None),
             ("wrmsr", code!(osel_wrmsr, osel_wrmsr_end), &[13], Some(0)),
-            // relies on EFER.SCE being clear, as OVMF and SeaBIOS leave it; step 5 turns it on
-            ("syscall before it is enabled", code!(osel_syscall, osel_syscall_end), &[6], None),
+            ("rdmsr", code!(osel_rdmsr, osel_rdmsr_end), &[13], Some(0)),
+            ("out", code!(osel_out, osel_out_end), &[13], Some(0)),
             ("divide by zero", code!(osel_divide, osel_divide_end), &[0], None),
             ("jump into the kernel", code!(osel_kernel_jump, osel_kernel_jump_end), &[14], None),
             ("read kernel memory", code!(osel_kernel_read, osel_kernel_read_end), &[14], None),
@@ -345,6 +417,14 @@ mod tests {
             }
             kernel_is_fine();
         }
+    }
+
+    #[test_case]
+    fn test_a_stack_overflow_ends_the_program() {
+        let (_frame, trap, _loaded) = run_code(code!(osel_recursion, osel_recursion_end));
+        kernel_is_fine();
+        assert_eq!(trap.vector, 14);
+        assert_eq!(trap.cr2, crate::program::STACK_BOTTOM - 8, "the push into the guard page");
     }
 
     /// The design's leak check: the same program a hundred times, nothing is left behind
@@ -365,11 +445,11 @@ mod tests {
         let mut frame = initial_frame(loaded.entry, loaded.rsp);
         frame.cs = gdt::selectors().code_selector.0 as u64;
         frame.rflags |= 3 << 12;
-        let trap = run(&mut loaded.space, &mut frame);
+        let trap = run(&mut loaded.space, &mut frame).fault();
         assert_eq!(trap.vector, 6, "ran in ring 3 and hit ud2");
         assert_eq!(frame.cs, gdt::selectors().user_code_selector.0 as u64);
         let mut kernel_rip = initial_frame(0xffff_8000_0000_0000, loaded.rsp);
-        assert_eq!(run(&mut loaded.space, &mut kernel_rip).vector, 13, "a kernel address is not entered");
+        assert_eq!(run(&mut loaded.space, &mut kernel_rip).fault().vector, 13, "a kernel address is not entered");
         kernel_is_fine();
     }
 

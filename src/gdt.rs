@@ -7,6 +7,10 @@ use x86_64::structures::gdt::SegmentSelector;
 use x86_64::structures::gdt::{Descriptor, GlobalDescriptorTable};
 use x86_64::structures::tss::TaskStateSegment;
 
+/// The program's selectors, fixed by the GDT order; the `syscall` entry pushes them
+pub const USER_DATA_SELECTOR: u16 = 0x18 | 3;
+pub const USER_CODE_SELECTOR: u16 = 0x20 | 3;
+
 pub struct Selectors {
     pub code_selector: SegmentSelector,
     pub data_selector: SegmentSelector,
@@ -170,8 +174,8 @@ mod tests {
         let s = selectors();
         assert_eq!(s.code_selector.0, 0x08);
         assert_eq!(s.data_selector.0, 0x10);
-        assert_eq!(s.user_data_selector.0, 0x18 | 3);
-        assert_eq!(s.user_code_selector.0, 0x20 | 3);
+        assert_eq!(s.user_data_selector.0, USER_DATA_SELECTOR);
+        assert_eq!(s.user_code_selector.0, USER_CODE_SELECTOR);
         // SYSRET: SS = base + 8, CS = base + 16
         let base = s.data_selector.0;
         assert_eq!(base + 8, s.user_data_selector.0 & !3);

@@ -18,7 +18,7 @@ description: Список сознательно отложенной работ
 | Фильтр тестов `cargo test -- <фильтр>` | тестовое ядро не умеет выбирать тесты по имени | [runner](reference/runner.md#test-args) |
 | Куча фиксирована, 16 МБ | не растёт; рост потребует брать `MEMORY` под `ALLOCATOR` | [память](architecture/core/memory.md#heap), [блокировки](architecture/core/locking.md#pitfalls) |
 | Драйвер часов реального времени | нужен для `clock_gettime`; тесты форматов из курса ШАДа ждут его | [этап 2](design/stage-2-user-mode.md), [курс ШАДа](nikka.md) |
-| Свой ramdisk у отдельного тестового ядра | сейчас у всех ядер один `ramdisk/`; понадобится для тестовых программ этапа 2 | [файлы и ramdisk](architecture/core/fs.md), [этап 2](design/stage-2-user-mode.md) |
+| Свой ramdisk у отдельного тестового ядра | у всех ядер один `ramdisk/` и одни программы в `/bin`; нужен для тестов загрузки без ramdisk или со сломанным | [файлы и ramdisk](architecture/core/fs.md), [этап 2](design/stage-2-user-mode.md) |
 | Символьные ссылки и файлы устройств в cpio | ядро понимает только файлы, жёсткие ссылки и каталоги, остальное отклоняется | [файлы и ramdisk](architecture/core/fs.md#cpio) |
 | Кэш узлов файловой системы | `lookup` каждый раз создаёт новый объект узла; для ramdisk это дёшево, для диска нужен кэш | [файлы и ramdisk](architecture/core/fs.md#pitfalls) |
 | Тест загрузки без ramdisk и со сломанным ramdisk | runner всегда кладёт правильный архив, а выбирать ramdisk для отдельного ядра он пока не умеет | [файлы и ramdisk](architecture/core/fs.md#invariants) |

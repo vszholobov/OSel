@@ -14,10 +14,11 @@ description: Обзор OSel — из каких крейтов и модуле�
 |---|---|---|---|
 | ядро `osel` | `src/`, `tests/` | `x86_64-unknown-none` | библиотека ядра и бинарник `OSel`; интеграционные тесты — отдельные тестовые ядра |
 | `osel-core` | `osel-core/` | хост и ядро | логика без обращения к железу: консоль, аллокаторы, карта памяти, клавиатура, отчёты об исключениях, спинлок |
-| `osel-runner` | `runner/` | хост | раннер cargo: ramdisk из папки `ramdisk/`, образ диска, запуск QEMU, разбор результатов тестов; зависит от `osel-core` ради формата cpio |
+| `osel-runner` | `runner/` | хост | раннер cargo: ramdisk из папки `ramdisk/` и программ из `user/`, образ диска, запуск QEMU, разбор результатов тестов; зависит от `osel-core` ради формата cpio |
+| программы | `user/<имя>/` | `x86_64-unknown-none` | программы для кольца 3 на ассемблере, runner кладёт их в `/bin` ramdisk, см. [решение 0012](../decisions/0012-syscall-entry-and-user-programs.md) |
 | `docs-check` | `tools/docs-check/` | хост | тесты, которые сверяют документацию с кодом, см. [как писать документацию](../guides/writing-docs.md#checks) |
 
-`osel-core` — участник workspace. `runner` и `tools/docs-check` исключены из него: runner запускается вложенным cargo, пока сборка ядра держит блокировку папки target.
+`osel-core` — участник workspace. `runner` и `tools/docs-check` исключены из него: runner запускается вложенным cargo, пока сборка ядра держит блокировку папки target. Программы из `user/` — отдельные крейты со своим `[workspace]` и своей папкой `user/target`.
 
 ## Карта модулей {#modules}
 
@@ -30,6 +31,7 @@ description: Обзор OSel — из каких крейтов и модуле�
 | `keyboard` | `src/keyboard.rs` | PS/2: скан-коды из прерывания в буфер символов | [Клавиатура](drivers/keyboard.md) |
 | `interrupts` | `src/interrupts.rs` | IDT, обработчики исключений, PIC, таймер, ложные IRQ | [Прерывания](core/interrupts.md) |
 | `gdt` | `src/gdt.rs` | GDT с сегментами кольца 3, TSS, стеки IST для double fault, NMI и machine check | [Прерывания](core/interrupts.md) |
+| `syscall` | `src/syscall.rs` | вход через `syscall`, `write`, `getpid`, `exit` | [Пользовательский режим](core/user-mode.md#syscall) |
 | `user` | `src/user.rs` | запуск программы в кольце 3, возврат при исключении | [Пользовательский режим](core/user-mode.md) |
 | `memory` | `src/memory.rs` | таблица страниц, пул физических страниц, `with_memory`, `UserSpace` | [Память](core/memory.md) |
 | `program` | `src/program.rs` | загрузка программы из файловой системы в `UserSpace`, стек главного потока | [Программы](core/programs.md) |
@@ -57,6 +59,7 @@ description: Обзор OSel — из каких крейтов и модуле�
 | `vfs` | `osel-core/src/vfs.rs` | интерфейсы `FileSystem` и `Inode`, разрешение путей | [Файлы и ramdisk](core/fs.md#resolve) |
 | `elf` | `osel-core/src/elf.rs` | разбор и загрузка статических ELF64 через `ProgramMemory`, `ElfBuilder` | [Программы](core/programs.md#elf) |
 | `initial_stack` | `osel-core/src/initial_stack.rs` | стартовый стек: argv, envp, auxv | [Программы](core/programs.md#initial-stack) |
+| `syscall` | `osel-core/src/syscall.rs` | номера вызовов Linux, аргументы, `-errno`, выбор пути назад, `Utf8Decoder` | [Системные вызовы](../reference/syscalls.md) |
 | `trap` | `osel-core/src/trap.rs` | `TrapFrame` — регистры программы при входе в ядро | [Пользовательский режим](core/user-mode.md#trap-frame) |
 | `user_mem` | `osel-core/src/user_mem.rs` | проверка памяти, которую программа передала ядру | [Пользовательский режим](core/user-mode.md#user-mem) |
 | `cpio` | `osel-core/src/cpio.rs` | файловая система `CpioFs` над архивом cpio, `CpioBuilder` | [Файлы и ramdisk](core/fs.md#cpio) |
@@ -69,13 +72,14 @@ description: Обзор OSel — из каких крейтов и модуле�
    1. выключает прерывания;
    2. `gdt::init` — своя GDT, сегментные регистры, пустая LDT, TSS;
    3. `interrupts::init_idt` — IDT;
-   4. `memory::init` — таблица страниц, очистка нижней половины, страницы-охранники стеков IST, пул страниц, таблицы уровня 3 для всей верхней половины;
-   5. `allocator::init_heap` — куча;
-   6. `memory::enable_frame_tracking` — битовая карта пула в куче, с этого момента страницы можно освобождать;
-   7. `fs::init` — ramdisk монтируется как корень `/`;
-   8. `interrupts::init_pics` — сброс буфера клавиатуры, PIC, таймер на 100 Гц;
-   9. включает прерывания.
-4. Ядро печатает `/etc/motd` из ramdisk, затем «OSel ready to go!» на экран и в последовательный порт, затем `echo_keyboard` печатает нажатые клавиши и спит в `hlt`, пока нет ввода.
+   4. `syscall::init` — STAR, LSTAR, SFMASK, включение `syscall`;
+   5. `memory::init` — таблица страниц, очистка нижней половины, страницы-охранники стеков IST, пул страниц, таблицы уровня 3 для всей верхней половины;
+   6. `allocator::init_heap` — куча;
+   7. `memory::enable_frame_tracking` — битовая карта пула в куче, с этого момента страницы можно освобождать;
+   8. `fs::init` — ramdisk монтируется как корень `/`;
+   9. `interrupts::init_pics` — сброс буфера клавиатуры, PIC, таймер на 100 Гц;
+   10. включает прерывания.
+4. Ядро печатает `/etc/motd` из ramdisk, запускает `/bin/hello` (он печатает «Hello from ring 3!»), затем «OSel ready to go!» на экран и в последовательный порт, затем `echo_keyboard` печатает нажатые клавиши и спит в `hlt`, пока нет ввода.
 
 После `osel::init` то, что передал загрузчик (карта памяти, ramdisk, таблицы ACPI), доступно через `osel::boot_info()`.
 
@@ -99,5 +103,6 @@ description: Обзор OSel — из каких крейтов и модуле�
 - [0009 — общая верхняя половина адресных пространств](../decisions/0009-shared-kernel-half.md)
 - [0010 — свой загрузчик статических ELF](../decisions/0010-static-elf-loader.md)
 - [0011 — запуск программы до исключения и заглушки входа](../decisions/0011-user-entry.md)
+- [0012 — вход через syscall и программы из user/](../decisions/0012-syscall-entry-and-user-programs.md)
 
-_Сверено с кодом: 2026-10-12, коммит 347786c._
+_Сверено с кодом: 2026-10-12, коммит 8f15c54._

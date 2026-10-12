@@ -57,6 +57,7 @@ items:
     items:
       - href: reference/runner.md
       - href: reference/vectors.md
+      - href: reference/syscalls.md
       - name: Машины
         items:
           - href: reference/hardware/samsung-np530u4b.md
@@ -75,6 +76,7 @@ items:
       - href: decisions/0009-shared-kernel-half.md
       - href: decisions/0010-static-elf-loader.md
       - href: decisions/0011-user-entry.md
+      - href: decisions/0012-syscall-entry-and-user-programs.md
   - name: Планы
     items:
       - href: roadmap.md

@@ -5,6 +5,7 @@
 
 use crate::fs;
 use crate::memory::{PAGE_SIZE, USER_END, UserSpace};
+use crate::user::{self, Stop};
 use osel_core::elf::{self, ProgramMemory, ReadAt};
 use osel_core::errno::{Errno, KResult};
 use osel_core::initial_stack::{self, AuxValues};
@@ -34,6 +35,19 @@ impl ProgramMemory for UserSpace {
     fn write(&mut self, address: u64, bytes: &[u8]) -> KResult<()> {
         self.write_bytes(address, bytes)
     }
+}
+
+/// Loads the executable at `path` and runs it until it exits or faults. A fault is
+/// reported on the screen and the serial port.
+pub fn run(path: &str, argv: &[&[u8]], envp: &[&[u8]]) -> KResult<Stop> {
+    let mut loaded = load(path, argv, envp)?;
+    let mut frame = user::initial_frame(loaded.entry, loaded.rsp);
+    let stop = user::run(&mut loaded.space, &mut frame);
+    if let Stop::Fault(trap) = stop {
+        crate::println!("{} killed: {}", path, frame.report(trap.cr2));
+        crate::serial_println!("{} killed: {}", path, frame.report(trap.cr2));
+    }
+    Ok(stop)
 }
 
 /// Loads the executable at `path` with its arguments and environment
@@ -121,6 +135,19 @@ mod tests {
         let kernel = VirtAddr::from_ptr(&STACK_TOP).as_u64();
         assert!(matches!(loaded.space.read_bytes(kernel, &mut [0; 8]), Err(Errno::EFAULT)), "kernel memory through a user space");
         assert!(matches!(loaded.space.write_bytes(USER_END - 4, &[0; 8]), Err(Errno::EFAULT)), "across the end of the lower half");
+    }
+
+    /// The design's check for system calls: the assembly program from the ramdisk prints
+    /// its line and exits with 0
+    #[test_case]
+    fn test_hello_from_the_ramdisk() {
+        let stop = run("/bin/hello", &[b"/bin/hello"], &[]).expect("/bin/hello is not in the ramdisk");
+        assert_eq!(stop.exit_code(), 0);
+        let shown = crate::avganec::with_console(|console| {
+            let row = console.cursor().0 - 1;
+            "Hello from ring 3!".chars().enumerate().all(|(i, c)| console.cell_shows(row, i, c))
+        });
+        assert_ne!(shown, Some(false), "the line is not on the screen");
     }
 
     #[test_case]

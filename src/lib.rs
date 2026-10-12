@@ -32,6 +32,7 @@ pub mod keyboard;
 pub mod memory;
 pub mod program;
 pub mod user;
+pub mod syscall;
 pub mod sync;
 
 /// Version of the kernel from Cargo.toml
@@ -62,6 +63,7 @@ pub fn init(boot_info: &'static BootInfo) {
     BOOT_INFO.store(boot_info as *const BootInfo as *mut BootInfo, core::sync::atomic::Ordering::SeqCst);
     gdt::init();
     interrupts::init_idt();
+    syscall::init();
 
     let physical_memory_offset = *boot_info
         .physical_memory_offset
