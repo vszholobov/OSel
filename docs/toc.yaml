@@ -69,6 +69,7 @@ items:
       - href: decisions/0005-linux-abi-for-go.md
       - href: decisions/0006-higher-half-kernel.md
       - href: decisions/0007-storage-interfaces.md
+      - href: decisions/0008-frame-pool.md
   - name: Планы
     items:
       - href: roadmap.md

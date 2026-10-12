@@ -2,17 +2,19 @@
 //!
 //! The address space layout and the frame allocator live in `osel_core::memory`.
 
+use alloc::vec;
 use bootloader_api::info::MemoryRegion;
 use crate::sync::IrqSpinlock;
 use x86_64::VirtAddr;
 use x86_64::registers::control::Cr3;
 use x86_64::structures::paging::{Mapper, OffsetPageTable, Page, PageTable, Size4KiB};
 
+pub use osel_core::frames::{FramePool, FrameSource};
 pub use osel_core::memory::*;
 
 pub struct Memory {
     pub mapper: OffsetPageTable<'static>,
-    pub frame_allocator: RegionFrameAllocator<'static>,
+    pub frame_allocator: FramePool<'static>,
 }
 
 static MEMORY: IrqSpinlock<Option<Memory>> = IrqSpinlock::new("MEMORY", None);
@@ -37,8 +39,22 @@ pub unsafe fn init(physical_memory_offset: VirtAddr, memory_regions: &'static [M
     }
     let mut mapper = unsafe { OffsetPageTable::new(level_4_table, physical_memory_offset) };
     unmap_interrupt_stack_guards(&mut mapper);
-    let frame_allocator = unsafe { RegionFrameAllocator::new(memory_regions) };
+    let frame_allocator = unsafe { FramePool::new(memory_regions, physical_memory_offset.as_u64()) };
     *MEMORY.lock() = Some(Memory { mapper, frame_allocator });
+}
+
+/// Lets frames be freed. The bitmap of free frames lives on the heap, so this runs
+/// after `allocator::init_heap`; it is allocated before taking `MEMORY`, which must
+/// never wait for `ALLOCATOR`.
+pub fn enable_frame_tracking() {
+    let words = with_memory(|memory| memory.frame_allocator.bitmap_words());
+    let bitmap = vec![0u64; words].leak();
+    with_memory(|memory| memory.frame_allocator.enable_tracking(bitmap));
+}
+
+/// Frames handed out and not freed yet, 0 before `init` (a test kernel may skip it)
+pub fn used_frames() -> usize {
+    MEMORY.lock().as_ref().map_or(0, |memory| memory.frame_allocator.used_frames())
 }
 
 /// The bootloader identity maps a couple of its own pages (GDT, context switch code)
@@ -69,7 +85,7 @@ fn unmap_interrupt_stack_guards(mapper: &mut OffsetPageTable) {
 
 /// Number of frames the frame allocator can hand out in total, according to the memory map
 pub fn total_usable_frames() -> usize {
-    RegionFrameAllocator::count_frames(unsafe { MEMORY_REGIONS })
+    FramePool::count_frames(unsafe { MEMORY_REGIONS })
 }
 
 /// Runs `f` with exclusive access to the page table and the frame allocator
@@ -88,10 +104,19 @@ unsafe fn active_level_4_table(physical_memory_offset: VirtAddr) -> &'static mut
 #[cfg(test)]
 mod tests {
     use super::*;
-    use x86_64::structures::paging::{FrameAllocator, Mapper, Page, PageTableFlags, Size4KiB, Translate};
+    use x86_64::structures::paging::mapper::CleanUp;
+    use x86_64::structures::paging::{FrameAllocator, FrameDeallocator, Mapper, Page, PageTableFlags, Size4KiB, Translate};
 
     /// A free spot after the heap for test mappings
     const SCRATCH: u64 = HEAP_START + HEAP_SIZE + 0x10_0000;
+
+    /// Frees the page tables test mappings created under `SCRATCH`. Only this range: an
+    /// empty table elsewhere may belong to the bootloader, not to the frame pool.
+    fn free_scratch_tables(memory: &mut Memory) {
+        let first = Page::containing_address(VirtAddr::new(SCRATCH));
+        let range = Page::range_inclusive(first, first + 15);
+        unsafe { memory.mapper.clean_up_addr_range(range, &mut memory.frame_allocator) };
+    }
 
     #[test_case]
     fn test_translate_kernel_address() {
@@ -121,7 +146,13 @@ mod tests {
         let through_phys = with_memory(|m| m.mapper.phys_offset() + frame.start_address().as_u64());
         assert_eq!(unsafe { through_phys.as_ptr::<u64>().read_volatile() }, 0xf00d_cafe);
 
-        with_memory(|m| m.mapper.unmap(page).expect("unmap failed").1.flush());
+        with_memory(|m| {
+            let (unmapped, flush) = m.mapper.unmap(page).expect("unmap failed");
+            flush.flush();
+            assert_eq!(unmapped, frame);
+            unsafe { m.frame_allocator.deallocate_frame(frame) };
+            free_scratch_tables(m);
+        });
         assert!(with_memory(|m| m.mapper.translate_addr(page.start_address())).is_none());
     }
 
@@ -138,6 +169,36 @@ mod tests {
             assert_ne!(frame, level_4, "the active page table frame was handed out");
             assert_ne!(frame.start_address(), heap, "a heap frame was handed out again");
         }
+        with_memory(|m| unsafe {
+            m.frame_allocator.deallocate_frame(a);
+            m.frame_allocator.deallocate_frame(b);
+        });
+    }
+
+    /// Nikka 2-mm-1 `basic`: the count follows allocations, a freed frame comes back first
+    #[test_case]
+    fn test_freed_frame_is_reused() {
+        let used = used_frames();
+        with_memory(|m| {
+            let a = m.frame_allocator.allocate_frame().unwrap();
+            let b = m.frame_allocator.allocate_frame().unwrap();
+            assert_eq!(m.frame_allocator.used_frames(), used + 2);
+            unsafe { m.frame_allocator.deallocate_frame(a) };
+            assert_eq!(m.frame_allocator.used_frames(), used + 1);
+            assert_eq!(m.frame_allocator.allocate_frame(), Some(a), "freed frames are reused LIFO");
+            unsafe {
+                m.frame_allocator.deallocate_frame(a);
+                m.frame_allocator.deallocate_frame(b);
+            }
+        });
+        assert_eq!(used_frames(), used);
+    }
+
+    #[test_case]
+    fn test_heap_frames_are_known_to_the_pool() {
+        // handed out before tracking was enabled, still known to the pool
+        let heap = with_memory(|m| m.mapper.translate_addr(VirtAddr::new(HEAP_START))).unwrap();
+        assert!(with_memory(|m| m.frame_allocator.is_handed_out(heap.as_u64())));
     }
 
     #[test_case]
@@ -178,7 +239,14 @@ mod tests {
         with_memory(|m| m.mapper.unmap(page).unwrap().1.flush());
         with_memory(|m| unsafe { m.mapper.map_to(page, new, flags, &mut m.frame_allocator) }.unwrap().flush());
         assert_eq!(read(), 2222222, "a stale TLB entry still points to the old frame");
-        with_memory(|m| m.mapper.unmap(page).unwrap().1.flush());
+        with_memory(|m| {
+            m.mapper.unmap(page).unwrap().1.flush();
+            unsafe {
+                m.frame_allocator.deallocate_frame(old);
+                m.frame_allocator.deallocate_frame(new);
+            }
+            free_scratch_tables(m);
+        });
     }
 
     /// Nikka 2-mm-4 `garbage_after_unmap`: an unmapped entry is all zero, not just not present
@@ -199,6 +267,8 @@ mod tests {
             }
             assert_eq!(table[page.p1_index()].addr().as_u64(), 0);
             assert!(table[page.p1_index()].is_unused(), "{:?}", table[page.p1_index()]);
+            unsafe { m.frame_allocator.deallocate_frame(frame) };
+            free_scratch_tables(m);
         });
     }
 

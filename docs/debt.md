@@ -16,8 +16,7 @@ description: Список сознательно отложенной работ
 | Проверки `cargo fmt` и clippy в CI | включение форматирования переформатирует весь код, отдельный PR | [тулчейн и CI](guides/toolchain-and-ci.md) |
 | KVM в CI | быстрее, но меняет поведение таймера; нужна хотя бы одна задача без KVM | [как устроены тесты](architecture/testing.md#ci) |
 | Фильтр тестов `cargo test -- <фильтр>` | тестовое ядро не умеет выбирать тесты по имени | [runner](reference/runner.md#test-args) |
-| Освобождение физических страниц | аллокатор только выдаёт страницы; нужно для этапа 2 | [память](architecture/core/memory.md), [этап 2](design/stage-2-user-mode.md) |
-| Куча фиксирована, 1 МБ | хватает этапу 1; для этапа 2 поднять до ~16 МБ | [память](architecture/core/memory.md) |
+| Куча фиксирована, 16 МБ | не растёт; рост потребует брать `MEMORY` под `ALLOCATOR` | [память](architecture/core/memory.md#heap), [блокировки](architecture/core/locking.md#pitfalls) |
 | `map_range` не откатывает частичное отображение | при ошибке уже отображённые страницы остаются | [память](architecture/core/memory.md) |
 | Драйвер часов реального времени | нужен для `clock_gettime`; тесты форматов из курса ШАДа ждут его | [этап 2](design/stage-2-user-mode.md), [курс ШАДа](nikka.md) |
 | Свой ramdisk у отдельного тестового ядра | сейчас у всех ядер один `ramdisk/`; понадобится для тестовых программ этапа 2 | [файлы и ramdisk](architecture/core/fs.md), [этап 2](design/stage-2-user-mode.md) |

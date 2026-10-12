@@ -11,6 +11,7 @@ pub mod console;
 pub mod keyboard;
 pub mod pit;
 pub mod memory;
+pub mod frames;
 pub mod heap;
 pub mod exception;
 pub mod sync;

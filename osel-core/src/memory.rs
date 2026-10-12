@@ -19,7 +19,7 @@ pub const KERNEL_DYNAMIC_START: u64 = 0xffff_8000_0000_0000;
 pub const KERNEL_DYNAMIC_END: u64 = 0xffff_bfff_ffff_f000;
 /// Right after the area reserved for the bootloader mappings
 pub const HEAP_START: u64 = KERNEL_DYNAMIC_END + PAGE_SIZE;
-pub const HEAP_SIZE: u64 = 1024 * 1024;
+pub const HEAP_SIZE: u64 = 16 * 1024 * 1024;
 /// End of the user half of the address space (exclusive)
 pub const USER_END: u64 = 0x0000_8000_0000_0000;
 
@@ -30,6 +30,7 @@ pub const PHYS_ADDR_LIMIT: u64 = 1 << 52;
 pub const LOW_MEMORY_END: u64 = 0x10_0000;
 
 /// Hands out usable physical frames in ascending order and never reuses them.
+/// Freed frames are reused by `frames::FramePool`, which takes fresh frames from here.
 ///
 /// Doesn't rely on the memory map being sorted or free of overlaps: a frame is only
 /// handed out if it lies in a usable region and touches no other kind of region.
@@ -37,6 +38,8 @@ pub struct RegionFrameAllocator<'a> {
     regions: &'a [MemoryRegion],
     /// Lowest address that may still be handed out
     next: u64,
+    /// Frames end at or below this address
+    limit: u64,
     allocated: usize,
 }
 
@@ -44,7 +47,15 @@ impl<'a> RegionFrameAllocator<'a> {
     /// # Safety
     /// Frames of regions marked usable must really be unused.
     pub unsafe fn new(regions: &'a [MemoryRegion]) -> Self {
-        RegionFrameAllocator { regions, next: LOW_MEMORY_END, allocated: 0 }
+        unsafe { Self::with_limit(regions, PHYS_ADDR_LIMIT) }
+    }
+
+    /// Like `new`, but never hands out memory at or above `limit`
+    ///
+    /// # Safety
+    /// Frames of regions marked usable must really be unused.
+    pub unsafe fn with_limit(regions: &'a [MemoryRegion], limit: u64) -> Self {
+        RegionFrameAllocator { regions, next: LOW_MEMORY_END, limit: limit.min(PHYS_ADDR_LIMIT), allocated: 0 }
     }
 
     /// Number of frames an allocator over `regions` hands out in total
@@ -59,6 +70,18 @@ impl<'a> RegionFrameAllocator<'a> {
         self.allocated
     }
 
+    /// Whether the frame at `address` was already handed out by this allocator
+    pub fn has_handed_out(&self, address: u64) -> bool {
+        address < self.next && self.is_usable_frame(address)
+    }
+
+    /// Whether this allocator hands out the frame at `address` at some point
+    pub fn is_usable_frame(&self, address: u64) -> bool {
+        address >= LOW_MEMORY_END
+            && self.lowest_usable_candidate(address) == Some(address)
+            && self.reserved_overlap_end(address).is_none()
+    }
+
     /// Lowest frame start `>= from` inside a usable region, ignoring reserved regions
     fn lowest_usable_candidate(&self, from: u64) -> Option<u64> {
         self.regions
@@ -67,14 +90,14 @@ impl<'a> RegionFrameAllocator<'a> {
             .filter_map(|r| {
                 let start = align_up(r.start.max(from))?;
                 // a broken map could describe memory past what the CPU can address
-                (start + PAGE_SIZE <= r.end.min(PHYS_ADDR_LIMIT)).then_some(start)
+                (start.checked_add(PAGE_SIZE)? <= r.end.min(self.limit)).then_some(start)
             })
             .min()
     }
 
     /// End of a non-usable region overlapping the frame at `start`, if any
     fn reserved_overlap_end(&self, start: u64) -> Option<u64> {
-        let end = start + PAGE_SIZE;
+        let end = start.saturating_add(PAGE_SIZE);
         self.regions
             .iter()
             .filter(|r| r.kind != MemoryRegionKind::Usable && r.start < end && start < r.end)

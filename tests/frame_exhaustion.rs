@@ -4,14 +4,16 @@
 #![test_runner(osel::testosterone::test_runner)]
 #![reexport_test_harness_main = "test_main"]
 
-/// Handing out every physical frame: all unique, in ascending order, then a sticky `None`
+/// Handing out every physical frame: all unique, in ascending order, then a sticky `None`;
+/// freeing them all and handing them out again
 
 extern crate alloc;
 
 use bootloader_api::{BootInfo, entry_point};
 use core::panic::PanicInfo;
-use osel::memory::{LOW_MEMORY_END, total_usable_frames, with_memory};
-use x86_64::structures::paging::FrameAllocator;
+use alloc::vec::Vec;
+use osel::memory::{FrameSource, LOW_MEMORY_END, total_usable_frames, used_frames, with_memory};
+use x86_64::structures::paging::{FrameAllocator, FrameDeallocator, PhysFrame};
 
 entry_point!(main, config = &osel::BOOTLOADER_CONFIG);
 
@@ -33,29 +35,46 @@ const GARBAGE: u64 = 0xdead_beef_dead_beef;
 /// garbage, if any of them was in use the kernel breaks right away
 #[test_case]
 fn every_frame_once() {
-    let (count, before) = with_memory(|m| {
-        let before = m.frame_allocator.allocated();
+    // allocated up front: the heap is not used while `MEMORY` is held
+    let mut frames = Vec::with_capacity(total_usable_frames());
+    let before = with_memory(|m| {
+        let before = m.frame_allocator.used_frames();
+        assert_eq!(m.frame_allocator.free_list_len(), 0, "nothing was freed yet");
         let offset = m.mapper.phys_offset();
-        let mut last = 0;
-        let mut count = 0u64;
+        // with an empty free list every frame is fresh, and fresh frames come in order
         while let Some(frame) = m.frame_allocator.allocate_frame() {
             let address = frame.start_address().as_u64();
-            assert!(address > last || count == 0, "frames are not ascending");
+            assert!(frames.last().is_none_or(|last: &PhysFrame| address > last.start_address().as_u64()), "frames are not ascending");
             assert!(address >= LOW_MEMORY_END);
             let words = (offset + address).as_mut_ptr::<u64>();
             for i in 0..512 {
                 unsafe { words.add(i).write_volatile(GARBAGE) };
             }
-            last = address;
-            count += 1;
+            frames.push(frame);
         }
         assert!(m.frame_allocator.allocate_frame().is_none(), "exhaustion is sticky");
-        (count, before)
+        before
     });
-    assert_eq!(count as usize + before, total_usable_frames(), "frames went missing");
+    assert_eq!(frames.len() + before, total_usable_frames(), "frames went missing");
     // the runner gives test kernels 128 MiB
-    let mib = count * 4096 / (1024 * 1024);
+    let mib = frames.len() * 4096 / (1024 * 1024);
     assert!((64..=128).contains(&mib), "{} MiB of free frames", mib);
+
+    // all of them come back, then out again in reverse order
+    with_memory(|m| {
+        for &frame in &frames {
+            unsafe { m.frame_allocator.deallocate_frame(frame) };
+        }
+        assert_eq!(m.frame_allocator.used_frames(), before);
+        for &frame in frames.iter().rev() {
+            assert_eq!(m.frame_allocator.allocate_frame(), Some(frame), "freed frames are reused LIFO");
+        }
+        assert!(m.frame_allocator.allocate_frame().is_none());
+        for &frame in &frames {
+            unsafe { m.frame_allocator.deallocate_frame(frame) };
+        }
+    });
+    assert_eq!(used_frames(), before, "the used counter is back");
 }
 
 #[test_case]

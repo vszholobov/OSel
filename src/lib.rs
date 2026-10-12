@@ -67,6 +67,7 @@ pub fn init(boot_info: &'static BootInfo) {
         .expect("bootloader did not map physical memory");
     unsafe { memory::init(VirtAddr::new(physical_memory_offset), &boot_info.memory_regions) };
     allocator::init_heap().expect("heap initialization failed");
+    memory::enable_frame_tracking();
     fs::init(boot_info);
 
     interrupts::init_pics();
