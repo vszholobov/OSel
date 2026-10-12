@@ -3,12 +3,16 @@ href: index.md
 
 # Top menu of the site: the search field and the settings button only appear here
 navigation:
+  # the logo is referenced from index.md, so the build copies it into the site
   logo:
     url: 'https://vszholobov.github.io/OSel/'
+    urlTitle: 'На главную'
     light:
-      text: 'OSel'
+      icon: 'https://vszholobov.github.io/OSel/images/osel-logo.svg'
+      text: 'Операционная система OSel'
     dark:
-      text: 'OSel'
+      icon: 'https://vszholobov.github.io/OSel/images/osel-logo.svg'
+      text: 'Операционная система OSel'
   header:
     leftItems:
       - text: 'GitHub'
