@@ -1,5 +1,22 @@
 title: OSel
 href: index.md
+
+# Top menu of the site: the search field and the settings button only appear here
+navigation:
+  logo:
+    url: 'https://vszholobov.github.io/OSel/'
+    light:
+      text: 'OSel'
+    dark:
+      text: 'OSel'
+  header:
+    leftItems:
+      - text: 'GitHub'
+        type: 'link'
+        url: 'https://github.com/vszholobov/OSel'
+    rightItems:
+      - type: 'search'
+      - type: 'controls'
 items:
   - name: Пользователю
     expanded: true
