@@ -5,9 +5,9 @@
 //! contents stay on the block device and are read on demand. The runner packs
 //! the ramdisk with `CpioBuilder`, tests use it to build archives on the fly.
 //!
-//! Supported entries: regular files and directories. Symlinks, device nodes and
-//! anything else fail the mount with `EINVAL`, as do malformed headers, paths
-//! with `..`, the same path twice and a missing trailer.
+//! Supported entries: regular files, hard links between them and directories.
+//! Symlinks, device nodes and anything else fail the mount with `EINVAL`, as do
+//! malformed headers, paths with `..`, the same path twice and a missing trailer.
 
 use crate::block::{BlockDevice, read_bytes};
 use crate::errno::{Errno, KResult};
@@ -31,8 +31,12 @@ const IMPLICIT_DIR_PERMISSIONS: u32 = 0o755;
 
 /// The fields of a newc header, all hex encoded in the archive
 struct Header {
+    ino: u32,
     mode: u32,
+    nlink: u32,
     file_size: u32,
+    dev_major: u32,
+    dev_minor: u32,
     name_size: u32,
 }
 
@@ -51,7 +55,15 @@ impl Header {
             let text = core::str::from_utf8(digits).map_err(|_| Errno::EINVAL)?;
             u32::from_str_radix(text, 16).map_err(|_| Errno::EINVAL)
         };
-        Ok(Header { mode: field(1)?, file_size: field(6)?, name_size: field(11)? })
+        Ok(Header {
+            ino: field(0)?,
+            mode: field(1)?,
+            nlink: field(4)?,
+            file_size: field(6)?,
+            dev_major: field(7)?,
+            dev_minor: field(8)?,
+            name_size: field(11)?,
+        })
     }
 }
 
@@ -61,11 +73,20 @@ const fn align4(value: u64) -> u64 {
 
 enum Kind {
     File { offset: u64, size: u64 },
-    Dir { children: BTreeMap<String, usize>, listed: bool },
+    /// Children sorted by name; `listed` once the archive had an entry for it
+    Dir { children: Vec<(String, usize)>, listed: bool },
+}
+
+impl Kind {
+    fn new_dir(listed: bool) -> Self {
+        Kind::Dir { children: Vec::new(), listed }
+    }
 }
 
 struct Node {
     permissions: u32,
+    /// The directory this node was first added to; the root is its own parent
+    parent: usize,
     kind: Kind,
 }
 
@@ -75,17 +96,24 @@ struct Tree {
     nodes: Vec<Node>,
 }
 
+/// What a new archive entry turns into
+enum Entry {
+    Node(u32, Kind),
+    /// Another name for an existing file
+    Link(usize),
+}
+
 impl Tree {
-    /// Adds the entry `path`, creating missing parent directories
-    fn insert(&mut self, path: &str, permissions: u32, kind: Kind) -> KResult<()> {
+    /// Adds the entry `path`, creating missing parent directories; returns its node
+    fn insert(&mut self, path: &str, entry: Entry) -> KResult<usize> {
         let names: Vec<&str> = path.split('/').filter(|name| !matches!(*name, "" | ".")).collect();
         let Some((last, parents)) = names.split_last() else {
             // the archive lists the root itself, `.`, `./` or `/`
-            return match (kind, &mut self.nodes[0].kind) {
-                (Kind::Dir { .. }, Kind::Dir { listed, .. }) if !*listed => {
+            return match (entry, &mut self.nodes[0].kind) {
+                (Entry::Node(permissions, Kind::Dir { .. }), Kind::Dir { listed, .. }) if !*listed => {
                     *listed = true;
                     self.nodes[0].permissions = permissions;
-                    Ok(())
+                    Ok(0)
                 }
                 _ => Err(Errno::EINVAL),
             };
@@ -96,50 +124,59 @@ impl Tree {
         let mut parent = 0;
         for name in parents {
             parent = match self.child(parent, name)? {
-                Some(index) => index,
-                None => self.add_child(
-                    parent,
-                    name,
-                    Node {
-                        permissions: IMPLICIT_DIR_PERMISSIONS,
-                        kind: Kind::Dir { children: BTreeMap::new(), listed: false },
-                    },
-                ),
+                Ok(index) => index,
+                Err(position) => {
+                    let directory = Node { permissions: IMPLICIT_DIR_PERMISSIONS, parent, kind: Kind::new_dir(false) };
+                    let index = self.push(directory);
+                    self.link(parent, position, name, index);
+                    index
+                }
             };
         }
-        match self.child(parent, last)? {
-            None => {
-                self.add_child(parent, last, Node { permissions, kind });
-                Ok(())
+        match (self.child(parent, last)?, entry) {
+            (Err(position), Entry::Node(permissions, kind)) => {
+                let index = self.push(Node { permissions, parent, kind });
+                self.link(parent, position, last, index);
+                Ok(index)
             }
-            Some(existing) => match (&mut self.nodes[existing].kind, kind) {
-                // a directory listed after its own contents
-                (Kind::Dir { listed, .. }, Kind::Dir { .. }) if !*listed => {
+            (Err(position), Entry::Link(index)) => {
+                self.link(parent, position, last, index);
+                Ok(index)
+            }
+            // a directory listed after its own contents
+            (Ok(existing), Entry::Node(permissions, Kind::Dir { .. })) => match &mut self.nodes[existing].kind {
+                Kind::Dir { listed, .. } if !*listed => {
                     *listed = true;
                     self.nodes[existing].permissions = permissions;
-                    Ok(())
+                    Ok(existing)
                 }
                 _ => Err(Errno::EINVAL),
             },
+            (Ok(_), _) => Err(Errno::EINVAL),
         }
     }
 
-    /// The child `name` of directory `parent`; `EINVAL` if `parent` is a file
-    fn child(&self, parent: usize, name: &str) -> KResult<Option<usize>> {
+    /// Where the child `name` of directory `parent` is: `Ok(node)` if it exists,
+    /// `Err(position)` to insert it at; `EINVAL` if `parent` is a file
+    fn child(&self, parent: usize, name: &str) -> KResult<Result<usize, usize>> {
         match &self.nodes[parent].kind {
-            Kind::Dir { children, .. } => Ok(children.get(name).copied()),
+            Kind::Dir { children, .. } => Ok(children
+                .binary_search_by(|(child, _)| child.as_str().cmp(name))
+                .map(|position| children[position].1)),
             Kind::File { .. } => Err(Errno::EINVAL),
         }
     }
 
-    fn add_child(&mut self, parent: usize, name: &str, node: Node) -> usize {
-        let index = self.nodes.len();
+    fn push(&mut self, node: Node) -> usize {
         self.nodes.push(node);
+        self.nodes.len() - 1
+    }
+
+    fn link(&mut self, parent: usize, position: usize, name: &str, index: usize) {
         let Kind::Dir { children, .. } = &mut self.nodes[parent].kind else {
             unreachable!("`child` checked that the parent is a directory")
         };
-        children.insert(String::from(name), index);
-        index
+        children.insert(position, (String::from(name), index));
     }
 }
 
@@ -152,8 +189,11 @@ impl CpioFs {
     /// Reads the whole directory tree of the archive on `device`
     pub fn mount(device: Arc<dyn BlockDevice>) -> KResult<Self> {
         let capacity = device.num_blocks().checked_mul(device.block_size() as u64).ok_or(Errno::EINVAL)?;
-        let root = Node { permissions: IMPLICIT_DIR_PERMISSIONS, kind: Kind::Dir { children: BTreeMap::new(), listed: false } };
+        let root = Node { permissions: IMPLICIT_DIR_PERMISSIONS, parent: 0, kind: Kind::new_dir(false) };
         let mut tree = Tree { device, nodes: vec![root] };
+        // hard links share (ino, device); cpio stores the data with one of the names,
+        // GNU cpio and libarchive with the last one, the others have size 0
+        let mut links: BTreeMap<(u32, u32, u32), usize> = BTreeMap::new();
         let mut offset = 0u64;
         loop {
             // a header or a name past the end means the archive was cut off
@@ -182,18 +222,39 @@ impl CpioFs {
                 return Err(Errno::EINVAL);
             }
             let permissions = header.mode & 0o7777;
-            let kind = match header.mode & S_IFMT {
-                S_IFREG => Kind::File { offset: data_offset, size },
-                S_IFDIR if size == 0 => Kind::Dir { children: BTreeMap::new(), listed: true },
+            match header.mode & S_IFMT {
+                // `name/` is a directory in every tool, a file there is a broken archive
+                S_IFREG if name.ends_with('/') => return Err(Errno::EINVAL),
+                S_IFREG if header.nlink > 1 => {
+                    let key = (header.ino, header.dev_major, header.dev_minor);
+                    let file = Kind::File { offset: data_offset, size };
+                    match links.get(&key) {
+                        Some(&index) => {
+                            tree.insert(&name, Entry::Link(index))?;
+                            if size > 0 {
+                                tree.nodes[index].kind = file;
+                            }
+                        }
+                        None => {
+                            let index = tree.insert(&name, Entry::Node(permissions, file))?;
+                            links.insert(key, index);
+                        }
+                    }
+                }
+                S_IFREG => {
+                    tree.insert(&name, Entry::Node(permissions, Kind::File { offset: data_offset, size }))?;
+                }
+                S_IFDIR if size == 0 => {
+                    tree.insert(&name, Entry::Node(permissions, Kind::new_dir(true)))?;
+                }
                 _ => return Err(Errno::EINVAL),
-            };
-            tree.insert(&name, permissions, kind)?;
+            }
             offset = align4(data_end);
         }
         Ok(CpioFs { tree: Arc::new(tree) })
     }
 
-    /// Number of files and directories, the root included
+    /// Number of files and directories, the root included; hard links count once
     pub fn node_count(&self) -> usize {
         self.tree.nodes.len()
     }
@@ -219,6 +280,10 @@ impl CpioInode {
         &self.tree.nodes[self.index]
     }
 
+    fn at(&self, index: usize) -> Arc<dyn Inode> {
+        Arc::new(CpioInode { tree: self.tree.clone(), index })
+    }
+
     fn stat_of(&self, index: usize) -> Stat {
         let node = &self.tree.nodes[index];
         let (file_type, size) = match node.kind {
@@ -228,7 +293,7 @@ impl CpioInode {
         Stat { ino: index as u64 + 1, file_type, permissions: node.permissions, size }
     }
 
-    fn children(&self) -> KResult<&BTreeMap<String, usize>> {
+    fn children(&self) -> KResult<&[(String, usize)]> {
         match &self.node().kind {
             Kind::Dir { children, .. } => Ok(children),
             Kind::File { .. } => Err(Errno::ENOTDIR),
@@ -254,15 +319,24 @@ impl Inode for CpioInode {
     }
 
     fn lookup(&self, name: &str) -> KResult<Arc<dyn Inode>> {
-        let index = *self.children()?.get(name).ok_or(Errno::ENOENT)?;
-        Ok(Arc::new(CpioInode { tree: self.tree.clone(), index }))
+        let children = self.children()?;
+        let position = children.binary_search_by(|(child, _)| child.as_str().cmp(name)).map_err(|_| Errno::ENOENT)?;
+        Ok(self.at(children[position].1))
     }
 
-    fn read_dir(&self, index: usize) -> KResult<Option<DirEntry>> {
-        Ok(self.children()?.iter().nth(index).map(|(name, &child)| {
-            let stat = self.stat_of(child);
-            DirEntry { name: name.clone(), ino: stat.ino, file_type: stat.file_type }
-        }))
+    fn parent(&self) -> KResult<Arc<dyn Inode>> {
+        self.children()?;
+        Ok(self.at(self.node().parent))
+    }
+
+    /// The cursor is the position in the sorted list of children
+    fn read_dir(&self, cursor: u64) -> KResult<Option<(DirEntry, u64)>> {
+        let children = self.children()?;
+        let Some((name, child)) = usize::try_from(cursor).ok().and_then(|cursor| children.get(cursor)) else {
+            return Ok(None);
+        };
+        let stat = self.stat_of(*child);
+        Ok(Some((DirEntry { name: name.clone(), ino: stat.ino, file_type: stat.file_type }, cursor + 1)))
     }
 }
 
@@ -286,31 +360,36 @@ impl CpioBuilder {
 
     /// Adds a directory; `path` is relative to the root, without a leading `/`
     pub fn add_dir(&mut self, path: &str, permissions: u32) -> &mut Self {
-        self.entry(path, S_IFDIR | (permissions & 0o7777), 2, &[]);
+        let ino = self.take_ino();
+        self.entry(ino, S_IFDIR | (permissions & 0o7777), 2, path, &[]);
         self
     }
 
     /// Adds a regular file; panics if `data` is 4 GiB or more, which newc can't store
     pub fn add_file(&mut self, path: &str, permissions: u32, data: &[u8]) -> &mut Self {
-        self.entry(path, S_IFREG | (permissions & 0o7777), 1, data);
+        let ino = self.take_ino();
+        self.entry(ino, S_IFREG | (permissions & 0o7777), 1, path, data);
         self
     }
 
     /// Appends the trailer and pads the archive to whole 512 byte blocks, as cpio does
     pub fn finish(mut self) -> Vec<u8> {
-        self.next_ino = 0;
-        self.entry(TRAILER, 0, 1, &[]);
+        self.entry(0, 0, 1, TRAILER, &[]);
         let padded = self.data.len().next_multiple_of(512);
         self.data.resize(padded, 0);
         self.data
     }
 
-    fn entry(&mut self, name: &str, mode: u32, nlink: u32, data: &[u8]) {
+    fn take_ino(&mut self) -> u32 {
+        self.next_ino += 1;
+        self.next_ino - 1
+    }
+
+    /// Writes one entry with any header values, tests use it for odd archives
+    fn entry(&mut self, ino: u32, mode: u32, nlink: u32, name: &str, data: &[u8]) {
         assert!(!name.contains('\0'), "cpio entry name contains a zero byte: {name:?}");
         let file_size = u32::try_from(data.len()).expect("a cpio newc entry must be smaller than 4 GiB");
         let name_size = u32::try_from(name.len() + 1).expect("cpio entry name is too long");
-        let ino = self.next_ino;
-        self.next_ino += 1;
         let fields = [ino, mode, 0, 0, nlink, 0, file_size, 0, 0, 0, 0, name_size, 0];
         self.data.extend_from_slice(MAGIC);
         for field in fields {
@@ -333,18 +412,18 @@ impl CpioBuilder {
 mod tests {
     use super::*;
     use crate::block::MemBlockDevice;
-    use crate::vfs::{list_dir, read_to_end, resolve};
+    use crate::vfs::{list_dir, read_to_end, resolve_absolute};
 
     fn mount(archive: Vec<u8>) -> KResult<CpioFs> {
-        CpioFs::mount(Arc::new(MemBlockDevice::new(archive.leak())))
+        CpioFs::mount(Arc::new(MemBlockDevice::new(archive)))
     }
 
     fn read(fs: &CpioFs, path: &str) -> KResult<Vec<u8>> {
-        read_to_end(&*resolve(&fs.root(), path)?)
+        read_to_end(&*resolve_absolute(&fs.root(), path)?)
     }
 
     fn names(fs: &CpioFs, path: &str) -> Vec<String> {
-        list_dir(&*resolve(&fs.root(), path).unwrap()).unwrap().into_iter().map(|entry| entry.name).collect()
+        list_dir(&*resolve_absolute(&fs.root(), path).unwrap()).unwrap().into_iter().map(|entry| entry.name).collect()
     }
 
     fn sample() -> Vec<u8> {
@@ -377,7 +456,7 @@ mod tests {
     #[test]
     fn stat_reports_type_permissions_and_size() {
         let fs = mount(sample()).unwrap();
-        let stat = |path| resolve(&fs.root(), path).unwrap().stat();
+        let stat = |path| resolve_absolute(&fs.root(), path).unwrap().stat();
         assert_eq!(stat("/").ino, 1);
         assert_eq!(stat("/").file_type, FileType::Directory);
         assert_eq!(stat("/bin").permissions, 0o700);
@@ -403,7 +482,7 @@ mod tests {
     #[test]
     fn read_at_handles_offsets_and_the_end() {
         let fs = mount(sample()).unwrap();
-        let big = resolve(&fs.root(), "/big").unwrap();
+        let big = resolve_absolute(&fs.root(), "/big").unwrap();
         let data = pattern(5000);
         let mut buf = [0u8; 600];
         for offset in [0, 1, 511, 512, 4400, 4999] {
@@ -449,7 +528,7 @@ mod tests {
         builder.add_file("a/b/c", 0o644, b"deep");
         let fs = mount(builder.finish()).unwrap();
         assert_eq!(read(&fs, "/a/b/c"), Ok(b"deep".to_vec()));
-        assert_eq!(resolve(&fs.root(), "/a/b").unwrap().stat().permissions, IMPLICIT_DIR_PERMISSIONS);
+        assert_eq!(resolve_absolute(&fs.root(), "/a/b").unwrap().stat().permissions, IMPLICIT_DIR_PERMISSIONS);
     }
 
     #[test]
@@ -457,7 +536,7 @@ mod tests {
         let mut builder = CpioBuilder::new();
         builder.add_file("dir/file", 0o644, b"x").add_dir("dir", 0o711);
         let fs = mount(builder.finish()).unwrap();
-        assert_eq!(resolve(&fs.root(), "/dir").unwrap().stat().permissions, 0o711);
+        assert_eq!(resolve_absolute(&fs.root(), "/dir").unwrap().stat().permissions, 0o711);
         assert_eq!(names(&fs, "/dir"), ["file"]);
     }
 
@@ -519,14 +598,14 @@ mod tests {
     fn rejects_symlinks_and_devices() {
         for kind in [0o120000, 0o020000, 0o060000, 0o010000, 0o140000, 0] {
             let mut builder = CpioBuilder::new();
-            builder.entry("odd", kind | 0o644, 1, b"target");
+            builder.entry(1, kind | 0o644, 1, "odd", b"target");
             assert_eq!(mount(builder.finish()).err(), Some(Errno::EINVAL), "mode {kind:o}");
         }
     }
 
     #[test]
     fn rejects_directory_with_data() {
-        rejects(|b| b.entry("d", S_IFDIR | 0o755, 2, b"data"));
+        rejects(|b| b.entry(1, S_IFDIR | 0o755, 2, "d", b"data"));
     }
 
     #[test]
@@ -662,16 +741,159 @@ mod tests {
         }
     }
 
-    /// Made by bsdcpio 3.5.3 (libarchive) on macOS:
+    #[test]
+    fn hard_links_share_one_inode() {
+        // GNU cpio and libarchive order: empty names first, the data with the last one
+        let mut builder = CpioBuilder::new();
+        builder.entry(7, S_IFREG | 0o644, 2, "a", b"");
+        builder.entry(7, S_IFREG | 0o644, 2, "dir/b", b"shared");
+        let fs = mount(builder.finish()).unwrap();
+        assert_eq!(read(&fs, "/a"), Ok(b"shared".to_vec()));
+        assert_eq!(read(&fs, "/dir/b"), Ok(b"shared".to_vec()));
+        let stat = |path| resolve_absolute(&fs.root(), path).unwrap().stat();
+        assert_eq!(stat("/a").ino, stat("/dir/b").ino);
+        assert_eq!(stat("/a").size, 6);
+        assert_eq!(fs.node_count(), 3, "root, dir and one file");
+    }
+
+    #[test]
+    fn hard_link_with_the_data_first() {
+        let mut builder = CpioBuilder::new();
+        builder.entry(7, S_IFREG | 0o644, 2, "a", b"first");
+        builder.entry(7, S_IFREG | 0o644, 2, "b", b"");
+        let fs = mount(builder.finish()).unwrap();
+        assert_eq!(read(&fs, "/b"), Ok(b"first".to_vec()));
+    }
+
+    #[test]
+    fn same_ino_on_another_device_is_another_file() {
+        let mut builder = CpioBuilder::new();
+        builder.entry(7, S_IFREG | 0o644, 2, "a", b"one");
+        let mut other = CpioBuilder::new();
+        other.entry(7, S_IFREG | 0o644, 2, "b", b"two");
+        // devmajor is field 7 of the header
+        let start = 6 + 7 * 8;
+        other.data[start..start + 8].copy_from_slice(b"00000001");
+        builder.data.extend_from_slice(&other.data);
+        let fs = mount(builder.finish()).unwrap();
+        assert_eq!(read(&fs, "/a"), Ok(b"one".to_vec()));
+        assert_eq!(read(&fs, "/b"), Ok(b"two".to_vec()));
+    }
+
+    #[test]
+    fn hard_link_onto_an_existing_name_is_rejected() {
+        rejects(|b| {
+            b.entry(7, S_IFREG | 0o644, 2, "a", b"");
+            b.entry(7, S_IFREG | 0o644, 2, "a", b"x");
+        });
+    }
+
+    #[test]
+    fn file_named_like_a_directory_is_rejected() {
+        rejects(|b| b.entry(1, S_IFREG | 0o644, 1, "x/", b"data"));
+    }
+
+    #[test]
+    fn parent_goes_up_and_stops_at_the_root() {
+        let fs = mount(sample()).unwrap();
+        let etc = resolve_absolute(&fs.root(), "/etc").unwrap();
+        assert_eq!(etc.parent().unwrap().stat().ino, 1);
+        assert_eq!(fs.root().parent().unwrap().stat().ino, 1);
+        let motd = resolve_absolute(&fs.root(), "/etc/motd").unwrap();
+        assert_eq!(motd.parent().err(), Some(Errno::ENOTDIR));
+        assert_eq!(read(&fs, "/etc/../big"), Ok(pattern(5000)));
+    }
+
+    #[test]
+    fn read_dir_cursor_walks_every_entry_once() {
+        let fs = mount(sample()).unwrap();
+        let root = fs.root();
+        let mut cursor = 0;
+        let mut names = Vec::new();
+        while let Some((entry, next)) = root.read_dir(cursor).unwrap() {
+            assert!(next > cursor, "the cursor must move forward");
+            names.push(entry.name);
+            cursor = next;
+        }
+        assert_eq!(names, ["big", "bin", "etc"]);
+        assert_eq!(root.read_dir(u64::MAX), Ok(None));
+    }
+
+    /// Random trees go through `CpioBuilder` and `mount` and come back unchanged
+    #[test]
+    fn random_trees_round_trip() {
+        use std::collections::BTreeMap as Model;
+        let mut random = Random(0x05e1);
+        for round in 0..300 {
+            // path -> Some(data) for a file, None for a directory
+            let mut model: Model<String, Option<Vec<u8>>> = Model::new();
+            let mut builder = CpioBuilder::new();
+            for _ in 0..random.next() % 12 {
+                let depth = 1 + random.next() % 3;
+                let path: Vec<String> =
+                    (0..depth).map(|_| ["a", "b", "c", "long-name.txt"][(random.next() % 4) as usize].into()).collect();
+                let path = path.join("/");
+                // skip what would clash with an existing file or directory
+                let prefixes_are_dirs = (1..depth as usize).all(|n| {
+                    let prefix = path.split('/').take(n).collect::<Vec<_>>().join("/");
+                    !matches!(model.get(&prefix), Some(Some(_)))
+                });
+                if model.contains_key(&path) || !prefixes_are_dirs || model.keys().any(|p| p.starts_with(&std::format!("{path}/"))) {
+                    continue;
+                }
+                for n in 1..depth as usize {
+                    model.entry(path.split('/').take(n).collect::<Vec<_>>().join("/")).or_insert(None);
+                }
+                if random.next() % 3 == 0 {
+                    builder.add_dir(&path, 0o755);
+                    model.insert(path, None);
+                } else {
+                    let data: Vec<u8> = (0..random.next() % 1500).map(|_| random.next() as u8).collect();
+                    builder.add_file(&path, 0o644, &data);
+                    model.insert(path, Some(data));
+                }
+            }
+            let fs = mount(builder.finish()).unwrap_or_else(|e| panic!("round {round}: {e}"));
+            let mut found = Model::new();
+            collect(&*fs.root(), "", &mut found);
+            assert_eq!(found, model, "round {round}");
+        }
+    }
+
+    fn collect(dir: &dyn Inode, prefix: &str, out: &mut std::collections::BTreeMap<String, Option<Vec<u8>>>) {
+        for entry in list_dir(dir).unwrap() {
+            let path = std::format!("{prefix}{}", entry.name);
+            let child = dir.lookup(&entry.name).unwrap();
+            match entry.file_type {
+                FileType::Directory => {
+                    assert_eq!(child.parent().unwrap().stat().ino, dir.stat().ino, "parent of {path}");
+                    collect(&*child, &std::format!("{path}/"), out);
+                    out.insert(path, None);
+                }
+                _ => {
+                    out.insert(path, Some(read_to_end(&*child).unwrap()));
+                }
+            }
+        }
+    }
+
+    /// Made by bsdcpio 3.5.3 (libarchive) on macOS, with `etc/hello-link` a hard
+    /// link to `hello.txt` (git keeps it as a copy):
     /// `cd testdata/tree && find . | sort | cpio -o -H newc`
     #[test]
     fn mounts_an_archive_made_by_cpio() {
         let archive = include_bytes!("../testdata/tree.cpio");
         let fs = mount(archive.to_vec()).unwrap();
         assert_eq!(read(&fs, "/etc/motd"), Ok(include_bytes!("../testdata/tree/etc/motd").to_vec()));
-        assert_eq!(read(&fs, "/hello.txt"), Ok(include_bytes!("../testdata/tree/hello.txt").to_vec()));
+        let hello = include_bytes!("../testdata/tree/hello.txt").to_vec();
+        assert_eq!(read(&fs, "/hello.txt"), Ok(hello.clone()));
+        // a hard link: bsdcpio stores the data with the last name only
+        assert_eq!(read(&fs, "/etc/hello-link"), Ok(hello));
+        let ino = |path| resolve_absolute(&fs.root(), path).unwrap().stat().ino;
+        assert_eq!(ino("/etc/hello-link"), ino("/hello.txt"));
         assert_eq!(names(&fs, "/"), ["etc", "hello.txt"]);
-        assert_eq!(resolve(&fs.root(), "/etc").unwrap().stat().file_type, FileType::Directory);
+        assert_eq!(names(&fs, "/etc"), ["hello-link", "motd"]);
+        assert_eq!(resolve_absolute(&fs.root(), "/etc").unwrap().stat().file_type, FileType::Directory);
         assert_eq!(fs.root().stat().ino, 1);
     }
 }

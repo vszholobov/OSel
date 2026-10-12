@@ -41,7 +41,7 @@ pub fn root() -> Option<Arc<dyn FileSystem>> {
 /// Finds the inode at the absolute `path`; `ENOENT` if there is no root file system
 pub fn lookup(path: &str) -> KResult<Arc<dyn Inode>> {
     let fs = root().ok_or(Errno::ENOENT)?;
-    resolve(&fs.root(), path)
+    resolve_absolute(&fs.root(), path)
 }
 
 /// Reads the whole file at `path`

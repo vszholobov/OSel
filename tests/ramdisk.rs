@@ -65,6 +65,14 @@ fn directories_are_listed() {
 }
 
 #[test_case]
+fn relative_paths_and_parents() {
+    let root = fs::lookup("/").unwrap();
+    let etc = fs::lookup("/etc").unwrap();
+    assert_eq!(fs::resolve(&root, &etc, "motd").unwrap().stat().ino, fs::lookup("/etc/motd").unwrap().stat().ino);
+    assert_eq!(fs::resolve(&root, &etc, "..").unwrap().stat().ino, root.stat().ino);
+}
+
+#[test_case]
 fn errors_are_linux_errors() {
     assert_eq!(fs::read_file("/no/such/file").err(), Some(Errno::ENOENT));
     assert_eq!(fs::read_file("/etc/motd/x").err(), Some(Errno::ENOTDIR));
@@ -85,6 +93,7 @@ fn walk(inode: &dyn Inode) -> usize {
             .iter()
             .map(|entry| walk(&*inode.lookup(&entry.name).unwrap()))
             .sum(),
+        other => panic!("cpio gave a {other:?} node"),
     }
 }
 
@@ -116,5 +125,7 @@ fn ramdisk_frames_are_not_usable_memory() {
 
 #[test_case]
 fn reading_twice_gives_the_same_bytes() {
-    assert_eq!(fs::read_file("/etc/motd"), fs::read_file("/etc/motd"));
+    let first = fs::read_file("/etc/motd").unwrap();
+    assert!(!first.is_empty());
+    assert_eq!(fs::read_file("/etc/motd").unwrap(), first);
 }

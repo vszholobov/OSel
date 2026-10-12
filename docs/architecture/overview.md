@@ -84,7 +84,7 @@ description: Обзор OSel — из каких крейтов и модуле�
 
 - [0001 — bootloader 0.11 и UEFI](../decisions/0001-bootloader-0.11-and-uefi.md)
 - [0002 — osel-core и тесты на хосте](../decisions/0002-osel-core-host-tests.md)
-- [0007 — интерфейсы хранения и ramdisk в cpio](../decisions/0007-storage-interfaces.md)
 - [0006 — ядро в верхней половине](../decisions/0006-higher-half-kernel.md)
+- [0007 — интерфейсы хранения и ramdisk в cpio](../decisions/0007-storage-interfaces.md)
 
-_Сверено с кодом: 2026-10-12, коммит 2dee8ac._
+_Сверено с кодом: 2026-10-12, коммит ef2124f._

@@ -71,7 +71,7 @@ description: Справочник runner — переменные окружен
 |---|---|
 | Образ диска | рядом с ELF: `<имя>.uefi.img` или `<имя>.bios.img`; для настоящего ядра — target/x86_64-unknown-none/debug/OSel.uefi.img |
 | Прошивка UEFI | папка .ovmf внутри runner, скачивается при первом запуске под UEFI (крейт `ovmf-prebuilt`), в git не попадает |
-| Ramdisk | собирается заново при каждом запуске из папки `ramdisk/` (или `OSEL_RAMDISK`), на время сборки образа лежит рядом с ним как `<имя>.uefi.img.cpio`, потом удаляется; внутри образа это файл `ramdisk` |
+| Ramdisk | собирается в памяти при каждом запуске из папки `ramdisk/` (или `OSEL_RAMDISK`) и попадает в образ файлом `ramdisk`; отдельного файла на диске нет |
 | Уровень логов загрузчика | `Warn`: шаги загрузки не печатаются, только проблемы |
 
 ## Где в коде {#code}
@@ -79,4 +79,4 @@ description: Справочник runner — переменные окружен
 - `runner/run.sh` — обёртка для cargo.
 - `runner/src/main.rs` — `parse_boot`, `parse_timeout`, `ramdisk_dir`, `pack_ramdisk`, `is_test_binary`, `image_path`, `create_disk_image`, `ovmf_firmware`, `forward_serial_output`, `test_outcome`, `expect_outcome`, `wait_with_timeout`.
 
-_Сверено с кодом: 2026-10-12, коммит fc602c1._
+_Сверено с кодом: 2026-10-12, коммит ef2124f._

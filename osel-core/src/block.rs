@@ -4,7 +4,7 @@
 //! (`MemBlockDevice`); a disk driver later implements the same trait.
 
 use crate::errno::{Errno, KResult};
-use alloc::vec;
+use alloc::vec::Vec;
 
 /// Block size of `MemBlockDevice`, the sector size of most disks
 pub const SECTOR_SIZE: usize = 512;
@@ -28,7 +28,8 @@ pub trait BlockDevice: Send + Sync {
 }
 
 /// Reads `buf.len()` bytes at byte `offset`, which need not be block aligned.
-/// Reading past the end of the device is `EIO`.
+/// Whole blocks in the middle go straight into `buf`, only the partial first and
+/// last block pass through a temporary block. Reading past the end is `EIO`.
 pub fn read_bytes(device: &dyn BlockDevice, offset: u64, buf: &mut [u8]) -> KResult<()> {
     let block_size = device.block_size() as u64;
     let end = offset.checked_add(buf.len() as u64).ok_or(Errno::EIO)?;
@@ -36,13 +37,23 @@ pub fn read_bytes(device: &dyn BlockDevice, offset: u64, buf: &mut [u8]) -> KRes
     if end > capacity {
         return Err(Errno::EIO);
     }
-    let mut block = vec![0u8; block_size as usize];
+    let mut block = Vec::new();
     let mut done = 0;
     while done < buf.len() {
         let position = offset + done as u64;
         let lba = position / block_size;
         let within = (position % block_size) as usize;
-        let chunk = (block_size as usize - within).min(buf.len() - done);
+        let left = buf.len() - done;
+        if within == 0 && left >= block_size as usize {
+            let whole = left - left % block_size as usize;
+            device.read_blocks(lba, &mut buf[done..done + whole])?;
+            done += whole;
+            continue;
+        }
+        let chunk = (block_size as usize - within).min(left);
+        if block.is_empty() {
+            block.resize(block_size as usize, 0);
+        }
         device.read_blocks(lba, &mut block)?;
         buf[done..done + chunk].copy_from_slice(&block[within..within + chunk]);
         done += chunk;
@@ -50,30 +61,31 @@ pub fn read_bytes(device: &dyn BlockDevice, offset: u64, buf: &mut [u8]) -> KRes
     Ok(())
 }
 
-/// A read-only device over bytes in memory, e.g. the ramdisk the bootloader loaded.
+/// A read-only device over bytes in memory: the ramdisk the bootloader loaded
+/// (`&'static [u8]`) or a buffer on the heap (`Vec<u8>`, `Arc<[u8]>`).
 /// A partial last block reads as if padded with zeros.
-pub struct MemBlockDevice {
-    data: &'static [u8],
+pub struct MemBlockDevice<T = &'static [u8]> {
+    data: T,
 }
 
-impl MemBlockDevice {
-    pub const fn new(data: &'static [u8]) -> Self {
+impl<T: AsRef<[u8]>> MemBlockDevice<T> {
+    pub const fn new(data: T) -> Self {
         Self { data }
     }
 
     /// The bytes behind the device
-    pub fn data(&self) -> &'static [u8] {
-        self.data
+    pub fn data(&self) -> &[u8] {
+        self.data.as_ref()
     }
 }
 
-impl BlockDevice for MemBlockDevice {
+impl<T: AsRef<[u8]> + Send + Sync> BlockDevice for MemBlockDevice<T> {
     fn block_size(&self) -> usize {
         SECTOR_SIZE
     }
 
     fn num_blocks(&self) -> u64 {
-        self.data.len().div_ceil(SECTOR_SIZE) as u64
+        self.data().len().div_ceil(SECTOR_SIZE) as u64
     }
 
     fn read_blocks(&self, lba: u64, buf: &mut [u8]) -> KResult<()> {
@@ -84,9 +96,10 @@ impl BlockDevice for MemBlockDevice {
         if lba.checked_add(blocks).is_none_or(|end| end > self.num_blocks()) {
             return Err(Errno::EIO);
         }
+        let data = self.data();
         let start = lba as usize * SECTOR_SIZE;
-        let available = self.data.len().saturating_sub(start).min(buf.len());
-        buf[..available].copy_from_slice(&self.data[start..start + available]);
+        let available = data.len().saturating_sub(start).min(buf.len());
+        buf[..available].copy_from_slice(&data[start..start + available]);
         buf[available..].fill(0);
         Ok(())
     }
@@ -95,11 +108,10 @@ impl BlockDevice for MemBlockDevice {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::vec::Vec;
+    use core::sync::atomic::{AtomicUsize, Ordering};
 
-    fn device(len: usize) -> MemBlockDevice {
-        let data: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
-        MemBlockDevice::new(data.leak())
+    fn device(len: usize) -> MemBlockDevice<Vec<u8>> {
+        MemBlockDevice::new((0..len).map(|i| (i % 251) as u8).collect())
     }
 
     #[test]
@@ -170,7 +182,7 @@ mod tests {
     }
 
     /// A device with 4 KiB blocks, file systems must not assume 512
-    struct BigBlocks(MemBlockDevice);
+    struct BigBlocks(MemBlockDevice<Vec<u8>>);
 
     impl BlockDevice for BigBlocks {
         fn block_size(&self) -> usize {
@@ -182,6 +194,40 @@ mod tests {
         fn read_blocks(&self, lba: u64, buf: &mut [u8]) -> KResult<()> {
             self.0.read_blocks(lba * 8, buf)
         }
+    }
+
+    /// Counts block reads, to see that whole blocks are not read one by one
+    struct Counting(MemBlockDevice<Vec<u8>>, AtomicUsize);
+
+    impl BlockDevice for Counting {
+        fn block_size(&self) -> usize {
+            self.0.block_size()
+        }
+        fn num_blocks(&self) -> u64 {
+            self.0.num_blocks()
+        }
+        fn read_blocks(&self, lba: u64, buf: &mut [u8]) -> KResult<()> {
+            self.1.fetch_add(1, Ordering::Relaxed);
+            self.0.read_blocks(lba, buf)
+        }
+    }
+
+    #[test]
+    fn read_bytes_reads_the_middle_at_once() {
+        let device = Counting(device(100 * SECTOR_SIZE), AtomicUsize::new(0));
+        let mut buf = std::vec![0u8; 50 * SECTOR_SIZE];
+        read_bytes(&device, 10, &mut buf).unwrap();
+        assert_eq!(&buf[..], &device.0.data()[10..10 + buf.len()]);
+        // the partial head, the whole middle, the partial tail
+        assert_eq!(device.1.load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn heap_backed_device() {
+        let device = MemBlockDevice::new(alloc::sync::Arc::<[u8]>::from(&[1u8, 2, 3][..]));
+        let mut buf = [0u8; 3];
+        read_bytes(&device, 0, &mut buf).unwrap();
+        assert_eq!(buf, [1, 2, 3]);
     }
 
     #[test]

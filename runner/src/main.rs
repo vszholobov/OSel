@@ -31,6 +31,10 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 const TEST_MEMORY: &str = "128M";
 /// What every kernel finds in its ramdisk, relative to the repository
 const DEFAULT_RAMDISK_DIR: &str = "ramdisk";
+/// Where the bootloader looks for the ramdisk in the image, `RAMDISK_FILE_NAME` of `bootloader`
+const RAMDISK_FILE_NAME: &str = "ramdisk";
+/// Files the host leaves behind that must not make the ramdisk differ between machines
+const IGNORED_FILES: &[&str] = &[".DS_Store"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Boot {
@@ -55,7 +59,7 @@ fn main() -> ExitCode {
 
     let config = parse_boot(env::var("OSEL_BOOT").ok().as_deref()).and_then(|boot| {
         let timeout = parse_timeout(env::var("OSEL_TIMEOUT").ok().as_deref())?;
-        let ramdisk_dir = ramdisk_dir(env::var("OSEL_RAMDISK").ok().as_deref(), &repository());
+        let ramdisk_dir = ramdisk_dir(env::var_os("OSEL_RAMDISK").as_deref(), &repository());
         let ramdisk = pack_ramdisk(&ramdisk_dir)?;
         Ok((boot, timeout, ramdisk))
     });
@@ -194,20 +198,14 @@ fn create_disk_image(kernel: &Path, image: &Path, boot: Boot, ramdisk: &[u8]) {
     // the bootloader traces every boot step by default, keep only problems
     boot_config.log_level = LevelFilter::Warn;
 
-    // the builder copies the file into the image, it is not needed afterwards
-    let mut archive = image.as_os_str().to_os_string();
-    archive.push(".cpio");
-    let archive = PathBuf::from(archive);
-    std::fs::write(&archive, ramdisk).unwrap_or_else(|e| panic!("failed to write {}: {e}", archive.display()));
-
     let mut builder = DiskImageBuilder::new(kernel.to_path_buf());
     builder.set_boot_config(&boot_config);
-    builder.set_ramdisk(archive.clone());
+    // `set_ramdisk` takes a path, this is the same file `ramdisk` without a temporary copy
+    builder.set_file_contents(RAMDISK_FILE_NAME.to_string(), ramdisk.to_vec());
     let result = match boot {
         Boot::Uefi => builder.create_uefi_image(image),
         Boot::Bios => builder.create_bios_image(image),
     };
-    let _ = std::fs::remove_file(&archive);
     result.unwrap_or_else(|e| panic!("failed to create disk image {}: {e:#}", image.display()));
 }
 
@@ -218,10 +216,10 @@ fn repository() -> PathBuf {
 
 /// The directory to pack into the ramdisk: `OSEL_RAMDISK` or ramdisk/, relative to the
 /// repository, so that the result does not depend on where cargo was started
-fn ramdisk_dir(value: Option<&str>, repository: &Path) -> PathBuf {
+fn ramdisk_dir(value: Option<&std::ffi::OsStr>, repository: &Path) -> PathBuf {
     match value {
-        None | Some("") => repository.join(DEFAULT_RAMDISK_DIR),
-        Some(dir) => repository.join(dir),
+        Some(dir) if !dir.is_empty() => repository.join(dir),
+        _ => repository.join(DEFAULT_RAMDISK_DIR),
     }
 }
 
@@ -251,6 +249,9 @@ fn pack_dir(dir: &Path, prefix: &str, builder: &mut CpioBuilder) -> Result<(), S
             .file_name()
             .into_string()
             .map_err(|name| format!("ramdisk file name {name:?} is not UTF-8"))?;
+        if IGNORED_FILES.contains(&name.as_str()) {
+            continue;
+        }
         let name = format!("{prefix}{name}");
         // symlinks are not followed: the kernel has no symlinks yet
         let metadata = std::fs::symlink_metadata(&path).map_err(|e| read_error(&path, e))?;
@@ -489,10 +490,11 @@ mod tests {
     #[test]
     fn ramdisk_dir_is_relative_to_the_repository() {
         let repository = Path::new("/repo");
+        let dir = |value: &str| ramdisk_dir(Some(std::ffi::OsStr::new(value)), repository);
         assert_eq!(ramdisk_dir(None, repository), Path::new("/repo/ramdisk"));
-        assert_eq!(ramdisk_dir(Some(""), repository), Path::new("/repo/ramdisk"));
-        assert_eq!(ramdisk_dir(Some("tests/data"), repository), Path::new("/repo/tests/data"));
-        assert_eq!(ramdisk_dir(Some("/abs/dir"), repository), Path::new("/abs/dir"));
+        assert_eq!(dir(""), Path::new("/repo/ramdisk"));
+        assert_eq!(dir("tests/data"), Path::new("/repo/tests/data"));
+        assert_eq!(dir("/abs/dir"), Path::new("/abs/dir"));
     }
 
     /// A fresh directory under the system temp dir, removed when dropped
@@ -515,12 +517,12 @@ mod tests {
 
     fn mount(archive: Vec<u8>) -> osel_core::cpio::CpioFs {
         use osel_core::block::MemBlockDevice;
-        osel_core::cpio::CpioFs::mount(std::sync::Arc::new(MemBlockDevice::new(archive.leak()))).unwrap()
+        osel_core::cpio::CpioFs::mount(std::sync::Arc::new(MemBlockDevice::new(archive))).unwrap()
     }
 
     #[test]
     fn packs_a_directory_tree() {
-        use osel_core::vfs::{FileSystem, list_dir, read_to_end, resolve};
+        use osel_core::vfs::{FileSystem, list_dir, read_to_end, resolve_absolute as resolve};
         use std::os::unix::fs::PermissionsExt;
 
         let dir = TempDir::new("pack");
@@ -530,6 +532,9 @@ mod tests {
         std::fs::write(dir.0.join("etc/deep/data"), vec![7u8; 3000]).unwrap();
         std::fs::write(dir.0.join("run"), b"#!").unwrap();
         std::fs::set_permissions(dir.0.join("run"), std::fs::Permissions::from_mode(0o750)).unwrap();
+        std::fs::write(dir.0.join("suid"), b"").unwrap();
+        std::fs::set_permissions(dir.0.join("suid"), std::fs::Permissions::from_mode(0o4755)).unwrap();
+        std::fs::write(dir.0.join(".DS_Store"), b"finder").unwrap();
 
         let archive = pack_ramdisk(&dir.0).unwrap();
         assert_eq!(archive, pack_ramdisk(&dir.0).unwrap(), "packing is deterministic");
@@ -539,8 +544,9 @@ mod tests {
         assert_eq!(read("/etc/motd"), b"hello\n");
         assert_eq!(read("/etc/deep/data"), vec![7u8; 3000]);
         assert_eq!(resolve(&root, "/run").unwrap().stat().permissions, 0o750);
+        assert_eq!(resolve(&root, "/suid").unwrap().stat().permissions, 0o4755, "setuid survives");
         let names: Vec<String> = list_dir(&*root).unwrap().into_iter().map(|e| e.name).collect();
-        assert_eq!(names, ["empty", "etc", "run"]);
+        assert_eq!(names, ["empty", "etc", "run", "suid"], ".DS_Store is skipped");
         assert!(list_dir(&*resolve(&root, "/empty").unwrap()).unwrap().is_empty());
     }
 
