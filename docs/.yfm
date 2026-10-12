@@ -1,0 +1,11 @@
+# Diplodoc project settings, see https://diplodoc.com/docs/ru/settings
+langs: ['ru']
+allowHtml: false
+lint: true
+search:
+  provider: local
+llms:
+  enabled: true
+  description: >-
+    OSel — учебная операционная система на Rust для x86_64. Документация: как запустить
+    систему, как она устроена, как её разрабатывать и тестировать, решения и планы.
