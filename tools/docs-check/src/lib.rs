@@ -109,7 +109,8 @@ pub fn repo_paths(markdown: &str) -> Vec<String> {
     code_spans(markdown)
         .into_iter()
         .filter_map(|span| {
-            let path = span.split("::").next()?.trim().to_string();
+            // `src/sync.rs::IrqSpinlock` and `docs/guides/debugging.md#debugger` name a file too
+            let path = span.split("::").next()?.split('#').next()?.trim().to_string();
             let is_repo_path = ROOTS.iter().any(|root| path.starts_with(root)) || FILES.contains(&path.as_str());
             let generated = path.contains('*') || path.contains('<') || path.contains(' ') || path.starts_with("runner/.ovmf");
             (is_repo_path && !generated).then_some(path)
@@ -143,7 +144,7 @@ mod tests {
 
     #[test]
     fn repo_paths_skip_generated_and_patterns() {
-        let text = "`src/**` `runner/.ovmf` `osel-core/src/` `Cargo.toml` `cargo test` `<path>`";
-        assert_eq!(repo_paths(text), ["osel-core/src/", "Cargo.toml"]);
+        let text = "`src/**` `runner/.ovmf` `osel-core/src/` `Cargo.toml` `cargo test` `<path>` `docs/a.md#part`";
+        assert_eq!(repo_paths(text), ["osel-core/src/", "Cargo.toml", "docs/a.md"]);
     }
 }

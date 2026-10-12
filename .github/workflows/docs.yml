@@ -25,15 +25,16 @@ jobs:
           src-root: ./docs
           build-root: ./docs-html
 
+      # only master is published; a manual run on another branch just builds
       - name: Upload the site for GitHub Pages
-        if: github.event_name != 'pull_request'
+        if: github.ref == 'refs/heads/master'
         uses: actions/upload-pages-artifact@v3
         with:
           path: ./docs-html
 
   deploy:
     name: publish to GitHub Pages
-    if: github.event_name != 'pull_request'
+    if: github.ref == 'refs/heads/master'
     needs: build
     runs-on: ubuntu-latest
     permissions:
