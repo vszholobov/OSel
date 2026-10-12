@@ -31,12 +31,16 @@ jobs:
           workspaces: |
             . -> target
             runner -> target
+            tools/docs-check -> target
 
       - name: Kernel logic (osel-core)
         run: cargo test-core
 
       - name: Runner
         run: cargo test-runner
+
+      - name: Docs match the code
+        run: cargo docs-check
 
   test:
     name: cargo test (${{ matrix.boot }})

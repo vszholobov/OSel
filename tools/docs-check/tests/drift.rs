@@ -1,0 +1,100 @@
+//! The documentation in docs/ must not drift from the code. Each test names what is
+//! missing and on which page it belongs, see docs/guides/writing-docs.md.
+
+use docs_check::*;
+
+fn assert_documented(page: &str, what: &str, names: &[String]) {
+    let text = read(page);
+    let missing: Vec<&String> = names.iter().filter(|name| !text.contains(&format!("`{name}`"))).collect();
+    assert!(missing.is_empty(), "{page} does not mention these {what} (as `name`): {missing:?}");
+}
+
+#[test]
+fn module_map_lists_every_module() {
+    let mut modules = modules("src", &["lib", "main"]);
+    modules.extend(modules_of_core());
+    assert_documented("docs/architecture/overview.md", "modules", &modules);
+}
+
+fn modules_of_core() -> Vec<String> {
+    docs_check::modules("osel-core/src", &["lib"])
+}
+
+#[test]
+fn runner_page_lists_every_env_var() {
+    let mut vars = identifiers_after(&read("runner/src/main.rs"), "OSEL_");
+    vars.extend(identifiers_after(&read("runner/run.sh"), "OSEL_"));
+    let vars: Vec<String> = vars.into_iter().map(|v| format!("OSEL_{v}")).collect();
+    assert!(!vars.is_empty(), "no OSEL_ variables found, has the runner moved?");
+    assert_documented("docs/reference/runner.md", "runner variables", &vars);
+}
+
+#[test]
+fn vectors_page_lists_every_handler() {
+    let source = read("src/interrupts.rs");
+    let code = without_tests(&source);
+    let mut names = identifiers_after(code, "idt.");
+    names.extend(identifiers_after(code, "InterruptIndex::"));
+    names.retain(|name| name != "as_u8");
+    assert!(names.len() > 10, "too few IDT entries found: {names:?}");
+    assert_documented("docs/reference/vectors.md", "IDT entries", &names);
+}
+
+#[test]
+fn locking_page_lists_every_lock() {
+    let mut locks = Vec::new();
+    for dir in ["src", "osel-core/src"] {
+        for module in docs_check::modules(dir, &[]) {
+            let source = read(&format!("{dir}/{module}.rs"));
+            let code = without_tests(&source);
+            for prefix in ["IrqSpinlock::new(\"", "Spinlock::new(\""] {
+                for lock in string_arguments(code, prefix) {
+                    if !locks.contains(&lock) {
+                        locks.push(lock);
+                    }
+                }
+            }
+        }
+    }
+    assert!(!locks.is_empty(), "no locks found, has IrqSpinlock moved?");
+    assert_documented("docs/architecture/core/locking.md", "locks", &locks);
+}
+
+#[test]
+fn code_paths_in_docs_exist() {
+    let mut files = markdown_files("docs");
+    files.extend(markdown_files(".claude"));
+    files.extend(["AGENTS.md", "CLAUDE.md", "readme.md", "CHANGELOG.md"].iter().map(|f| f.to_string()));
+    let repo = repo();
+    let mut missing = Vec::new();
+    for file in &files {
+        if !repo.join(file).exists() {
+            continue;
+        }
+        for path in repo_paths(&read(file)) {
+            if !repo.join(&path).exists() {
+                missing.push(format!("{file}: `{path}`"));
+            }
+        }
+    }
+    assert!(missing.is_empty(), "paths in the docs that don't exist:\n{}", missing.join("\n"));
+}
+
+#[test]
+fn every_page_is_in_the_table_of_contents() {
+    let toc = read("docs/toc.yaml");
+    let hrefs: Vec<String> = toc
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("- href:").or_else(|| line.trim().strip_prefix("href:")))
+        .map(|href| href.trim().trim_matches(['"', '\'']).to_string())
+        .collect();
+    let pages: Vec<String> = markdown_files("docs")
+        .into_iter()
+        .map(|page| page.strip_prefix("docs/").unwrap().to_string())
+        .filter(|page| !page.starts_with('_') && !page.contains("/_"))
+        .collect();
+    let not_in_toc: Vec<&String> = pages.iter().filter(|page| !hrefs.contains(page)).collect();
+    assert!(not_in_toc.is_empty(), "pages missing in docs/toc.yaml (they won't be on the site): {not_in_toc:?}");
+    let dangling: Vec<&String> = hrefs.iter().filter(|href| !pages.contains(href)).collect();
+    assert!(dangling.is_empty(), "docs/toc.yaml points to missing pages: {dangling:?}");
+}

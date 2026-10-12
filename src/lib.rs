@@ -31,6 +31,11 @@ pub mod keyboard;
 pub mod memory;
 pub mod sync;
 
+/// Version of the kernel from Cargo.toml
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Short git commit the kernel was built from, `unknown` outside a git checkout
+pub const COMMIT: &str = env!("OSEL_COMMIT");
+
 /// Bootloader settings shared by the kernel and all test kernels
 pub const BOOTLOADER_CONFIG: BootloaderConfig = {
     let mut config = BootloaderConfig::new_default();
