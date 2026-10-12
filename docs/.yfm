@@ -2,6 +2,11 @@
 langs: ['ru']
 allowHtml: false
 lint: true
+# custom styles of the site, docs/_assets/style/custom.css
+allowCustomResources: true
+resources:
+  style:
+    - _assets/style/custom.css
 interface:
   # the png is not linked from any page, so it is taken straight from the repository
   favicon-src: https://raw.githubusercontent.com/vszholobov/OSel/master/docs/images/osel-favicon.png
