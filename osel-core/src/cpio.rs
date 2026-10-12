@@ -223,8 +223,8 @@ impl CpioFs {
             }
             let permissions = header.mode & 0o7777;
             match header.mode & S_IFMT {
-                // `name/` is a directory in every tool, a file there is a broken archive
-                S_IFREG if name.ends_with('/') => return Err(Errno::EINVAL),
+                // `name/` and `name/.` are directories in every tool, a file there is a broken archive
+                S_IFREG if matches!(name.rsplit('/').next(), Some("" | ".")) => return Err(Errno::EINVAL),
                 S_IFREG if header.nlink > 1 => {
                     let key = (header.ino, header.dev_major, header.dev_minor);
                     let file = Kind::File { offset: data_offset, size };
@@ -790,7 +790,11 @@ mod tests {
 
     #[test]
     fn file_named_like_a_directory_is_rejected() {
-        rejects(|b| b.entry(1, S_IFREG | 0o644, 1, "x/", b"data"));
+        for name in ["x/", "x/.", "x/./", "."] {
+            let mut builder = CpioBuilder::new();
+            builder.entry(1, S_IFREG | 0o644, 1, name, b"data");
+            assert_eq!(mount(builder.finish()).err(), Some(Errno::EINVAL), "{name:?}");
+        }
     }
 
     #[test]

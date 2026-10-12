@@ -79,4 +79,4 @@ description: Справочник runner — переменные окружен
 - `runner/run.sh` — обёртка для cargo.
 - `runner/src/main.rs` — `parse_boot`, `parse_timeout`, `ramdisk_dir`, `pack_ramdisk`, `is_test_binary`, `image_path`, `create_disk_image`, `ovmf_firmware`, `forward_serial_output`, `test_outcome`, `expect_outcome`, `wait_with_timeout`.
 
-_Сверено с кодом: 2026-10-12, коммит ef2124f._
+_Сверено с кодом: 2026-10-12, коммит 8a4d3e2._
