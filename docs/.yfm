@@ -2,6 +2,11 @@
 langs: ['ru']
 allowHtml: false
 lint: true
+interface:
+  # the png is not linked from any page, so it is taken straight from the repository
+  favicon-src: https://raw.githubusercontent.com/vszholobov/OSel/master/docs/images/osel-favicon.png
+  # the site name is already in the top menu, the table of contents doesn't repeat it
+  toc-header: false
 search:
   provider: local
 llms:
