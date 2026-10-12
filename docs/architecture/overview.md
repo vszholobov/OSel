@@ -14,7 +14,7 @@ description: Обзор OSel — из каких крейтов и модуле�
 |---|---|---|---|
 | ядро `osel` | `src/`, `tests/` | `x86_64-unknown-none` | библиотека ядра и бинарник `OSel`; интеграционные тесты — отдельные тестовые ядра |
 | `osel-core` | `osel-core/` | хост и ядро | логика без обращения к железу: консоль, аллокаторы, карта памяти, клавиатура, отчёты об исключениях, спинлок |
-| `osel-runner` | `runner/` | хост | раннер cargo: образ диска, запуск QEMU, разбор результатов тестов |
+| `osel-runner` | `runner/` | хост | раннер cargo: ramdisk из папки `ramdisk/`, образ диска, запуск QEMU, разбор результатов тестов; зависит от `osel-core` ради формата cpio |
 | `docs-check` | `tools/docs-check/` | хост | тесты, которые сверяют документацию с кодом, см. [как писать документацию](../guides/writing-docs.md#checks) |
 
 `osel-core` — участник workspace. `runner` и `tools/docs-check` исключены из него: runner запускается вложенным cargo, пока сборка ядра держит блокировку папки target.
@@ -31,6 +31,7 @@ description: Обзор OSel — из каких крейтов и модуле�
 | `interrupts` | `src/interrupts.rs` | IDT, обработчики исключений, PIC, таймер, ложные IRQ | [Прерывания](core/interrupts.md) |
 | `gdt` | `src/gdt.rs` | GDT, TSS, стеки IST для double fault, NMI и machine check | [Прерывания](core/interrupts.md) |
 | `memory` | `src/memory.rs` | таблица страниц, аллокатор физических страниц, `with_memory` | [Память](core/memory.md) |
+| `fs` | `src/fs.rs` | монтирует ramdisk как корень, `lookup`, `read_file` | [Файлы и ramdisk](core/fs.md) |
 | `allocator` | `src/allocator.rs` | куча ядра и глобальный аллокатор | [Память](core/memory.md#heap) |
 | `sync` | `src/sync.rs` | `IrqSpinlock` — блокировка, выключающая прерывания | [Блокировки](core/locking.md) |
 | `qemuno` | `src/qemuno.rs` | выход из QEMU через устройство `isa-debug-exit` | [Как устроены тесты](testing.md) |
@@ -47,6 +48,10 @@ description: Обзор OSel — из каких крейтов и модуле�
 | `heap` | `osel-core/src/heap.rs` | `FixedSizeBlockAllocator` | [Память](core/memory.md#heap) |
 | `exception` | `osel-core/src/exception.rs` | текст отчёта об исключении, `FixedBuf` | [Прерывания](core/interrupts.md#exceptions) |
 | `sync` | `osel-core/src/sync.rs` | `Spinlock` с отчётом о взаимоблокировке | [Блокировки](core/locking.md) |
+| `errno` | `osel-core/src/errno.rs` | коды ошибок Linux `Errno`, `KResult` | [Файлы и ramdisk](core/fs.md) |
+| `block` | `osel-core/src/block.rs` | интерфейс `BlockDevice`, `MemBlockDevice`, `read_bytes` | [Файлы и ramdisk](core/fs.md#layers) |
+| `vfs` | `osel-core/src/vfs.rs` | интерфейсы `FileSystem` и `Inode`, разрешение путей | [Файлы и ramdisk](core/fs.md#resolve) |
+| `cpio` | `osel-core/src/cpio.rs` | файловая система `CpioFs` над архивом cpio, `CpioBuilder` | [Файлы и ramdisk](core/fs.md#cpio) |
 
 ## Путь загрузки {#boot}
 
@@ -58,9 +63,10 @@ description: Обзор OSel — из каких крейтов и модуле�
    3. `interrupts::init_idt` — IDT;
    4. `memory::init` — таблица страниц, очистка нижней половины, страницы-охранники стеков IST, аллокатор страниц;
    5. `allocator::init_heap` — куча;
-   6. `interrupts::init_pics` — сброс буфера клавиатуры, PIC, таймер на 100 Гц;
-   7. включает прерывания.
-4. Ядро печатает «OSel ready to go!» на экран и в последовательный порт, затем `echo_keyboard` печатает нажатые клавиши и спит в `hlt`, пока нет ввода.
+   6. `fs::init` — ramdisk монтируется как корень `/`;
+   7. `interrupts::init_pics` — сброс буфера клавиатуры, PIC, таймер на 100 Гц;
+   8. включает прерывания.
+4. Ядро печатает `/etc/motd` из ramdisk, затем «OSel ready to go!» на экран и в последовательный порт, затем `echo_keyboard` печатает нажатые клавиши и спит в `hlt`, пока нет ввода.
 
 После `osel::init` то, что передал загрузчик (карта памяти, ramdisk, таблицы ACPI), доступно через `osel::boot_info()`.
 
@@ -69,7 +75,7 @@ description: Обзор OSel — из каких крейтов и модуле�
 | Область | Адреса |
 |---|---|
 | Программы (пока пусто) | нижняя половина, до `USER_END` |
-| Всё, что размещает загрузчик: ядро, стек, сведения о загрузке, framebuffer, отображение физической памяти | `KERNEL_DYNAMIC_START..=KERNEL_DYNAMIC_END` |
+| Всё, что размещает загрузчик: ядро, стек, сведения о загрузке, framebuffer, ramdisk, отображение физической памяти | `KERNEL_DYNAMIC_START..=KERNEL_DYNAMIC_END` |
 | Куча ядра, 1 МБ | с `HEAP_START` |
 
 Подробности, инварианты и грабли — на странице [Память](core/memory.md).
@@ -79,5 +85,6 @@ description: Обзор OSel — из каких крейтов и модуле�
 - [0001 — bootloader 0.11 и UEFI](../decisions/0001-bootloader-0.11-and-uefi.md)
 - [0002 — osel-core и тесты на хосте](../decisions/0002-osel-core-host-tests.md)
 - [0006 — ядро в верхней половине](../decisions/0006-higher-half-kernel.md)
+- [0007 — интерфейсы хранения и ramdisk в cpio](../decisions/0007-storage-interfaces.md)
 
-_Сверено с кодом: 2026-10-12, коммит 2dee8ac._
+_Сверено с кодом: 2026-10-12, коммит 8a4d3e2._

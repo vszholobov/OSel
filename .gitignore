@@ -1,3 +1,4 @@
 target/
 .idea/
 runner/.ovmf/
+ramdisk/**/.DS_Store

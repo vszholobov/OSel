@@ -43,6 +43,7 @@ description: Блокировки OSel — IrqSpinlock, отчёт о взаим
 | `BUFFER` | `src/keyboard.rs` | буфер введённых символов | обработчик клавиатуры, `pop_char`, `dropped_chars` |
 | `ALLOCATOR` | `src/allocator.rs` | куча | глобальный аллокатор, `with_allocator` |
 | `MEMORY` | `src/memory.rs` | таблица страниц и аллокатор страниц | `with_memory` |
+| `ROOT_FS` | `src/fs.rs` | корневая файловая система | `fs::init`, `fs::root`; держится только на время копирования `Arc` |
 
 Порядок вложения, который уже есть в коде: `DECODER`, затем `BUFFER` (в обработчике клавиатуры). Другие блокировки друг в друга не вкладываются.
 
@@ -77,4 +78,4 @@ description: Блокировки OSel — IrqSpinlock, отчёт о взаим
 
 - [0003 — IrqSpinlock](../../decisions/0003-irq-spinlock.md)
 
-_Сверено с кодом: 2026-10-12, коммит 2dee8ac._
+_Сверено с кодом: 2026-10-12, коммит 8a4d3e2._

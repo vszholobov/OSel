@@ -14,3 +14,7 @@ pub mod memory;
 pub mod heap;
 pub mod exception;
 pub mod sync;
+pub mod errno;
+pub mod block;
+pub mod vfs;
+pub mod cpio;

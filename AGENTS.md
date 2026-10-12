@@ -30,6 +30,7 @@ OSEL_EXPECT="OSel ready to go!" cargo run   # запуск настоящего 
 | Перенести тест из курса ШАДа | `docs/nikka.md` |
 | Упал CI или тест | `docs/guides/troubleshooting.md`, `docs/guides/debugging.md` |
 | Поменять память, прерывания или блокировки | `docs/architecture/core/memory.md`, `docs/architecture/core/interrupts.md`, `docs/architecture/core/locking.md` |
+| Читать файлы в ядре, положить файл в ramdisk, подключить диск или файловую систему | `docs/architecture/core/fs.md`, `docs/decisions/0007-storage-interfaces.md` |
 | Поменять консоль, порт, клавиатуру | `docs/architecture/drivers/console.md`, `docs/architecture/drivers/serial.md`, `docs/architecture/drivers/keyboard.md` |
 | Запустить ядро, снять скриншот | навык `run-kernel` (`.claude/skills/run-kernel/SKILL.md`), `docs/guides/debugging.md` |
 | Разобрать падение или зависание | навык `debug-qemu-crash`, `docs/guides/debugging.md` |

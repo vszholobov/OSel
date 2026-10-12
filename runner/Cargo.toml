@@ -8,3 +8,5 @@ edition = "2024"
 bootloader = "0.11.17"
 ovmf-prebuilt = "0.2.9"
 bootloader-boot-config = "0.11.17"
+# the cpio writer, the same code the kernel reads the ramdisk with
+osel-core = { path = "../osel-core" }
