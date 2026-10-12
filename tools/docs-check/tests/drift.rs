@@ -80,6 +80,36 @@ fn code_paths_in_docs_exist() {
     assert!(missing.is_empty(), "paths in the docs that don't exist:\n{}", missing.join("\n"));
 }
 
+/// Diplodoc checks that linked pages exist, but not the `#anchor` part of a link: anchors
+/// that other pages link to must be explicit `{#id}` (see docs/guides/writing-docs.md)
+#[test]
+fn links_to_sections_have_explicit_anchors() {
+    let repo = repo();
+    let mut broken = Vec::new();
+    for page in markdown_files("docs") {
+        let text = read(&page);
+        let dir = std::path::Path::new(&page).parent().unwrap().to_path_buf();
+        for target in link_targets(&text) {
+            if target.contains("://") || target.starts_with("mailto:") {
+                continue;
+            }
+            let (file, anchor) = target.split_once('#').unwrap_or((target.as_str(), ""));
+            if anchor.is_empty() {
+                continue;
+            }
+            let target_page = if file.is_empty() { page.clone() } else { dir.join(file).to_string_lossy().into_owned() };
+            let Ok(target_text) = std::fs::read_to_string(repo.join(&target_page)) else {
+                broken.push(format!("{page}: ({target}) points to a missing page"));
+                continue;
+            };
+            if !anchors(&target_text).iter().any(|id| id == anchor) {
+                broken.push(format!("{page}: ({target}) has no {{#{anchor}}} heading"));
+            }
+        }
+    }
+    assert!(broken.is_empty(), "links to missing sections:\n{}", broken.join("\n"));
+}
+
 #[test]
 fn every_page_is_in_the_table_of_contents() {
     let toc = read("docs/toc.yaml");

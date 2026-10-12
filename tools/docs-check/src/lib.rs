@@ -118,6 +118,40 @@ pub fn repo_paths(markdown: &str) -> Vec<String> {
         .collect()
 }
 
+/// Targets of Markdown links `[text](target)` outside fenced code blocks
+pub fn link_targets(markdown: &str) -> Vec<String> {
+    let mut targets = Vec::new();
+    let mut in_fence = false;
+    for line in markdown.lines() {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        for (start, _) in line.match_indices("](") {
+            let rest = &line[start + 2..];
+            if let Some(end) = rest.find(')') {
+                targets.push(rest[..end].trim().to_string());
+            }
+        }
+    }
+    targets
+}
+
+/// Explicit heading anchors `{#id}` defined in a page
+pub fn anchors(markdown: &str) -> Vec<String> {
+    let mut ids = Vec::new();
+    for (start, _) in markdown.match_indices("{#") {
+        let rest = &markdown[start + 2..];
+        if let Some(end) = rest.find('}') {
+            ids.push(rest[..end].split_whitespace().next().unwrap_or("").to_string());
+        }
+    }
+    ids
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,6 +174,13 @@ mod tests {
         let text = "see `src/a.rs` and `x`\n```\n`src/in_fence.rs`\n```\nthen `tests/b.rs::name`";
         assert_eq!(code_spans(text), ["src/a.rs", "x", "tests/b.rs::name"]);
         assert_eq!(repo_paths(text), ["src/a.rs", "tests/b.rs"]);
+    }
+
+    #[test]
+    fn finds_links_and_anchors() {
+        let page = "# Title {#top}\n[a](b.md#part) and [c](https://x.org)\n```\n[no](fence.md)\n```\n## Part {#part}";
+        assert_eq!(link_targets(page), ["b.md#part", "https://x.org"]);
+        assert_eq!(anchors(page), ["top", "part"]);
     }
 
     #[test]
