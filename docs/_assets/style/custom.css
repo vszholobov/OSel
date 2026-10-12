@@ -1,0 +1,14 @@
+/* Header logo of the docs site, see docs/guides/writing-docs.md */
+
+/* The donkey keeps its size: without it the image shrinks to zero width in the header row */
+.pc-desktop-navigation__wrapper .pc-logo__icon {
+    width: 36px;
+    height: 36px;
+    flex-shrink: 0;
+}
+
+/* The logo starts where the table of contents starts: the left edge of the donkey is on the
+   line of the "›" arrows below it (measured 22px left of the default position) */
+.pc-desktop-navigation__wrapper .pc-logo {
+    margin-left: -22px;
+}
