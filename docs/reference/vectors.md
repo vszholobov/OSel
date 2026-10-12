@@ -38,7 +38,7 @@ description: Справочник векторов прерываний OSel —
 | 29 | `vmm_communication_exception` | VMM COMMUNICATION EXCEPTION | — | число | паника |
 | 30 | `security_exception` | SECURITY EXCEPTION | — | число | паника |
 
-Из кольца 3 любое исключение, кроме векторов 2, 8 и 18 на стеках IST, завершает программу вместо паники. `int3` и любая `int N` из программы дают #GP: у всех шлюзов DPL 0.
+Из кольца 3 любое исключение, кроме векторов 2, 8 и 18 на стеках IST, завершает программу вместо паники; для программ #MF (16) и #XM (19) — обычные ошибки вычислений, см. [x87 и SSE](../architecture/core/user-mode.md#fpu). `int3` и любая `int N` из программы дают #GP: у всех шлюзов DPL 0.
 
 Вектор 256 в `TrapFrame` — не прерывание, а вход через `syscall`, см. [пользовательский режим](../architecture/core/user-mode.md#syscall).
 

@@ -33,6 +33,7 @@ pub mod memory;
 pub mod program;
 pub mod user;
 pub mod syscall;
+pub mod fpu;
 pub mod sync;
 
 /// Version of the kernel from Cargo.toml
@@ -62,6 +63,7 @@ pub fn init(boot_info: &'static BootInfo) {
     assert!(!INITIALIZED.swap(true, core::sync::atomic::Ordering::SeqCst), "osel::init called twice");
     BOOT_INFO.store(boot_info as *const BootInfo as *mut BootInfo, core::sync::atomic::Ordering::SeqCst);
     gdt::init();
+    fpu::init();
     interrupts::init_idt();
     syscall::init();
 

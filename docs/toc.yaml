@@ -77,6 +77,7 @@ items:
       - href: decisions/0010-static-elf-loader.md
       - href: decisions/0011-user-entry.md
       - href: decisions/0012-syscall-entry-and-user-programs.md
+      - href: decisions/0013-fpu-state.md
   - name: Планы
     items:
       - href: roadmap.md

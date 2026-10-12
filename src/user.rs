@@ -6,9 +6,11 @@
 //! from `enter_user` on the kernel stack it left. One CPU and one program at a time: the
 //! saved kernel stack pointer is a plain static, no `swapgs` is needed.
 
+use crate::fpu;
 use crate::gdt;
 use crate::memory::{self, USER_END, UserSpace};
 use core::arch::naked_asm;
+use osel_core::fpu::FpuState;
 use osel_core::syscall::SYSCALL_VECTOR;
 use osel_core::trap::{GENERAL_PROTECTION, TRAP_FRAME_WORDS, TrapFrame};
 
@@ -69,6 +71,12 @@ pub fn initial_frame(entry: u64, rsp: u64) -> TrapFrame {
 /// The frame is forced to ring 3 first; a `rip` outside the lower half is a #GP of the
 /// program right away, without entering it.
 pub fn run(space: &mut UserSpace, frame: &mut TrapFrame) -> Stop {
+    run_with_fpu(space, frame, &mut FpuState::initial())
+}
+
+/// `run` with the program's x87 and SSE state: loaded before, saved after. `run` starts
+/// every program with the state after reset, so nothing of another program leaks in.
+pub fn run_with_fpu(space: &mut UserSpace, frame: &mut TrapFrame, fpu: &mut FpuState) -> Stop {
     assert!(x86_64::instructions::interrupts::are_enabled(), "entering a program with interrupts off or a lock held");
     // one saved kernel stack and one running space: a run inside a system call would lose them
     assert!(unsafe { RUNNING.is_null() }, "a program is already running");
@@ -79,11 +87,14 @@ pub fn run(space: &mut UserSpace, frame: &mut TrapFrame) -> Stop {
         return Stop::Fault(Trap { vector: GENERAL_PROTECTION, error_code: 0, cr2: 0 });
     }
     space.activate();
+    // the kernel never touches these registers, so they stay the program's until it leaves
+    fpu::restore(fpu);
     unsafe {
         RUNNING = space;
         enter_user(frame, gdt::kernel_stack_slot());
         RUNNING = core::ptr::null_mut();
     }
+    fpu::save(fpu);
     memory::activate_kernel_space();
     gdt::reload_data_segments();
     if frame.vector == SYSCALL_VECTOR {
