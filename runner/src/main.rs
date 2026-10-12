@@ -8,9 +8,12 @@
 //!   to the serial port (a smoke test of the real kernel)
 //! - `OSEL_TIMEOUT=<seconds>`: limit for tests and `OSEL_EXPECT` runs (default: 60)
 //! - `OSEL_OVMF_DIR=<dir>`: where to cache the UEFI firmware (default: runner/.ovmf)
+//! - `OSEL_RAMDISK=<dir>`: directory packed into the ramdisk as a cpio archive
+//!   (default: ramdisk/ of the repository; relative paths start there too)
 
 use bootloader::{BootConfig, DiskImageBuilder};
 use bootloader_boot_config::LevelFilter;
+use osel_core::cpio::CpioBuilder;
 use ovmf_prebuilt::{Arch, FileType, Prebuilt, Source};
 use std::env;
 use std::io::{BufRead, BufReader, Write};
@@ -26,6 +29,8 @@ const TEST_SUCCESS_EXIT_CODE: i32 = 33;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 /// Test kernels rely on a known amount of memory
 const TEST_MEMORY: &str = "128M";
+/// What every kernel finds in its ramdisk, relative to the repository
+const DEFAULT_RAMDISK_DIR: &str = "ramdisk";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Boot {
@@ -48,9 +53,13 @@ fn main() -> ExitCode {
     let kernel = PathBuf::from(args.next().expect("usage: osel-runner <kernel-elf> [qemu args...]"));
     let mut extra_qemu_args: Vec<_> = args.collect();
 
-    let config = parse_boot(env::var("OSEL_BOOT").ok().as_deref())
-        .and_then(|boot| Ok((boot, parse_timeout(env::var("OSEL_TIMEOUT").ok().as_deref())?)));
-    let (boot, timeout) = match config {
+    let config = parse_boot(env::var("OSEL_BOOT").ok().as_deref()).and_then(|boot| {
+        let timeout = parse_timeout(env::var("OSEL_TIMEOUT").ok().as_deref())?;
+        let ramdisk_dir = ramdisk_dir(env::var("OSEL_RAMDISK").ok().as_deref(), &repository());
+        let ramdisk = pack_ramdisk(&ramdisk_dir)?;
+        Ok((boot, timeout, ramdisk))
+    });
+    let (boot, timeout, ramdisk) = match config {
         Ok(config) => config,
         Err(message) => {
             eprintln!("{message}");
@@ -69,7 +78,7 @@ fn main() -> ExitCode {
     }
 
     let image = image_path(&kernel, boot);
-    create_disk_image(&kernel, &image, boot);
+    create_disk_image(&kernel, &image, boot, &ramdisk);
 
     let mut qemu = Command::new("qemu-system-x86_64");
     qemu.arg("-drive").arg(format!("format=raw,file={}", image.display()));
@@ -180,18 +189,86 @@ fn image_path(kernel: &Path, boot: Boot) -> PathBuf {
     kernel.with_file_name(name)
 }
 
-fn create_disk_image(kernel: &Path, image: &Path, boot: Boot) {
+fn create_disk_image(kernel: &Path, image: &Path, boot: Boot, ramdisk: &[u8]) {
     let mut boot_config = BootConfig::default();
     // the bootloader traces every boot step by default, keep only problems
     boot_config.log_level = LevelFilter::Warn;
 
+    // the builder copies the file into the image, it is not needed afterwards
+    let mut archive = image.as_os_str().to_os_string();
+    archive.push(".cpio");
+    let archive = PathBuf::from(archive);
+    std::fs::write(&archive, ramdisk).unwrap_or_else(|e| panic!("failed to write {}: {e}", archive.display()));
+
     let mut builder = DiskImageBuilder::new(kernel.to_path_buf());
     builder.set_boot_config(&boot_config);
+    builder.set_ramdisk(archive.clone());
     let result = match boot {
         Boot::Uefi => builder.create_uefi_image(image),
         Boot::Bios => builder.create_bios_image(image),
     };
+    let _ = std::fs::remove_file(&archive);
     result.unwrap_or_else(|e| panic!("failed to create disk image {}: {e:#}", image.display()));
+}
+
+/// The repository the runner belongs to
+fn repository() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("the runner lives in the repository").to_path_buf()
+}
+
+/// The directory to pack into the ramdisk: `OSEL_RAMDISK` or ramdisk/, relative to the
+/// repository, so that the result does not depend on where cargo was started
+fn ramdisk_dir(value: Option<&str>, repository: &Path) -> PathBuf {
+    match value {
+        None | Some("") => repository.join(DEFAULT_RAMDISK_DIR),
+        Some(dir) => repository.join(dir),
+    }
+}
+
+/// Packs `dir` into a cpio archive: directories and regular files with their
+/// permission bits, sorted by name, so the same tree always gives the same bytes
+fn pack_ramdisk(dir: &Path) -> Result<Vec<u8>, String> {
+    if !dir.is_dir() {
+        return Err(format!("ramdisk directory {} does not exist, see OSEL_RAMDISK", dir.display()));
+    }
+    let mut builder = CpioBuilder::new();
+    pack_dir(dir, "", &mut builder)?;
+    Ok(builder.finish())
+}
+
+fn pack_dir(dir: &Path, prefix: &str, builder: &mut CpioBuilder) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let read_error = |path: &Path, e: std::io::Error| format!("cannot read {}: {e}", path.display());
+    let mut entries = std::fs::read_dir(dir)
+        .map_err(|e| read_error(dir, e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| read_error(dir, e))?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let path = entry.path();
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|name| format!("ramdisk file name {name:?} is not UTF-8"))?;
+        let name = format!("{prefix}{name}");
+        // symlinks are not followed: the kernel has no symlinks yet
+        let metadata = std::fs::symlink_metadata(&path).map_err(|e| read_error(&path, e))?;
+        let permissions = metadata.permissions().mode() & 0o7777;
+        if metadata.is_dir() {
+            builder.add_dir(&name, permissions);
+            pack_dir(&path, &format!("{name}/"), builder)?;
+        } else if metadata.is_file() {
+            if metadata.len() > u64::from(u32::MAX) {
+                return Err(format!("{} is 4 GiB or more, cpio can't store it", path.display()));
+            }
+            let data = std::fs::read(&path).map_err(|e| read_error(&path, e))?;
+            builder.add_file(&name, permissions, &data);
+        } else {
+            return Err(format!("{}: only files and directories can go to the ramdisk", path.display()));
+        }
+    }
+    Ok(())
 }
 
 /// Downloads OVMF (UEFI firmware for QEMU) once. Kept outside target/ so that
@@ -407,6 +484,95 @@ mod tests {
         assert!(parse_timeout(Some("0")).is_err());
         assert!(parse_timeout(Some("-1")).is_err());
         assert!(parse_timeout(Some("1m")).is_err());
+    }
+
+    #[test]
+    fn ramdisk_dir_is_relative_to_the_repository() {
+        let repository = Path::new("/repo");
+        assert_eq!(ramdisk_dir(None, repository), Path::new("/repo/ramdisk"));
+        assert_eq!(ramdisk_dir(Some(""), repository), Path::new("/repo/ramdisk"));
+        assert_eq!(ramdisk_dir(Some("tests/data"), repository), Path::new("/repo/tests/data"));
+        assert_eq!(ramdisk_dir(Some("/abs/dir"), repository), Path::new("/abs/dir"));
+    }
+
+    /// A fresh directory under the system temp dir, removed when dropped
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(name: &str) -> Self {
+            let path = env::temp_dir().join(format!("osel-runner-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).unwrap();
+            TempDir(path)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn mount(archive: Vec<u8>) -> osel_core::cpio::CpioFs {
+        use osel_core::block::MemBlockDevice;
+        osel_core::cpio::CpioFs::mount(std::sync::Arc::new(MemBlockDevice::new(archive.leak()))).unwrap()
+    }
+
+    #[test]
+    fn packs_a_directory_tree() {
+        use osel_core::vfs::{FileSystem, list_dir, read_to_end, resolve};
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new("pack");
+        std::fs::create_dir_all(dir.0.join("etc/deep")).unwrap();
+        std::fs::create_dir(dir.0.join("empty")).unwrap();
+        std::fs::write(dir.0.join("etc/motd"), b"hello\n").unwrap();
+        std::fs::write(dir.0.join("etc/deep/data"), vec![7u8; 3000]).unwrap();
+        std::fs::write(dir.0.join("run"), b"#!").unwrap();
+        std::fs::set_permissions(dir.0.join("run"), std::fs::Permissions::from_mode(0o750)).unwrap();
+
+        let archive = pack_ramdisk(&dir.0).unwrap();
+        assert_eq!(archive, pack_ramdisk(&dir.0).unwrap(), "packing is deterministic");
+        let fs = mount(archive);
+        let root = fs.root();
+        let read = |path| read_to_end(&*resolve(&root, path).unwrap()).unwrap();
+        assert_eq!(read("/etc/motd"), b"hello\n");
+        assert_eq!(read("/etc/deep/data"), vec![7u8; 3000]);
+        assert_eq!(resolve(&root, "/run").unwrap().stat().permissions, 0o750);
+        let names: Vec<String> = list_dir(&*root).unwrap().into_iter().map(|e| e.name).collect();
+        assert_eq!(names, ["empty", "etc", "run"]);
+        assert!(list_dir(&*resolve(&root, "/empty").unwrap()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn empty_directory_gives_an_empty_archive() {
+        let dir = TempDir::new("empty");
+        let fs = mount(pack_ramdisk(&dir.0).unwrap());
+        assert_eq!(fs.node_count(), 1);
+    }
+
+    #[test]
+    fn missing_directory_is_an_error() {
+        let dir = TempDir::new("missing");
+        let error = pack_ramdisk(&dir.0.join("nope")).unwrap_err();
+        assert!(error.contains("does not exist") && error.contains("OSEL_RAMDISK"), "{error}");
+        std::fs::write(dir.0.join("file"), b"").unwrap();
+        assert!(pack_ramdisk(&dir.0.join("file")).is_err(), "a file is not a directory");
+    }
+
+    #[test]
+    fn symlinks_are_refused() {
+        let dir = TempDir::new("symlink");
+        std::fs::write(dir.0.join("target"), b"x").unwrap();
+        std::os::unix::fs::symlink("target", dir.0.join("link")).unwrap();
+        let error = pack_ramdisk(&dir.0).unwrap_err();
+        assert!(error.contains("only files and directories"), "{error}");
+    }
+
+    #[test]
+    fn the_repository_ramdisk_packs() {
+        let fs = mount(pack_ramdisk(&ramdisk_dir(None, &repository())).unwrap());
+        assert!(fs.node_count() > 1, "ramdisk/ of the repository is empty");
     }
 
     #[test]

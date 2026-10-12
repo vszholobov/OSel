@@ -20,8 +20,9 @@ description: Справочник runner — переменные окружен
 | `OSEL_EXPECT` | любой текст | не задано | режим смоук-теста: загрузить настоящее ядро без окна и завершиться успехом, как только строка с этим текстом появится в последовательном порту. Пустое значение — то же, что не задано |
 | `OSEL_TIMEOUT` | целое число секунд больше 0 | 60 | предел для тестовых ядер и режима `OSEL_EXPECT` |
 | `OSEL_OVMF_DIR` | путь к папке | папка .ovmf внутри runner | куда скачать и где хранить прошивку UEFI для QEMU |
+| `OSEL_RAMDISK` | путь к папке | `ramdisk` в корне репозитория | какую папку упаковать в ramdisk (архив cpio). Относительный путь считается от корня репозитория, а не от текущей папки. Пустое значение — то же, что не задано |
 
-Неверное значение `OSEL_BOOT` или `OSEL_TIMEOUT` — ошибка до запуска QEMU: runner печатает `unknown OSEL_BOOT value …` или `OSEL_TIMEOUT must be a positive number of seconds, got …` и завершается с провалом.
+Неверное значение `OSEL_BOOT` или `OSEL_TIMEOUT` — ошибка до запуска QEMU: runner печатает `unknown OSEL_BOOT value …` или `OSEL_TIMEOUT must be a positive number of seconds, got …` и завершается с провалом. Так же runner останавливается, если папки ramdisk нет (`ramdisk directory … does not exist, see OSEL_RAMDISK`) или в ней есть что-то кроме каталогов и обычных файлов (`…: only files and directories can go to the ramdisk`).
 
 ## Режимы {#modes}
 
@@ -70,11 +71,12 @@ description: Справочник runner — переменные окружен
 |---|---|
 | Образ диска | рядом с ELF: `<имя>.uefi.img` или `<имя>.bios.img`; для настоящего ядра — target/x86_64-unknown-none/debug/OSel.uefi.img |
 | Прошивка UEFI | папка .ovmf внутри runner, скачивается при первом запуске под UEFI (крейт `ovmf-prebuilt`), в git не попадает |
+| Ramdisk | собирается заново при каждом запуске из папки `ramdisk/` (или `OSEL_RAMDISK`), на время сборки образа лежит рядом с ним как `<имя>.uefi.img.cpio`, потом удаляется; внутри образа это файл `ramdisk` |
 | Уровень логов загрузчика | `Warn`: шаги загрузки не печатаются, только проблемы |
 
 ## Где в коде {#code}
 
 - `runner/run.sh` — обёртка для cargo.
-- `runner/src/main.rs` — `parse_boot`, `parse_timeout`, `is_test_binary`, `image_path`, `create_disk_image`, `ovmf_firmware`, `forward_serial_output`, `test_outcome`, `expect_outcome`, `wait_with_timeout`.
+- `runner/src/main.rs` — `parse_boot`, `parse_timeout`, `ramdisk_dir`, `pack_ramdisk`, `is_test_binary`, `image_path`, `create_disk_image`, `ovmf_firmware`, `forward_serial_output`, `test_outcome`, `expect_outcome`, `wait_with_timeout`.
 
-_Сверено с кодом: 2026-10-12, коммит 2dee8ac._
+_Сверено с кодом: 2026-10-12, коммит fc602c1._

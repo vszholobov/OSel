@@ -45,6 +45,7 @@ items:
           - href: architecture/core/memory.md
           - href: architecture/core/interrupts.md
           - href: architecture/core/locking.md
+          - href: architecture/core/fs.md
       - name: Драйверы
         items:
           - href: architecture/drivers/console.md
@@ -67,6 +68,7 @@ items:
       - href: decisions/0004-pinned-nightly.md
       - href: decisions/0005-linux-abi-for-go.md
       - href: decisions/0006-higher-half-kernel.md
+      - href: decisions/0007-storage-interfaces.md
   - name: Планы
     items:
       - href: roadmap.md

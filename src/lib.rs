@@ -22,6 +22,7 @@ use x86_64::VirtAddr;
 
 pub mod allocator;
 pub mod avganec;
+pub mod fs;
 pub mod cereal;
 pub mod qemuno;
 pub mod testosterone;
@@ -66,6 +67,7 @@ pub fn init(boot_info: &'static BootInfo) {
         .expect("bootloader did not map physical memory");
     unsafe { memory::init(VirtAddr::new(physical_memory_offset), &boot_info.memory_regions) };
     allocator::init_heap().expect("heap initialization failed");
+    fs::init(boot_info);
 
     interrupts::init_pics();
     x86_64::instructions::interrupts::enable();
