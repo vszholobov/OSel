@@ -19,7 +19,6 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use core::arch::naked_asm;
-use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use osel_core::errno::{Errno, KResult};
 use osel_core::file::FdTable;
@@ -69,18 +68,22 @@ pub struct Exit {
     pub fpu: FpuState,
 }
 
-/// A running program: its address space and descriptors, shared by its threads
+/// A running program: its address space and descriptors, shared by all of its threads
+/// (`clone` makes more). The locks guard every access from a thread or the page-fault
+/// handler; see the locking section of `docs/architecture/core/threads.md`.
 pub struct Process {
-    space: UnsafeCell<UserSpace>,
-    files: UnsafeCell<FdTable>,
+    space: IrqSpinlock<UserSpace>,
+    files: IrqSpinlock<FdTable>,
     level_4: PhysFrame,
     killed: AtomicBool,
+    /// Live threads; the last one out records the exit and wakes the waiter
+    threads: AtomicU64,
     exit: IrqSpinlock<Option<Exit>>,
     waiter: IrqSpinlock<Option<ThreadId>>,
 }
 
-// SAFETY: a process has one thread yet, and only that thread touches the space and the
-// descriptors while it lives; the waiter takes them back after it died
+// SAFETY: the address space and the descriptors are only reached through the locks; the
+// waiter takes them back after the process died
 unsafe impl Sync for Process {}
 unsafe impl Send for Process {}
 
@@ -88,13 +91,27 @@ impl Process {
     pub fn new(space: UserSpace, files: FdTable) -> Arc<Process> {
         let level_4 = space.level_4_frame();
         Arc::new(Process {
-            space: UnsafeCell::new(space),
-            files: UnsafeCell::new(files),
+            space: IrqSpinlock::new("MM", space),
+            files: IrqSpinlock::new("FILES", files),
             level_4,
             killed: AtomicBool::new(false),
+            threads: AtomicU64::new(1),
             exit: IrqSpinlock::new("PROCESS_EXIT", None),
             waiter: IrqSpinlock::new("PROCESS_WAITER", None),
         })
+    }
+
+    /// The address space, locked for the call. Held only across non-blocking work, and the
+    /// kernel never dereferences a program address while holding it (it goes through the
+    /// physical map), so the page-fault handler may take it too.
+    pub(crate) fn lock_space(&self) -> crate::sync::IrqSpinlockGuard<'_, UserSpace> {
+        self.space.lock()
+    }
+
+    /// The descriptors, locked for the call. Held only to look up or change a descriptor,
+    /// never across a read or write that may block.
+    pub(crate) fn lock_files(&self) -> crate::sync::IrqSpinlockGuard<'_, FdTable> {
+        self.files.lock()
     }
 
     /// Ends the process the next time one of its threads would return to ring 3
@@ -111,7 +128,7 @@ impl Process {
         self.exit.lock().is_some()
     }
 
-    /// Waits until the process ended; one waiter at a time
+    /// Waits until the whole process ended; one waiter at a time
     pub fn wait(&self) -> Exit {
         assert!(interrupts::are_enabled(), "waiting with interrupts off or a lock held");
         loop {
@@ -133,6 +150,11 @@ impl Process {
     pub fn into_parts(self) -> (UserSpace, FdTable) {
         (self.space.into_inner(), self.files.into_inner())
     }
+}
+
+/// Whether two processes are the same one
+fn same_process(a: &Arc<Process>, b: &Arc<Process>) -> bool {
+    Arc::ptr_eq(a, b)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -292,6 +314,19 @@ pub fn spawn_user(process: Arc<Process>, frame: TrapFrame, fpu: FpuState, fs_bas
     Ok(SCHEDULER.lock().as_mut().expect("scheduler is not initialized").add(thread))
 }
 
+/// `clone`: another thread of the running process, sharing its space and descriptors.
+/// The caller counts it in `threads` first, so the process can't end between.
+pub fn spawn_in(process: Arc<Process>, frame: TrapFrame, fpu: FpuState, fs_base: u64) -> KResult<ThreadId> {
+    process.threads.fetch_add(1, Ordering::SeqCst);
+    match new_thread(Some(process.clone()), None, frame, fpu, fs_base) {
+        Ok(thread) => Ok(SCHEDULER.lock().as_mut().expect("scheduler is not initialized").add(thread)),
+        Err(error) => {
+            process.threads.fetch_sub(1, Ordering::SeqCst);
+            Err(error)
+        }
+    }
+}
+
 /// Starts a kernel thread running `entry`; it ends when `entry` returns
 pub fn spawn_kernel(entry: fn()) -> KResult<ThreadId> {
     let thread = new_thread(None, Some(entry), TrapFrame::default(), FpuState::initial(), 0)?;
@@ -311,20 +346,29 @@ pub(crate) unsafe fn current_process() -> &'static Process {
     thread.process.as_deref().expect("a kernel thread has no process")
 }
 
-/// The address space of the running thread's process
+/// A new reference to the running thread's process
 ///
 /// # Safety
-/// As `current_process`: no one else touches it while the thread runs.
-pub(crate) unsafe fn current_space() -> &'static mut UserSpace {
-    unsafe { &mut *current_process().space.get() }
+/// Only from the thread itself, while it runs.
+pub(crate) unsafe fn current_process_arc() -> Arc<Process> {
+    let thread = unsafe { CURRENT.as_ref() }.expect("no thread runs");
+    thread.process.clone().expect("a kernel thread has no process")
 }
 
-/// The descriptors of the running thread's process
+/// The address space of the running thread's process, locked for the call
+///
+/// # Safety
+/// Only from the thread itself, while it runs.
+pub(crate) unsafe fn current_space() -> crate::sync::IrqSpinlockGuard<'static, UserSpace> {
+    unsafe { current_process() }.lock_space()
+}
+
+/// The descriptors of the running thread's process, locked for the call
 ///
 /// # Safety
 /// As `current_space`.
-pub(crate) unsafe fn current_files() -> &'static mut FdTable {
-    unsafe { &mut *current_process().files.get() }
+pub(crate) unsafe fn current_files() -> crate::sync::IrqSpinlockGuard<'static, FdTable> {
+    unsafe { current_process() }.lock_files()
 }
 
 /// Number of switches between different threads since boot
@@ -355,7 +399,14 @@ pub fn schedule() {
             unsafe { (*prev).state = State::Ready };
             scheduler.policy.add(prev_id);
         }
-        let next_id = scheduler.policy.next().unwrap_or(scheduler.idle);
+        // skip ids of reaped threads still queued: a killed process leaves them behind
+        let next_id = loop {
+            match scheduler.policy.next() {
+                Some(id) if scheduler.threads.get(&id).is_some_and(|t| t.state == State::Ready) => break id,
+                Some(_) => continue,
+                None => break scheduler.idle,
+            }
+        };
         if next_id == prev_id {
             unsafe { (*prev).state = State::Running };
             None
@@ -562,20 +613,39 @@ pub(crate) fn current_killed() -> bool {
     unsafe { CURRENT.as_ref() }.and_then(|thread| thread.process.as_ref()).is_some_and(|p| p.is_killed())
 }
 
-/// Ends the running thread. For a user thread its process ends with `stop`, `frame` and the
-/// thread's x87 and SSE state, and the waiter wakes up. The stack goes away after the switch.
-/// Nothing may be held: this never returns.
+/// Ends the running thread and the whole process with `stop`, `frame` and the thread's x87
+/// and SSE state: every other thread is removed, the exit recorded and the waiter woken.
+/// Used by `exit_group`, a fault, a kill and a kernel thread. Nothing may be held.
 pub fn exit_current(stop: Stop, frame: Option<TrapFrame>) -> ! {
+    end_current(stop, frame, true)
+}
+
+/// Ends only the running thread (`exit` of one `clone`d thread). If it was the last, the
+/// process ends with `stop` like `exit_current`.
+pub fn exit_thread(stop: Stop, frame: Option<TrapFrame>) -> ! {
+    end_current(stop, frame, false)
+}
+
+fn end_current(stop: Stop, frame: Option<TrapFrame>, whole_process: bool) -> ! {
     interrupts::disable();
     let thread = unsafe { &mut *CURRENT };
     assert_ne!(thread.id, BOOT_THREAD, "the boot thread can't exit");
-    if let Some(process) = &thread.process {
-        let mut fpu_state = FpuState::initial();
-        fpu::save(&mut fpu_state);
-        *process.exit.lock() = Some(Exit { stop, frame: frame.unwrap_or_default(), fpu: fpu_state });
-        let waiter = process.waiter.lock().take();
-        if let Some(waiter) = waiter {
-            wake(waiter);
+    if let Some(process) = thread.process.clone() {
+        // this thread is leaving: the last one out, or everyone when the process ends
+        let was_last = process.threads.fetch_sub(1, Ordering::SeqCst) == 1;
+        if whole_process || was_last {
+            if whole_process {
+                process.kill();
+                reap_other_threads(&process, thread.id);
+                process.threads.store(0, Ordering::SeqCst);
+            }
+            let mut fpu_state = FpuState::initial();
+            fpu::save(&mut fpu_state);
+            *process.exit.lock() = Some(Exit { stop, frame: frame.unwrap_or_default(), fpu: fpu_state });
+            let waiter = process.waiter.lock().take();
+            if let Some(waiter) = waiter {
+                wake(waiter);
+            }
         }
     }
     {
@@ -585,6 +655,27 @@ pub fn exit_current(stop: Stop, frame: Option<TrapFrame>) -> ! {
     }
     schedule();
     unreachable!("a dead thread was switched to");
+}
+
+/// Removes every thread of `process` but `keep` from the scheduler, freeing their kernel
+/// stacks and dropping their `Arc<Process>`. A thread blocked in `futex` or sleeping is
+/// just taken out; it will never run again, and a later wake of its id finds it gone.
+fn reap_other_threads(process: &Arc<Process>, keep: ThreadId) {
+    let doomed: alloc::vec::Vec<ThreadId> = {
+        let mut guard = SCHEDULER.lock();
+        let scheduler = guard.as_mut().unwrap();
+        scheduler
+            .threads
+            .iter()
+            .filter(|(id, thread)| **id != keep && thread.process.as_ref().is_some_and(|p| same_process(p, process)))
+            .map(|(id, _)| *id)
+            .collect()
+    };
+    for id in doomed {
+        // removed and dropped outside the lock: freeing a stack takes MEMORY and STACK_SLOTS
+        let gone = SCHEDULER.lock().as_mut().unwrap().threads.remove(&id);
+        drop(gone);
+    }
 }
 
 /// The trap of a fault from ring 3, for `Stop::Fault`
@@ -690,6 +781,62 @@ mod tests {
         "mov eax, 60",
         "syscall",
         ".global osel_yield_end", "osel_yield_end:",
+        // clone a thread; the child writes 42 at 0x600200 and ends with exit (thread), the
+        // parent yields until it sees it, then exits the group with that value
+        ".global osel_clone", "osel_clone:",
+        "mov eax, 56",
+        "mov edi, 0x50f00",
+        "mov esi, 0x600f00",
+        "xor edx, edx",
+        "xor r10d, r10d",
+        "xor r8d, r8d",
+        "syscall",
+        "test rax, rax",
+        "jz 4f",
+        "mov r12, rax",             // the child's tid
+        "5:",
+        "mov eax, 24",
+        "syscall",
+        "cmp qword ptr [0x600200], 0",
+        "je 5b",
+        "mov rdi, qword ptr [0x600200]",
+        "add rdi, r12",             // prove the parent kept the tid: 42 + tid
+        "mov eax, 231",
+        "syscall",
+        "4:",
+        "mov qword ptr [0x600200], 42",
+        "xor edi, edi",
+        "mov eax, 60",
+        "syscall",
+        ".global osel_clone_end", "osel_clone_end:",
+        // clone a thread that spins forever, then the parent exits the group with rdi
+        ".global osel_clone_spinner", "osel_clone_spinner:",
+        "mov eax, 56",
+        "mov edi, 0x50f00",
+        "mov esi, 0x600f00",
+        "xor edx, edx",
+        "xor r10d, r10d",
+        "xor r8d, r8d",
+        "syscall",
+        "test rax, rax",
+        "jz 6f",
+        "mov edi, 7",
+        "mov eax, 231",
+        "syscall",
+        "6:",
+        "jmp 6b",
+        ".global osel_clone_spinner_end", "osel_clone_spinner_end:",
+        // clone with bad flags (fork, not a thread): expect EINVAL, exit with -rax
+        ".global osel_clone_bad", "osel_clone_bad:",
+        "mov eax, 56",
+        "xor edi, edi",             // flags 0: not the thread set
+        "mov esi, 0x600f00",
+        "syscall",
+        "neg rax",
+        "mov rdi, rax",
+        "mov eax, 60",
+        "syscall",
+        ".global osel_clone_bad_end", "osel_clone_bad_end:",
         ".popsection",
     );
 
@@ -809,6 +956,49 @@ mod tests {
             assert_eq!(process.wait().stop.exit_code(), 0);
         }
         assert!(switches() >= before + 200, "every yield switches: {}", switches() - before);
+    }
+
+    /// `clone` makes another thread of the same process, sharing its memory. The parent
+    /// keeps the child's tid and both threads run; the whole process ends on `exit_group`.
+    #[test_case]
+    fn test_clone_shares_memory_and_runs() {
+        let frames = crate::memory::used_frames();
+        let heap = crate::allocator::with_allocator(|a| a.in_use());
+        let mut loaded = load(code!(osel_clone, osel_clone_end));
+        let frame = initial_frame(loaded.entry, loaded.rsp);
+        let process = start(loaded.space.take(), standard_files(), frame, FpuState::initial(), 0).unwrap();
+        // 42 from the child plus the child's tid the parent kept; the child is the second
+        // thread made, so a small id
+        let code = process.wait().stop.exit_code();
+        assert!(code > 42, "parent saw the child's write and kept its tid: {code}");
+        drop(Arc::into_inner(process));
+        assert_eq!(crate::memory::used_frames(), frames, "both kernel stacks freed");
+        assert_eq!(crate::allocator::with_allocator(|a| a.in_use()), heap);
+    }
+
+    /// `exit_group` ends every thread of the process: a spinning child is reaped, its
+    /// kernel stack freed, and the kernel stays healthy.
+    #[test_case]
+    fn test_exit_group_reaps_a_spinning_thread() {
+        let frames = crate::memory::used_frames();
+        for _ in 0..20 {
+            let mut loaded = load(code!(osel_clone_spinner, osel_clone_spinner_end));
+            let frame = initial_frame(loaded.entry, loaded.rsp);
+            let process = start(loaded.space.take(), standard_files(), frame, FpuState::initial(), 0).unwrap();
+            assert_eq!(process.wait().stop.exit_code(), 7);
+            drop(Arc::into_inner(process));
+        }
+        kernel_is_fine();
+        assert_eq!(crate::memory::used_frames(), frames, "no leaked stacks");
+    }
+
+    /// `clone` flags other than the thread set Go uses are `EINVAL`
+    #[test_case]
+    fn test_clone_rejects_other_flags() {
+        let mut loaded = load(code!(osel_clone_bad, osel_clone_bad_end));
+        let frame = initial_frame(loaded.entry, loaded.rsp);
+        let process = start(loaded.space.take(), standard_files(), frame, FpuState::initial(), 0).unwrap();
+        assert_eq!(process.wait().stop.exit_code(), Errno::EINVAL.code() as u8);
     }
 
     static COUNTERS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];

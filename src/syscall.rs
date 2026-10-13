@@ -16,8 +16,8 @@ use alloc::sync::Arc;
 use alloc::vec;
 use osel_core::file::{FdTable, O_CLOEXEC, O_CREAT, OpenDescription, encode_stat, open_access};
 use osel_core::syscall::{
-    self, CLOSE, EXIT, EXIT_GROUP, FCNTL, FSTAT, GETPID, MADVISE, MMAP, MPROTECT, MUNMAP, NEWFSTATAT, OPENAT, READ, Return,
-    SCHED_YIELD, SYSCALL_VECTOR, WRITE, fd_arg,
+    self, CLONE, CLOSE, EXIT, EXIT_GROUP, FCNTL, FSTAT, GETPID, GETTID, MADVISE, MMAP, MPROTECT, MUNMAP, NEWFSTATAT,
+    OPENAT, READ, Return, SCHED_YIELD, SYSCALL_VECTOR, WRITE, fd_arg,
 };
 use osel_core::mmap::MAP_ANONYMOUS;
 use osel_core::user_mem::Access as MemAccess;
@@ -162,7 +162,10 @@ extern "C" fn dispatch(frame: &mut TrapFrame) -> u64 {
             scheduler::yield_now();
             Ok(0)
         }
-        Some(EXIT | EXIT_GROUP) => scheduler::exit_current(Stop::Exit(a0 as u8), Some(*frame)),
+        Some(CLONE) => clone(frame, a0, a1),
+        Some(GETTID) => Ok(scheduler::current_id()),
+        Some(EXIT) => scheduler::exit_thread(Stop::Exit(a0 as u8), Some(*frame)),
+        Some(EXIT_GROUP) => scheduler::exit_current(Stop::Exit(a0 as u8), Some(*frame)),
         _ => Err(Errno::ENOSYS),
     };
     frame.rax = syscall::encode(result);
@@ -177,12 +180,14 @@ extern "C" fn dispatch(frame: &mut TrapFrame) -> u64 {
     }
 }
 
-fn space() -> &'static mut UserSpace {
-    // SAFETY: only called from `dispatch`, on the thread of the process
+/// The address space of the running process, locked for the statement. Must not be held
+/// across anything that blocks, and no program address is dereferenced through it.
+fn space() -> crate::sync::IrqSpinlockGuard<'static, UserSpace> {
+    // SAFETY: only called from `dispatch`, on a thread of the process
     unsafe { scheduler::current_space() }
 }
 
-fn files() -> &'static mut FdTable {
+fn files() -> crate::sync::IrqSpinlockGuard<'static, FdTable> {
     // SAFETY: as `space`
     unsafe { scheduler::current_files() }
 }
@@ -201,6 +206,35 @@ const F_GETFL: u32 = 3;
 const F_SETFL: u32 = 4;
 const F_DUPFD_CLOEXEC: u32 = 1030;
 const FD_CLOEXEC: u64 = 1;
+
+/// The `clone` flags Go's `newosproc` uses: a new thread of the same process. OSel shares
+/// the whole process (space and descriptors), so only this exact set is accepted.
+const CLONE_THREAD_FLAGS: u64 = 0x100 | 0x200 | 0x400 | 0x800 | 0x10000 | 0x40000;
+
+/// `clone(flags, child_stack, ...)`: starts another thread of the running process. The
+/// child returns 0 with its own stack, the parent gets the child's thread id. Only the
+/// thread flavour Go uses; other flags are `EINVAL`.
+fn clone(frame: &TrapFrame, flags: u64, child_stack: u64) -> KResult<u64> {
+    if flags & 0xff != 0 {
+        // the low byte is the signal sent on exit; Go passes 0
+        return Err(Errno::EINVAL);
+    }
+    if flags & !0xff != CLONE_THREAD_FLAGS {
+        return Err(Errno::EINVAL);
+    }
+    if child_stack == 0 || child_stack > USER_END {
+        return Err(Errno::EINVAL);
+    }
+    let mut child = *frame;
+    child.rax = 0;
+    child.rsp = child_stack;
+    let fs_base = x86_64::registers::model_specific::FsBase::read().as_u64();
+    let mut fpu = osel_core::fpu::FpuState::initial();
+    crate::fpu::save(&mut fpu);
+    // SAFETY: called on a thread of the process, which stays alive across the call
+    let process = unsafe { scheduler::current_process_arc() };
+    scheduler::spawn_in(process, child, fpu, fs_base)
+}
 
 /// `PROT_*` bits; bits beyond 32 make it `EINVAL` like unknown ones
 fn prot_arg(value: u64) -> u32 {
@@ -342,7 +376,7 @@ fn newfstatat(dirfd: i32, path: u64, statbuf: u64, flags: u32) -> KResult<u64> {
 
 /// `fcntl(fd, cmd, arg)`: duplicating, the close-on-exec flag and the status flags
 fn fcntl(fd: i32, cmd: u32, arg: u64) -> KResult<u64> {
-    let files = files();
+    let mut files = files();
     // the descriptor is checked before the command, as Linux does
     files.get(fd)?;
     match cmd {

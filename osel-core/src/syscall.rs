@@ -15,6 +15,8 @@ pub const MPROTECT: u64 = 10;
 pub const MUNMAP: u64 = 11;
 pub const SCHED_YIELD: u64 = 24;
 pub const MADVISE: u64 = 28;
+pub const CLONE: u64 = 56;
+pub const GETTID: u64 = 186;
 pub const GETPID: u64 = 39;
 pub const EXIT: u64 = 60;
 pub const FCNTL: u64 = 72;
@@ -33,6 +35,8 @@ pub const SYSCALLS: &[(u64, &str)] = &[
     (MUNMAP, "munmap"),
     (SCHED_YIELD, "sched_yield"),
     (MADVISE, "madvise"),
+    (CLONE, "clone"),
+    (GETTID, "gettid"),
     (GETPID, "getpid"),
     (EXIT, "exit"),
     (FCNTL, "fcntl"),

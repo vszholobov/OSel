@@ -47,6 +47,11 @@ impl<T> IrqSpinlock<T> {
         self.inner.is_locked()
     }
 
+    /// The value, consuming the lock
+    pub fn into_inner(self) -> T {
+        self.inner.into_inner()
+    }
+
     /// Releases the lock no matter who holds it
     ///
     /// # Safety
