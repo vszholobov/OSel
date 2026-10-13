@@ -33,7 +33,8 @@ description: План развития OSel по этапам — от ядра 
 - [x] Пользовательский режим: сегменты кольца 3 в GDT, стек ядра в TSS, исключения программы не роняют ядро ([пользовательский режим](architecture/core/user-mode.md), [решение 0011](decisions/0011-user-entry.md)).
 - [x] Вход в ядро через `syscall`/`sysret`, системные вызовы `write` и `exit`. **Проверка:** программа на ассемблере из ramdisk печатает «Hello from ring 3!» ([системные вызовы](reference/syscalls.md), [решение 0012](decisions/0012-syscall-entry-and-user-programs.md)).
 - [x] SSE для пользовательских программ ([x87 и SSE](architecture/core/user-mode.md#fpu), [решение 0013](decisions/0013-fpu-state.md)).
-- [ ] Потоки и планировщик с вытеснением по таймеру, `clone`, `futex`.
+- [x] Потоки и планировщик с вытеснением по таймеру ([потоки и планировщик](architecture/core/threads.md), [решение 0015](decisions/0015-threads.md)).
+- [ ] `clone` и `futex`.
 - [ ] Системные вызовы Linux для рантайма Go (около 30). **Проверка:** Go-программа «hello world».
 - [ ] Таймеры и упрощённое ожидание событий. **Проверка:** Go-программа с горутинами и `time.Sleep`.
 

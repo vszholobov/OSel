@@ -33,6 +33,7 @@ description: Обзор OSel — из каких крейтов и модуле�
 | `gdt` | `src/gdt.rs` | GDT с сегментами кольца 3, TSS, стеки IST для double fault, NMI и machine check | [Прерывания](core/interrupts.md) |
 | `fpu` | `src/fpu.rs` | включение SSE и x87 (CR0, CR4), `fxsave64` и `fxrstor64` | [Пользовательский режим](core/user-mode.md#fpu) |
 | `syscall` | `src/syscall.rs` | вход через `syscall`, `write`, `getpid`, `exit` | [Пользовательский режим](core/user-mode.md#syscall) |
+| `scheduler` | `src/scheduler.rs` | потоки, процессы, переключение, вытеснение по таймеру | [Потоки и планировщик](core/threads.md) |
 | `user` | `src/user.rs` | запуск программы в кольце 3, возврат при исключении | [Пользовательский режим](core/user-mode.md) |
 | `memory` | `src/memory.rs` | таблица страниц, пул физических страниц, `with_memory`, `UserSpace` | [Память](core/memory.md) |
 | `program` | `src/program.rs` | загрузка программы из файловой системы в `UserSpace`, стек главного потока | [Программы](core/programs.md) |
@@ -63,6 +64,7 @@ description: Обзор OSel — из каких крейтов и модуле�
 | `initial_stack` | `osel-core/src/initial_stack.rs` | стартовый стек: argv, envp, auxv | [Программы](core/programs.md#initial-stack) |
 | `syscall` | `osel-core/src/syscall.rs` | номера вызовов Linux, аргументы, `-errno`, выбор пути назад, `Utf8Decoder` | [Системные вызовы](../reference/syscalls.md) |
 | `fpu` | `osel-core/src/fpu.rs` | `FpuState` — область `fxsave64` и её начальное состояние | [Пользовательский режим](core/user-mode.md#fpu) |
+| `sched` | `osel-core/src/sched.rs` | `SchedPolicy`, `RoundRobin`, места стеков ядра `StackSlots` | [Потоки и планировщик](core/threads.md) |
 | `trap` | `osel-core/src/trap.rs` | `TrapFrame` — регистры программы при входе в ядро | [Пользовательский режим](core/user-mode.md#trap-frame) |
 | `user_mem` | `osel-core/src/user_mem.rs` | проверка памяти, которую программа передала ядру | [Пользовательский режим](core/user-mode.md#user-mem) |
 | `cpio` | `osel-core/src/cpio.rs` | файловая система `CpioFs` над архивом cpio, `CpioBuilder` | [Файлы и ramdisk](core/fs.md#cpio) |
@@ -83,8 +85,9 @@ description: Обзор OSel — из каких крейтов и модуле�
    7. `allocator::init_heap` — куча;
    8. `memory::enable_frame_tracking` — битовая карта пула в куче, с этого момента страницы можно освобождать;
    9. `fs::init` — ramdisk монтируется как корень `/` с каталогом устройств `/dev`;
-   10. `interrupts::init_pics` — сброс буфера клавиатуры, PIC, таймер на 100 Гц;
-   11. включает прерывания.
+   10. `scheduler::init` — поток 0 для кода загрузки и поток простоя;
+   11. `interrupts::init_pics` — сброс буфера клавиатуры, PIC, таймер на 100 Гц;
+   12. включает прерывания.
 4. Ядро печатает `/etc/motd` из ramdisk, запускает `/bin/hello` (он печатает «Hello from ring 3!»), затем «OSel ready to go!» на экран и в последовательный порт, затем `echo_keyboard` печатает нажатые клавиши и спит в `hlt`, пока нет ввода.
 
 После `osel::init` то, что передал загрузчик (карта памяти, ramdisk, таблицы ACPI), доступно через `osel::boot_info()`.
@@ -96,6 +99,7 @@ description: Обзор OSel — из каких крейтов и модуле�
 | Программы, у каждой своё адресное пространство | нижняя половина, до `USER_END` |
 | Всё, что размещает загрузчик: ядро, стек, сведения о загрузке, framebuffer, ramdisk, отображение физической памяти | `KERNEL_DYNAMIC_START..=KERNEL_DYNAMIC_END` |
 | Куча ядра, 16 МБ | с `HEAP_START` |
+| Стеки ядра потоков, по 64 КБ со страницей-охранником | с `STACKS_START` |
 
 Подробности, инварианты и грабли — на странице [Память](core/memory.md).
 
@@ -112,5 +116,6 @@ description: Обзор OSel — из каких крейтов и модуле�
 - [0012 — вход через syscall и программы из user/](../decisions/0012-syscall-entry-and-user-programs.md)
 - [0013 — состояние x87 и SSE программы](../decisions/0013-fpu-state.md)
 - [0014 — дескрипторы и устройства](../decisions/0014-file-descriptors.md)
+- [0015 — потоки и вытеснение](../decisions/0015-threads.md)
 
-_Сверено с кодом: 2026-10-12, коммит 2576dff._
+_Сверено с кодом: 2026-10-13, коммит 45069e9._

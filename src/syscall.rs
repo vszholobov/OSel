@@ -5,7 +5,8 @@
 
 use crate::gdt::{self, USER_CODE_SELECTOR, USER_DATA_SELECTOR};
 use crate::memory::USER_END;
-use crate::user;
+use crate::scheduler;
+use crate::user::Stop;
 use alloc::string::String;
 use core::arch::naked_asm;
 use osel_core::errno::{Errno, KResult};
@@ -15,7 +16,8 @@ use alloc::sync::Arc;
 use alloc::vec;
 use osel_core::file::{FdTable, O_CLOEXEC, O_CREAT, OpenDescription, encode_stat, open_access};
 use osel_core::syscall::{
-    self, CLOSE, EXIT, EXIT_GROUP, FCNTL, FSTAT, GETPID, NEWFSTATAT, OPENAT, READ, Return, SYSCALL_VECTOR, WRITE, fd_arg,
+    self, CLOSE, EXIT, EXIT_GROUP, FCNTL, FSTAT, GETPID, NEWFSTATAT, OPENAT, READ, Return, SCHED_YIELD, SYSCALL_VECTOR, WRITE,
+    fd_arg,
 };
 use osel_core::user_mem::Access as MemAccess;
 use osel_core::vfs::{FileType, Inode, PATH_MAX, resolve};
@@ -55,11 +57,10 @@ pub fn init() {
 unsafe extern "C" fn syscall_entry() {
     naked_asm!(
         "mov [rip + {user_rsp}], rsp",
-        "mov rsp, [rip + {kernel_rsp}]",
+        // the running thread's kernel stack: the frame lands at its top
+        "mov rsp, [rip + {stack_top}]",
         // labels for the test of the order: stack first, then interrupts
         ".global osel_syscall_on_kernel_stack", "osel_syscall_on_kernel_stack:",
-        // the frame below has an even number of words: `call` then sees an aligned stack
-        "and rsp, -16",
         "push {user_data}",
         "push qword ptr [rip + {user_rsp}]",
         "push r11",
@@ -89,8 +90,6 @@ unsafe extern "C" fn syscall_entry() {
         "mov rdi, rsp",
         "call {dispatch}",
         "cli",
-        "cmp rax, {leave}",
-        "je {leave_user}",
         "cmp rax, {iret}",
         "je 2f",
         "pop r15",
@@ -132,14 +131,12 @@ unsafe extern "C" fn syscall_entry() {
         "add rsp, 16",
         "iretq",
         user_rsp = sym USER_RSP,
-        kernel_rsp = sym user::KERNEL_RSP,
+        stack_top = sym scheduler::CURRENT_STACK_TOP,
         user_data = const USER_DATA_SELECTOR,
         user_code = const USER_CODE_SELECTOR,
         vector = const SYSCALL_VECTOR,
         dispatch = sym dispatch,
-        leave = const Return::Leave as u64,
         iret = const Return::Iret as u64,
-        leave_user = sym user::leave_user,
     )
 }
 
@@ -156,22 +153,33 @@ extern "C" fn dispatch(frame: &mut TrapFrame) -> u64 {
         Some(NEWFSTATAT) => newfstatat(fd_arg(a0), a1, a2, a3 as u32),
         Some(FCNTL) => fcntl(fd_arg(a0), a1 as u32, a2),
         Some(GETPID) => Ok(1),
-        // the run ends; `user::run` takes the status from RDI
-        Some(EXIT | EXIT_GROUP) => return Return::Leave as u64,
+        Some(SCHED_YIELD) => {
+            scheduler::yield_now();
+            Ok(0)
+        }
+        Some(EXIT | EXIT_GROUP) => scheduler::exit_current(Stop::Exit(a0 as u8), Some(*frame)),
         _ => Err(Errno::ENOSYS),
     };
     frame.rax = syscall::encode(result);
-    syscall::return_path(frame, USER_CODE_SELECTOR, USER_DATA_SELECTOR, USER_END) as u64
+    // a killed program goes no further than here
+    if scheduler::current_killed() {
+        scheduler::exit_current(Stop::Killed, Some(*frame));
+    }
+    match syscall::return_path(frame, USER_CODE_SELECTOR, USER_DATA_SELECTOR, USER_END) {
+        // the return address is outside the lower half: neither way back is safe
+        Return::Leave => scheduler::exit_current(scheduler::fault_of(frame, 0), Some(*frame)),
+        path => path as u64,
+    }
 }
 
 fn space() -> &'static mut UserSpace {
-    // SAFETY: only called from `dispatch`, a program is running
-    unsafe { user::running_space() }
+    // SAFETY: only called from `dispatch`, on the thread of the process
+    unsafe { scheduler::current_space() }
 }
 
 fn files() -> &'static mut FdTable {
     // SAFETY: as `space`
-    unsafe { user::running_files() }
+    unsafe { scheduler::current_files() }
 }
 
 /// Bytes one `read` moves at most; a program reads again for the rest, as with a pipe

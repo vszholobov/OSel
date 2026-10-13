@@ -30,7 +30,7 @@ description: Проектирование этапа 2 — пользовате�
 | `VmaSet` | области памяти программы: разрез, слияние, поиск места | анонимные области | файлы в памяти (`Backing::File`) | шаг 9 |
 | `UserMem` | копирование из памяти программы и в неё с проверкой | `user_mem::check`, `UserSpace::copy_from_user` и `copy_to_user` | — | сделано |
 | `ClockSource` | монотонное время | счётчик PIT | TSC, HPET, RTC | шаг 10 |
-| `SchedPolicy` | кого запускать следующим | по кругу | приоритеты, несколько процессоров | шаг 8 |
+| `SchedPolicy` | кого запускать следующим | `RoundRobin` | приоритеты, несколько процессоров | сделано |
 
 Процесс и поток разделены сразу: потоки Go (`clone` с `CLONE_VM | CLONE_FILES`) делят `Arc<UserSpace>` и `Arc<FdTable>`.
 
@@ -46,12 +46,16 @@ description: Проектирование этапа 2 — пользовате�
 3. **ELF и стартовый стек.** Сделано: [программы](../architecture/core/programs.md), [решение 0010](../decisions/0010-static-elf-loader.md).
 4. **Пользовательский режим без системных вызовов.** Сделано: [пользовательский режим](../architecture/core/user-mode.md), [решение 0011](../decisions/0011-user-entry.md). Вместо `set_kernel_stack` RSP0 пишет сам вход в программу (`gdt::kernel_stack_slot`), `UserMem` — это `user_mem::check` и `UserSpace::copy_from_user` и `copy_to_user`.
 5. **Системные вызовы `write`, `exit`.** Сделано: [системные вызовы](../architecture/core/user-mode.md#syscall), [справочник](../reference/syscalls.md), [решение 0012](../decisions/0012-syscall-entry-and-user-programs.md). «Пыточные» проверки — тесты в `src/syscall.rs` и `src/user.rs`, а не отдельное ядро.
-6. **SSE.** Сделано: [x87 и SSE](../architecture/core/user-mode.md#fpu), [решение 0013](../decisions/0013-fpu-state.md). Область пока на запуск, а не на поток: потоки — шаг 8.
+6. **SSE.** Сделано: [x87 и SSE](../architecture/core/user-mode.md#fpu), [решение 0013](../decisions/0013-fpu-state.md). Область — у каждого потока, см. [решение 0015](../decisions/0015-threads.md).
 7. **Файлы для программ.** Сделано: [открытые файлы](../architecture/core/fs.md#open-files), [устройства](../architecture/core/fs.md#devices), [решение 0014](../decisions/0014-file-descriptors.md). Сверх плана — `newfstatat` и `fcntl`: Go вызывает их при старте и в `os.Stat`.
-8. **Потоки и вытеснение.** Свой стек ядра на поток со страницей-охранником из отдельной области адресов, `switch_to` сохраняет только callee-saved регистры, поток простоя с `sti; hlt`, отложенное освобождение стека завершившегося потока. FS — база TLS. **Проверка:** два потока с разными узорами во всех регистрах, XMM, MXCSR и FS — 50 вытеснений без порчи; бесконечный цикл вытесняется; оба счётчика растут.
+8. **Потоки и вытеснение.** Сделано: [потоки и планировщик](../architecture/core/threads.md), [решение 0015](../decisions/0015-threads.md). Стек умершего потока освобождает следующий поток сразу после переключения, а не отложенно.
 9. **Память для Go.** `VmaSet`, `mmap` с подсказкой адреса без `MAP_FIXED`, `MAP_FIXED` поверх резерва `PROT_NONE`, `munmap`, `mprotect`, `madvise` как пустая операция; отложенное выделение страниц в обработчике page fault.
 10. **Время и ожидание.** `clone`, `futex`, `nanosleep`, `clock_gettime`, `epoll` и `eventfd2`. `time.Sleep` требует их с первого таймера: Go вызывает `epoll_create1`, `eventfd2` и `epoll_ctl`, а запись в eventfd должна будить `epoll_pwait`.
 11. **Go.** Остальные вызовы из [таблицы](#syscalls). **Проверка:** «hello world», затем горутины и `time.Sleep`.
+
+## Состояние работы {#status}
+
+Сделаны шаги 1–8, дальше — шаги 9–11 по порядку выше. Что отложено по ходу работы — в [техдолге](../debt.md).
 
 ## Вход в ядро {#entry}
 

@@ -79,6 +79,16 @@ impl UserSpace {
         Some(UserSpace { space: Some(space) })
     }
 
+    /// Moves the address space out, leaving an empty `UserSpace` that owns nothing
+    pub fn take(&mut self) -> UserSpace {
+        UserSpace { space: self.space.take() }
+    }
+
+    /// The level 4 table to load into CR3
+    pub fn level_4_frame(&self) -> PhysFrame {
+        self.space.as_ref().expect("address space is destroyed").level_4_frame()
+    }
+
     fn space(&mut self) -> &mut AddressSpace {
         self.space.as_mut().expect("address space is destroyed")
     }

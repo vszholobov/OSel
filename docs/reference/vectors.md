@@ -52,7 +52,7 @@ description: Справочник векторов прерываний OSel —
 
 | Вектор | `InterruptIndex` | IRQ | Обработчик | Что происходит |
 |---|---|---|---|---|
-| 32 | `Timer` | 0 | `timer_interrupt_handler` | счётчик `ticks()`, 100 раз в секунду, подтверждение PIC |
+| 32 | `Timer` | 0 | `timer_interrupt_handler` | счётчик `ticks()`, 100 раз в секунду, подтверждение PIC, затем переключение потоков (`scheduler::tick`) |
 | 33 | `Keyboard` | 1 | `keyboard_interrupt_handler` | скан-код из порта `0x60` в буфер клавиатуры, подтверждение PIC |
 | 39 | `SpuriousMaster` | 7 | `spurious_master_handler` | если бит в регистре ISR не выставлен — ложное прерывание, счётчик `spurious_interrupts()`, без подтверждения; иначе подтверждение |
 | 47 | `SpuriousSlave` | 15 | `spurious_slave_handler` | если ложное — счётчик и подтверждение только ведущему PIC; иначе подтверждение |

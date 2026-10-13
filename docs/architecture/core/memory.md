@@ -18,6 +18,7 @@ description: Память OSel — раскладка виртуальных а�
 | Неканоническая «дыра» | `USER_END` .. `KERNEL_DYNAMIC_START` | адресов нет |
 | Область загрузчика | `KERNEL_DYNAMIC_START` ..= `KERNEL_DYNAMIC_END` | образ ядра, стек ядра, сведения о загрузке, framebuffer, отображение всей физической памяти |
 | Куча ядра | `HEAP_START` .. `HEAP_START + HEAP_SIZE` | 16 МБ, отдельная запись в таблице уровня 4 |
+| Стеки ядра | `STACKS_START` (`src/scheduler.rs`) | своя запись уровня 4: места по 64 КБ под страницей-охранником, см. [потоки](threads.md#threads) |
 
 Загрузчику диапазон задаётся в `BOOTLOADER_CONFIG` (`src/lib.rs`): `dynamic_range_start` и `dynamic_range_end`, физическая память отображается целиком (`Mapping::Dynamic`).
 

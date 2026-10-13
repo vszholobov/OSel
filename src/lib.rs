@@ -35,6 +35,7 @@ pub mod user;
 pub mod syscall;
 pub mod fpu;
 pub mod tty;
+pub mod scheduler;
 pub mod sync;
 
 /// Version of the kernel from Cargo.toml
@@ -76,6 +77,7 @@ pub fn init(boot_info: &'static BootInfo) {
     allocator::init_heap().expect("heap initialization failed");
     memory::enable_frame_tracking();
     fs::init(boot_info);
+    scheduler::init();
 
     interrupts::init_pics();
     x86_64::instructions::interrupts::enable();

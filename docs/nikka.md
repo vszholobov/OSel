@@ -42,6 +42,7 @@ description: Курс ШАДа Nikka — как OSel им пользуется, 
 | 4-process-1, 4-process-4, кольцо 3 | исключение программы с нулевым стеком не задевает ядро, все регистры программы сохраняются при исключении, исключение программы завершает её, а не ядро | `src/user.rs`: `test_a_program_without_a_stack`, `test_a_fault_saves_every_register`, `test_forbidden_instructions_end_the_program` |
 | 4-process-5, системные вызовы | вызовы без стека (rsp = 0) не роняют ядро: стек меняется до включения прерываний | `src/syscall.rs`: `test_calls_without_a_stack`, `test_interrupts_come_on_after_the_stack_switch` |
 | 4-process-3, проверка памяти от программы | диапазоны из 1–4 страниц с «дыркой», границы около четвертей страницы | `osel-core/src/user_mem.rs`: `every_page_of_the_range_is_checked` |
+| 4-process-6, 4-process-7, 4-process-8, вытеснение и планировщик | все регистры и флаги со сдвоенными переходами переживают вытеснения, бесконечный цикл вытесняется, `sched_yield` переключает | `src/scheduler.rs`: `test_two_threads_keep_their_context`, `test_an_endless_loop_is_preempted`, `test_sched_yield` |
 | 5-sync-2, спинлок | взаимоблокировка сообщается с местами захвата и ожидания, инвариант держится под конкуренцией | `osel-core/src/sync.rs`: `deadlock_is_reported_with_both_places`, `invariant_holds_under_contention`; `tests/deadlock.rs`, `tests/memory_reentrancy.rs` |
 | 3-allocator, проверка утечек | после каждого теста куча возвращается в исходное состояние | `src/testosterone.rs` (проверка в запуске каждого теста), `tests/leak_detection.rs` |
 | 2-mm, `forbid_frame_leaks` | после каждого теста число выданных физических страниц то же | `src/testosterone.rs`: `forbid_frame_leaks`; `tests/frame_leak_detection.rs` |
@@ -50,4 +51,4 @@ description: Курс ШАДа Nikka — как OSel им пользуется, 
 
 - 1-hw-1 — разбор форматов часов реального времени (BCD, 12-часовой режим), когда появится драйвер часов. См. [техдолг](debt.md).
 - 2-mm-1 — счётчики ссылок на страницы, когда появятся общие страницы.
-- 4-process — планировщик и таблица процессов (загрузка ELF, кольцо 3 и системные вызовы уже перенесены).
+- 4-process — таблица процессов с эпохами номеров (загрузка ELF, кольцо 3, системные вызовы и планировщик уже перенесены).

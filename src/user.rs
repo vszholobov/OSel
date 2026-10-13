@@ -1,31 +1,21 @@
 //! user module runs programs in ring 3
 //!
-//! `run` enters a program with `iretq` and returns when the program traps. Exceptions
-//! from ring 3 go through the entry stubs of `interrupts`: they push every register into
-//! a `TrapFrame` on the stack, `user_trap` copies it into the caller's frame and returns
-//! from `enter_user` on the kernel stack it left. One CPU and one program at a time: the
-//! saved kernel stack pointer is a plain static, no `swapgs` is needed.
+//! A program is a process with one thread (`scheduler`). Exceptions from ring 3 go through
+//! the entry stubs of `interrupts`: they push every register into a `TrapFrame` at the top
+//! of the thread's kernel stack, and `user_trap` ends the thread there. `run` starts a
+//! program from a frame and waits for it to stop.
 
-use crate::fpu;
 use crate::gdt;
-use crate::memory::{self, USER_END, UserSpace};
+use crate::memory::{USER_END, UserSpace};
+use crate::scheduler::{self, Process};
 use crate::tty::Tty;
 use alloc::sync::Arc;
+use core::arch::naked_asm;
 use osel_core::devices;
 use osel_core::file::{Access, FdTable, OpenDescription};
-use core::arch::naked_asm;
+use osel_core::errno::{Errno, KResult};
 use osel_core::fpu::FpuState;
-use osel_core::syscall::SYSCALL_VECTOR;
-use osel_core::trap::{GENERAL_PROTECTION, TRAP_FRAME_WORDS, TrapFrame};
-
-/// Kernel stack pointer of the `enter_user` that runs the current program
-pub(crate) static mut KERNEL_RSP: u64 = 0;
-/// The address space of the running program, for system calls
-static mut RUNNING: *mut UserSpace = core::ptr::null_mut();
-/// Its descriptors
-static mut RUNNING_FILES: *mut FdTable = core::ptr::null_mut();
-/// CR2 when the program trapped: the faulting address of a page fault
-static mut TRAP_CR2: u64 = 0;
+use osel_core::trap::{GENERAL_PROTECTION, TrapFrame};
 
 /// How a program's run ended
 #[derive(Debug, Clone, Copy)]
@@ -34,24 +24,26 @@ pub enum Stop {
     Exit(u8),
     /// An exception the program caused
     Fault(Trap),
+    /// `Process::kill`
+    Killed,
 }
 
 impl Stop {
-    /// The exception, panics if the program exited
+    /// The exception, panics if the program stopped otherwise
     #[track_caller]
     pub fn fault(self) -> Trap {
         match self {
             Stop::Fault(trap) => trap,
-            Stop::Exit(code) => panic!("the program exited with {} instead of a fault", code),
+            other => panic!("the program stopped with {:?} instead of a fault", other),
         }
     }
 
-    /// The exit status, panics if the program faulted
+    /// The exit status, panics if the program stopped otherwise
     #[track_caller]
     pub fn exit_code(self) -> u8 {
         match self {
             Stop::Exit(code) => code,
-            Stop::Fault(trap) => panic!("the program faulted with vector {} instead of exiting", trap.vector),
+            other => panic!("the program stopped with {:?} instead of exiting", other),
         }
     }
 }
@@ -71,11 +63,10 @@ pub fn initial_frame(entry: u64, rsp: u64) -> TrapFrame {
     TrapFrame::new_user(entry, rsp, selectors.user_code_selector.0, selectors.user_data_selector.0)
 }
 
-/// Runs the program in `space` from `frame` until it exits or traps. The frame then holds
-/// every register of the program at that moment. The kernel's own page table is active again
-/// afterwards. Interrupts must be on: a held `IrqSpinlock` would deadlock the timer.
-/// The frame is forced to ring 3 first; a `rip` outside the lower half is a #GP of the
-/// program right away, without entering it.
+/// Runs the program in `space` from `frame` until it exits, traps or is killed. The frame
+/// then holds every register of the program at that moment. The frame is forced to ring 3
+/// first; a `rip` outside the lower half is a #GP of the program right away, without
+/// entering it.
 pub fn run(space: &mut UserSpace, frame: &mut TrapFrame) -> Stop {
     run_with(space, &mut standard_files(), frame, &mut FpuState::initial())
 }
@@ -92,103 +83,45 @@ pub fn standard_files() -> FdTable {
     files
 }
 
-/// `run` with the program's descriptors and its x87 and SSE state: loaded before, saved
-/// after. `run` starts every program with the state after reset, so nothing of another
-/// program leaks in.
+/// `run` with the program's descriptors and its x87 and SSE state: the space and the
+/// descriptors go to a new process for the run and come back after it, the state is the
+/// thread's at the start and is saved when it stops. `run` starts every program with the
+/// state after reset, so nothing of another program leaks in.
 pub fn run_with(space: &mut UserSpace, files: &mut FdTable, frame: &mut TrapFrame, fpu: &mut FpuState) -> Stop {
-    assert!(x86_64::instructions::interrupts::are_enabled(), "entering a program with interrupts off or a lock held");
-    // one saved kernel stack and one running space: a run inside a system call would lose them
-    assert!(unsafe { RUNNING.is_null() }, "a program is already running");
+    assert!(x86_64::instructions::interrupts::are_enabled(), "running a program with interrupts off or a lock held");
     let selectors = gdt::selectors();
     if !frame.make_user(selectors.user_code_selector.0, selectors.user_data_selector.0, USER_END) {
         frame.vector = GENERAL_PROTECTION;
         frame.error_code = 0;
         return Stop::Fault(Trap { vector: GENERAL_PROTECTION, error_code: 0, cr2: 0 });
     }
-    space.activate();
-    // the kernel never touches these registers, so they stay the program's until it leaves
-    fpu::restore(fpu);
-    unsafe {
-        RUNNING = space;
-        RUNNING_FILES = files;
-        enter_user(frame, gdt::kernel_stack_slot());
-        RUNNING = core::ptr::null_mut();
-        RUNNING_FILES = core::ptr::null_mut();
+    let process = start(space.take(), core::mem::take(files), *frame, fpu.clone(), 0).expect("no kernel stack for the program");
+    let exit = process.wait();
+    *frame = exit.frame;
+    *fpu = exit.fpu;
+    // the thread is gone and dropped its reference when it was switched away from
+    let (back_space, back_files) = Arc::into_inner(process).expect("the process is still referenced").into_parts();
+    *space = back_space;
+    *files = back_files;
+    exit.stop
+}
+
+/// Starts a program in a new process without waiting for it: one thread from `frame`, with
+/// its x87 and SSE state and FS base. The frame is forced to ring 3 as in `run`, but a
+/// `rip` outside the lower half is `EFAULT` here. `ENOMEM` without a kernel stack.
+pub fn start(space: UserSpace, files: FdTable, mut frame: TrapFrame, fpu: FpuState, fs_base: u64) -> KResult<Arc<Process>> {
+    let selectors = gdt::selectors();
+    if !frame.make_user(selectors.user_code_selector.0, selectors.user_data_selector.0, USER_END) {
+        return Err(Errno::EFAULT);
     }
-    fpu::save(fpu);
-    memory::activate_kernel_space();
-    gdt::reload_data_segments();
-    if frame.vector == SYSCALL_VECTOR {
-        // `exit` keeps its argument where the program put it
-        return Stop::Exit(frame.rdi as u8);
-    }
-    let cr2 = if frame.vector == osel_core::trap::PAGE_FAULT { unsafe { TRAP_CR2 } } else { 0 };
-    Stop::Fault(Trap { vector: frame.vector, error_code: frame.error_code, cr2 })
-}
-
-/// The address space of the program whose system call is running
-///
-/// # Safety
-/// Only from a system call: `run` is on the stack below and holds the space, but does not
-/// touch it until the program leaves; one CPU, so nothing else does either.
-pub(crate) unsafe fn running_space() -> &'static mut UserSpace {
-    unsafe { RUNNING.as_mut() }.expect("no program is running")
-}
-
-/// The descriptors of the program whose system call is running
-///
-/// # Safety
-/// As `running_space`.
-pub(crate) unsafe fn running_files() -> &'static mut FdTable {
-    unsafe { RUNNING_FILES.as_mut() }.expect("no program is running")
-}
-
-/// Saves the callee-saved registers and the flags, makes the current stack the one the
-/// CPU switches to from ring 3, then loads `frame` and `iretq`s into the program.
-/// Returns when `user_trap` runs.
-#[unsafe(naked)]
-unsafe extern "C" fn enter_user(frame: *mut TrapFrame, kernel_stack_slot: *mut u64) {
-    naked_asm!(
-        "push rbx",
-        "push rbp",
-        "push r12",
-        "push r13",
-        "push r14",
-        "push r15",
-        "pushfq",
-        "push rdi",
-        // nothing may interrupt between switching to the frame and `iretq`
-        "cli",
-        "mov [rip + {kernel_rsp}], rsp",
-        // RSP0 of the TSS: traps from ring 3 land below what was just pushed (the CPU
-        // aligns the frame to 16 bytes, so maybe with a gap of 8)
-        "mov [rsi], rsp",
-        "mov rsp, rdi",
-        "pop r15",
-        "pop r14",
-        "pop r13",
-        "pop r12",
-        "pop r11",
-        "pop r10",
-        "pop r9",
-        "pop r8",
-        "pop rbp",
-        "pop rdi",
-        "pop rsi",
-        "pop rdx",
-        "pop rcx",
-        "pop rbx",
-        "pop rax",
-        // vector and error code
-        "add rsp, 16",
-        "iretq",
-        kernel_rsp = sym KERNEL_RSP,
-    )
+    let process = Process::new(space, files);
+    scheduler::spawn_user(process.clone(), frame, fpu, fs_base)?;
+    Ok(process)
 }
 
 /// Reached by a `jmp` from an entry stub after a trap from ring 3, with the vector and the
-/// error code pushed on top of what the CPU pushed. Completes the `TrapFrame` on the
-/// stack and leaves the run.
+/// error code pushed on top of what the CPU pushed. Completes the `TrapFrame` at the top of
+/// the kernel stack and ends the thread.
 #[unsafe(naked)]
 pub(crate) unsafe extern "C" fn user_trap() {
     naked_asm!(
@@ -207,40 +140,21 @@ pub(crate) unsafe extern "C" fn user_trap() {
         "push r13",
         "push r14",
         "push r15",
-        "jmp {leave_user}",
-        leave_user = sym leave_user,
+        // the program may have left DF set
+        "cld",
+        "mov rdi, rsp",
+        "call {user_fault}",
+        "ud2",
+        user_fault = sym user_fault,
     )
 }
 
-/// Reached by a `jmp` with a complete `TrapFrame` at the stack pointer and interrupts off:
-/// copies it to the frame `enter_user` got and returns from `enter_user`
-#[unsafe(naked)]
-pub(crate) unsafe extern "C" fn leave_user() {
-    naked_asm!(
-        // the program may have left DF set, and `rep movsq` follows
-        "cld",
-        "mov rax, cr2",
-        "mov [rip + {cr2}], rax",
-        "mov rsi, rsp",
-        "mov rax, [rip + {kernel_rsp}]",
-        // the frame pointer `enter_user` pushed last
-        "mov rdi, [rax]",
-        "mov ecx, {words}",
-        "rep movsq",
-        "lea rsp, [rax + 8]",
-        // the kernel's flags, interrupts on again
-        "popfq",
-        "pop r15",
-        "pop r14",
-        "pop r13",
-        "pop r12",
-        "pop rbp",
-        "pop rbx",
-        "ret",
-        cr2 = sym TRAP_CR2,
-        kernel_rsp = sym KERNEL_RSP,
-        words = const TRAP_FRAME_WORDS,
-    )
+/// A fault of a program: it ends with the exception. Interrupts are still off from the
+/// interrupt gate, so CR2 still holds the faulting address of a page fault.
+extern "C" fn user_fault(frame: *const TrapFrame) -> ! {
+    let cr2 = x86_64::registers::control::Cr2::read_raw();
+    let frame = unsafe { *frame };
+    scheduler::exit_current(scheduler::fault_of(&frame, cr2), Some(frame))
 }
 
 #[cfg(test)]
@@ -470,12 +384,12 @@ pub(crate) mod tests {
     /// The design's leak check: the same program a hundred times, nothing is left behind
     #[test_case]
     fn test_many_runs_leak_nothing() {
-        let frames = memory::used_frames();
+        let frames = crate::memory::used_frames();
         for _ in 0..100 {
             let (_frame, trap, _loaded) = run_code(code!(osel_patterns, osel_patterns_end));
             assert_eq!(trap.vector, 14);
         }
-        assert_eq!(memory::used_frames(), frames);
+        assert_eq!(crate::memory::used_frames(), frames);
     }
 
     /// A frame built by the kernel from program data can't take the program to ring 0

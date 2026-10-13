@@ -11,6 +11,8 @@ pub enum Errno {
     EPERM = 1,
     /// No such file or directory
     ENOENT = 2,
+    /// Interrupted: the call stopped waiting
+    EINTR = 4,
     /// Input/output error
     EIO = 5,
     /// No such device or address
@@ -60,6 +62,7 @@ impl Errno {
         match self {
             Errno::EPERM => "EPERM",
             Errno::ENOENT => "ENOENT",
+            Errno::EINTR => "EINTR",
             Errno::EIO => "EIO",
             Errno::ENXIO => "ENXIO",
             Errno::E2BIG => "E2BIG",
@@ -101,6 +104,7 @@ mod tests {
         let expected = [
             (Errno::EPERM, 1),
             (Errno::ENOENT, 2),
+            (Errno::EINTR, 4),
             (Errno::EIO, 5),
             (Errno::ENXIO, 6),
             (Errno::E2BIG, 7),

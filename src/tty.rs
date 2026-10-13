@@ -43,7 +43,7 @@ impl FileLike for Tty {
             let c = match keyboard::pop_char() {
                 Some(c) => c,
                 None if nonblock => return Err(Errno::EAGAIN),
-                None => wait_for_key(),
+                None => wait_for_key()?,
             };
             done = put_char(c, buf);
         }
@@ -75,15 +75,19 @@ pub fn output_pending() -> bool {
 }
 
 /// The next typed key; sleeps in `hlt` until the keyboard interrupt brings one. Only from a
-/// system call, which runs with interrupts on.
-fn wait_for_key() -> char {
+/// system call, which runs with interrupts on. `EINTR` once the process is killed: it must
+/// not keep waiting, nor take keys meant for others.
+fn wait_for_key() -> KResult<char> {
     use x86_64::instructions::interrupts;
     loop {
+        if crate::scheduler::current_killed() {
+            return Err(Errno::EINTR);
+        }
         // checked with interrupts off: a key arriving right after the check must wake the hlt
         interrupts::disable();
         if let Some(c) = keyboard::pop_char() {
             interrupts::enable();
-            return c;
+            return Ok(c);
         }
         interrupts::enable_and_hlt();
     }

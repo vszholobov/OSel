@@ -344,11 +344,13 @@ fn fatal_exception(name: &str, frame: &InterruptStackFrame, details: Details) ->
     panic!("{}", ExceptionReport { name, frame, details });
 }
 
-extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
+extern "x86-interrupt" fn timer_interrupt_handler(stack_frame: InterruptStackFrame) {
     TICKS.fetch_add(1, Ordering::Relaxed);
     unsafe {
         PICS.lock().notify_end_of_interrupt(InterruptIndex::Timer.as_u8());
     }
+    // after the end of interrupt and with no lock held: the next thread may run for a while
+    crate::scheduler::tick(stack_frame.code_segment.rpl() == x86_64::PrivilegeLevel::Ring3);
 }
 
 /// Reads the in-service register of the PIC at `command_port`

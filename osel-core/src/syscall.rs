@@ -10,6 +10,7 @@ pub const READ: u64 = 0;
 pub const WRITE: u64 = 1;
 pub const CLOSE: u64 = 3;
 pub const FSTAT: u64 = 5;
+pub const SCHED_YIELD: u64 = 24;
 pub const GETPID: u64 = 39;
 pub const EXIT: u64 = 60;
 pub const FCNTL: u64 = 72;
@@ -23,6 +24,7 @@ pub const SYSCALLS: &[(u64, &str)] = &[
     (WRITE, "write"),
     (CLOSE, "close"),
     (FSTAT, "fstat"),
+    (SCHED_YIELD, "sched_yield"),
     (GETPID, "getpid"),
     (EXIT, "exit"),
     (FCNTL, "fcntl"),

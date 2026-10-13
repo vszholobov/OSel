@@ -46,9 +46,13 @@ description: Блокировки OSel — IrqSpinlock, отчёт о взаим
 | `TTY_TEXT` | `src/tty.rs` | недособранный символ UTF-8 вывода терминала между вызовами `write` | `Tty::write`; печать — после того, как блокировка отпущена |
 | `TTY_PENDING` | `src/tty.rs` | байты набранного символа, не поместившиеся в прошлое чтение | `Tty::read` |
 | `OFFSET` | `osel-core/src/file.rs` | смещение описания открытого файла (`Spinlock`, без выключения прерываний) | `OpenDescription::read`, `write` для файлов со смещением |
+| `SCHEDULER` | `src/scheduler.rs` | потоки, очередь готовых, текущий поток | `schedule`, `spawn_*`, `wake`, `block_current`, `exit_current`, `finish_switch`; из обработчика таймера через `tick`. Через `switch_to` не переносится |
+| `STACK_SLOTS` | `src/scheduler.rs` | места стеков ядра | создание и освобождение стека потока |
+| `PROCESS_EXIT` | `src/scheduler.rs`, поле `Process` | итог процесса, по одной на процесс | `exit_current`, `Process::wait` |
+| `PROCESS_WAITER` | `src/scheduler.rs`, поле `Process` | поток, который ждёт процесс | `Process::wait`, `exit_current` |
 | `ROOT_FS` | `src/fs.rs` | корневая файловая система | `fs::init`, `fs::root`; держится только на время копирования `Arc` |
 
-Порядок вложения, который уже есть в коде: `DECODER`, затем `BUFFER` (в обработчике клавиатуры). Другие блокировки друг в друга не вкладываются.
+Порядок вложения, который уже есть в коде: `DECODER`, затем `BUFFER` (в обработчике клавиатуры); `SCHEDULER`, затем `ALLOCATOR` (таблица потоков растёт и сжимается под блокировкой планировщика). Другие блокировки друг в друга не вкладываются.
 
 ## Где в коде {#code}
 

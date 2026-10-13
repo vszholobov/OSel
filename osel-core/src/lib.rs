@@ -28,3 +28,4 @@ pub mod vfs;
 pub mod cpio;
 pub mod devices;
 pub mod file;
+pub mod sched;
