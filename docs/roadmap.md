@@ -22,9 +22,9 @@ description: План развития OSel по этапам — от ядра 
 - [ ] Скрипт записи образа на флешку — отложен, пока запись описана вручную на странице [«Запуск с флешки»](start/usb.md).
 - [ ] **Проверка на ноутбуке:** ядро загружается на [Samsung NP530U4B](reference/hardware/samsung-np530u4b.md) с флешки и печатает нажатые клавиши.
 
-## Этап 2. Запуск программ {#stage-2}
+## Этап 2. Запуск программ — сделан {#stage-2}
 
-Подробности и порядок работы — [проектирование этапа 2](design/stage-2-user-mode.md).
+Завершён в [PR №7](https://github.com/vszholobov/OSel/pull/7): статическая Go-программа запускается, выполняет горутины с `time.Sleep` и завершается. Устройство — [программы](architecture/core/programs.md), [потоки](architecture/core/threads.md) и [системные вызовы](reference/syscalls.md).
 
 - [x] Ramdisk: архив cpio из папки `ramdisk/`, интерфейсы блочного устройства и файловой системы, ошибки Linux ([файлы и ramdisk](architecture/core/fs.md), [решение 0007](decisions/0007-storage-interfaces.md)).
 - [x] Освобождение физических страниц, проверка утечек страниц в тестах ([память](architecture/core/memory.md#frames), [решение 0008](decisions/0008-frame-pool.md)).
@@ -34,9 +34,9 @@ description: План развития OSel по этапам — от ядра 
 - [x] Вход в ядро через `syscall`/`sysret`, системные вызовы `write` и `exit`. **Проверка:** программа на ассемблере из ramdisk печатает «Hello from ring 3!» ([системные вызовы](reference/syscalls.md), [решение 0012](decisions/0012-syscall-entry-and-user-programs.md)).
 - [x] SSE для пользовательских программ ([x87 и SSE](architecture/core/user-mode.md#fpu), [решение 0013](decisions/0013-fpu-state.md)).
 - [x] Потоки и планировщик с вытеснением по таймеру ([потоки и планировщик](architecture/core/threads.md), [решение 0015](decisions/0015-threads.md)).
-- [ ] `clone` и `futex`.
-- [ ] Системные вызовы Linux для рантайма Go (около 30). **Проверка:** Go-программа «hello world».
-- [ ] Таймеры и упрощённое ожидание событий. **Проверка:** Go-программа с горутинами и `time.Sleep`.
+- [x] `clone` и `futex` ([потоки](architecture/core/threads.md#clone), [ожидание](architecture/core/threads.md#futex)).
+- [x] Системные вызовы Linux для рантайма Go ([справочник](reference/syscalls.md)). **Проверка:** Go-программа «hello world».
+- [x] Таймеры и упрощённое ожидание событий: `nanosleep`, `clock_gettime`, `epoll` и `eventfd`. **Проверка:** Go-программа с горутинами и `time.Sleep` ([сквозной тест](architecture/core/programs.md#go)).
 
 ## Этап 3. Тетрис {#stage-3}
 
