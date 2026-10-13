@@ -16,6 +16,7 @@ description: Обзор OSel — из каких крейтов и модуле�
 | `osel-core` | `osel-core/` | хост и ядро | логика без обращения к железу: консоль, аллокаторы, карта памяти, клавиатура, отчёты об исключениях, спинлок |
 | `osel-runner` | `runner/` | хост | раннер cargo: ramdisk из папки `ramdisk/` и программ из `user/`, образ диска, запуск QEMU, разбор результатов тестов; зависит от `osel-core` ради формата cpio |
 | программы | `user/<имя>/` | `x86_64-unknown-none` | программы для кольца 3 на ассемблере, runner кладёт их в `/bin` ramdisk, см. [решение 0012](../decisions/0012-syscall-entry-and-user-programs.md) |
+| программы на Go | `user-go/<имя>/` | `linux/amd64`, статическая сборка | runner кладёт их в `/bin` ramdisk; `gohello` проверяет горутины и таймеры, см. [программы](core/programs.md#go) |
 | `docs-check` | `tools/docs-check/` | хост | тесты, которые сверяют документацию с кодом, см. [как писать документацию](../guides/writing-docs.md#checks) |
 
 `osel-core` — участник workspace. `runner` и `tools/docs-check` исключены из него: runner запускается вложенным cargo, пока сборка ядра держит блокировку папки target. Программы из `user/` — отдельные крейты со своим `[workspace]` и своей папкой `user/target`.
@@ -32,7 +33,7 @@ description: Обзор OSel — из каких крейтов и модуле�
 | `interrupts` | `src/interrupts.rs` | IDT, обработчики исключений, PIC, таймер, ложные IRQ | [Прерывания](core/interrupts.md) |
 | `gdt` | `src/gdt.rs` | GDT с сегментами кольца 3, TSS, стеки IST для double fault, NMI и machine check | [Прерывания](core/interrupts.md) |
 | `fpu` | `src/fpu.rs` | включение SSE и x87 (CR0, CR4), `fxsave64` и `fxrstor64` | [Пользовательский режим](core/user-mode.md#fpu) |
-| `syscall` | `src/syscall.rs` | вход через `syscall`, `write`, `getpid`, `exit` | [Пользовательский режим](core/user-mode.md#syscall) |
+| `syscall` | `src/syscall.rs` | вход через `syscall` и вызовы Linux для ввода-вывода, памяти, потоков и рантайма Go | [Пользовательский режим](core/user-mode.md#syscall), [справочник](../reference/syscalls.md) |
 | `scheduler` | `src/scheduler.rs` | потоки, процессы, переключение, вытеснение по таймеру | [Потоки и планировщик](core/threads.md) |
 | `user` | `src/user.rs` | запуск программы в кольце 3, возврат при исключении | [Пользовательский режим](core/user-mode.md) |
 | `time` | `src/time.rs` | монотонные и реальные часы, сон до срока (`SLEEPERS`) | [потоки](core/threads.md#time) |
@@ -97,7 +98,8 @@ description: Обзор OSel — из каких крейтов и модуле�
    9. `fs::init` — ramdisk монтируется как корень `/` с каталогом устройств `/dev`;
    10. `scheduler::init` — поток 0 для кода загрузки и поток простоя;
    11. `interrupts::init_pics` — сброс буфера клавиатуры, PIC, таймер на 100 Гц;
-   12. включает прерывания.
+   12. `time::init`, `futex::init`, `poll::init` — часы и очереди ожидания;
+   13. включает прерывания.
 4. Ядро печатает `/etc/motd` из ramdisk, запускает `/bin/hello` (он печатает «Hello from ring 3!»), затем «OSel ready to go!» на экран и в последовательный порт, затем `echo_keyboard` печатает нажатые клавиши и спит в `hlt`, пока нет ввода.
 
 После `osel::init` то, что передал загрузчик (карта памяти, ramdisk, таблицы ACPI), доступно через `osel::boot_info()`.
@@ -128,4 +130,4 @@ description: Обзор OSel — из каких крейтов и модуле�
 - [0014 — дескрипторы и устройства](../decisions/0014-file-descriptors.md)
 - [0015 — потоки и вытеснение](../decisions/0015-threads.md)
 
-_Сверено с кодом: 2026-10-13, коммит 2c68d3f._
+_Сверено с кодом: 2026-10-13, коммит 9c0f1c6._
