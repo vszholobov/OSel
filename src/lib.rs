@@ -35,6 +35,7 @@ pub mod poll;
 pub mod program;
 pub mod qemuno;
 pub mod scheduler;
+pub mod shell;
 #[cfg(test)]
 mod security;
 pub mod sync;

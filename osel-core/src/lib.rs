@@ -30,6 +30,7 @@ pub mod pipe;
 pub mod pit;
 pub mod poll;
 pub mod sched;
+pub mod shell;
 pub mod sleeper;
 pub mod sync;
 pub mod syscall;

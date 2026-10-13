@@ -24,13 +24,13 @@ description: Одиночный тетрис в OSel — закреплённы�
 
 ## Запуск и сборка {#run}
 
-Параметры сборки и ramdisk описаны в [справочнике runner](../reference/runner.md#tetris). Настоящее ядро после строки готовности запускает игру с `PATH=/bin`, `TERM=xterm`, `GODEBUG=asyncpreemptoff=1`. После выхода возвращается к вводу клавиатуры.
+Параметры сборки и ramdisk описаны в [справочнике runner](../reference/runner.md#tetris). В [оболочке](shell.md) команда `tetris` запускает игру с `--single` и окружением `PATH=/bin`, `TERM=xterm`, `GODEBUG=asyncpreemptoff=1`. После выхода снова появляется `osel>`; игру можно запускать повторно.
 
 ## Где в коде {#code}
 
 - `.gitmodules` и gitlink `apps/tetris` — источник и закреплённая версия игры.
 - `runner/src/main.rs` — `build_tetris`, `TetrisInput`, сборка и сценарий ввода.
-- `src/main.rs` — `run_tetris`, запуск настоящим ядром.
+- `src/shell.rs` — запуск игры командой `tetris`.
 - `tests/tetris.rs` — запуск клиента в тестовом ядре.
 
 ## Инварианты и грабли {#pitfalls}
