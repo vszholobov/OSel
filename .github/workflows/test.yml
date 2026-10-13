@@ -16,6 +16,18 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  windows-usb:
+    name: Windows PowerShell USB writer
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      # The inbox Windows PowerShell 5.1, not PowerShell 7 or an installed test framework.
+      # Native writes target only a disposable file-backed VHD created by the test.
+      - name: Verify guards, checksums and native disk writing
+        shell: powershell
+        run: ./tools/test-write-usb.ps1 -VirtualDisk
+
   host-tests:
     name: host unit tests
     runs-on: ubuntu-latest

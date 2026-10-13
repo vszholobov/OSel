@@ -30,6 +30,7 @@ CI описан в трёх файлах: тесты — в `.github/workflows/t
 | Файл | Задача | Когда | Что делает |
 |---|---|---|---|
 | `test.yml` | `host unit tests` | каждый PR и push в `master` | `cargo test-core`, `cargo test-runner` и `cargo docs-check`: тесты без QEMU и сверка документации с кодом, быстро |
+| `test.yml` | `Windows PowerShell USB writer` | каждый запуск test workflow | встроенный Windows PowerShell 5.1: проверки выбора диска, SHA-256, отмены и `-WhatIf`; запись и чтение обратно через Win32 на временном VHD, без физической флешки |
 | `test.yml` | `cargo test (uefi)`, `cargo test (bios)` | после `host unit tests` | `cargo test --no-fail-fast` в QEMU и загрузка настоящего ядра: `OSEL_EXPECT="OSel ready to go!" cargo run`. Ставит Go (`actions/setup-go`), чтобы runner собрал `user-go/gohello` и сквозной тест Go прошёл |
 | `test.yml` | `latest nightly (uefi)`, `latest nightly (bios)` | по понедельникам и при ручном запуске | на самом свежем nightly: `cargo test-core`, `cargo test-runner` и `cargo test --no-fail-fast`; без сверки документации и без загрузки настоящего ядра, не ждёт `host unit tests` |
 | `docs.yml` | `build the site` | каждый PR и push в `master` | собирает сайт документации на Diplodoc; линтер роняет сборку на ссылках на несуществующие страницы; битые якоря ловит `cargo docs-check` |
@@ -38,6 +39,8 @@ CI описан в трёх файлах: тесты — в `.github/workflows/t
 | `release.yml` | `publish the verified images` | push тега после успешной проверки обоих образов | публикует GitHub Release с двумя образами и SHA-256; порядок и восстановление после ошибки — в [выпуске версии](release.md#images) |
 
 Новый push в PR отменяет устаревший прогон этого PR. Прогоны на `master` не отменяются никогда.
+
+Проверка скрипта флешки находится в `tools/test-write-usb.ps1`. На Windows её можно запустить командой `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/test-write-usb.ps1`. Ключ `-VirtualDisk` добавляет тест Win32-записи на временном VHD размером 64 МБ и требует прав администратора; файл VHD отключается и удаляется после проверки. Сам скрипт записи и пользовательские команды описаны в [запуске с флешки](../start/usb.md#write).
 
 ### Кэш {#cache}
 
