@@ -25,6 +25,8 @@ pub enum FileType {
     #[default]
     Regular,
     Directory,
+    /// A device read and written byte by byte, like `/dev/tty`
+    CharDevice,
 }
 
 impl FileType {
@@ -33,6 +35,7 @@ impl FileType {
         match self {
             FileType::Regular => 0o100000,
             FileType::Directory => 0o040000,
+            FileType::CharDevice => 0o020000,
         }
     }
 }
@@ -48,6 +51,10 @@ pub struct Stat {
     pub permissions: u32,
     /// Size in bytes; for directories whatever the file system reports
     pub size: u64,
+    /// Number of names of the node: 0 means unknown, `fstat` then reports 1
+    pub nlink: u64,
+    /// Device number of a device node, `major << 8 | minor`
+    pub rdev: u64,
 }
 
 impl Stat {
@@ -127,7 +134,11 @@ pub fn resolve(root: &Arc<dyn Inode>, cwd: &Arc<dyn Inode>, path: &str) -> KResu
             "." => current,
             // `..` never leaves `root`, even if it is not the root of its file system
             ".." if current.stat().ino == root_ino => current,
-            ".." => current.parent()?,
+            // a file system's own root may be wrapped (see `devices`): keep the wrapper
+            ".." => match current.parent()? {
+                parent if parent.stat().ino == root_ino => root.clone(),
+                parent => parent,
+            },
             name if name.len() > NAME_MAX => return Err(Errno::ENAMETOOLONG),
             name => current.lookup(name)?,
         };
@@ -215,7 +226,7 @@ mod tests {
             let (ino, _, data, _) = self.node();
             match data {
                 Some(data) => {
-                    Stat { ino: *ino, file_type: FileType::Regular, permissions: 0o644, size: data.len() as u64 }
+                    Stat { ino: *ino, file_type: FileType::Regular, permissions: 0o644, size: data.len() as u64, ..Stat::default() }
                 }
                 None => Stat { ino: *ino, file_type: FileType::Directory, permissions: 0o755, ..Stat::default() },
             }
@@ -384,7 +395,7 @@ mod tests {
 
     #[test]
     fn mode_combines_type_and_permissions() {
-        let stat = Stat { ino: 1, file_type: FileType::Directory, permissions: 0o755, size: 0 };
+        let stat = Stat { ino: 1, file_type: FileType::Directory, permissions: 0o755, size: 0, ..Stat::default() };
         assert_eq!(stat.mode(), 0o40755);
         let stat = Stat { file_type: FileType::Regular, permissions: 0o644, ..stat };
         assert_eq!(stat.mode(), 0o100644);

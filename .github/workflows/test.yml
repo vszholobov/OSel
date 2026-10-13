@@ -53,11 +53,18 @@ jobs:
         boot: [uefi, bios]
     env:
       OSEL_BOOT: ${{ matrix.boot }}
+      # the test kernels run slower on CI without KVM; give them more room than the 60 s default
+      OSEL_TIMEOUT: 180
     steps:
       - uses: actions/checkout@v4
 
       - name: Install QEMU
         run: sudo apt-get update && sudo apt-get install -y qemu-system-x86
+
+      # the runner builds user-go/gohello with this Go; the end-to-end test skips without it
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
 
       - name: Install Rust toolchain from rust-toolchain.toml
         run: rustup toolchain install && rustc -V
@@ -92,6 +99,7 @@ jobs:
         boot: [uefi, bios]
     env:
       OSEL_BOOT: ${{ matrix.boot }}
+      OSEL_TIMEOUT: 180
       # overrides the pinned toolchain from rust-toolchain.toml
       RUSTUP_TOOLCHAIN: nightly
     steps:
@@ -99,6 +107,10 @@ jobs:
 
       - name: Install QEMU
         run: sudo apt-get update && sudo apt-get install -y qemu-system-x86
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
 
       - name: Install the latest nightly
         run: |

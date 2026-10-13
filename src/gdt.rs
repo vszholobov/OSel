@@ -1,15 +1,23 @@
 /// Global Descriptor Table module
 
-use core::ptr::addr_of;
+use core::ptr::{addr_of, addr_of_mut};
 use lazy_static::lazy_static;
 use x86_64::VirtAddr;
 use x86_64::structures::gdt::SegmentSelector;
 use x86_64::structures::gdt::{Descriptor, GlobalDescriptorTable};
 use x86_64::structures::tss::TaskStateSegment;
 
+/// The program's selectors, fixed by the GDT order; the `syscall` entry pushes them
+pub const USER_DATA_SELECTOR: u16 = 0x18 | 3;
+pub const USER_CODE_SELECTOR: u16 = 0x20 | 3;
+
 pub struct Selectors {
     pub code_selector: SegmentSelector,
     pub data_selector: SegmentSelector,
+    /// Ring 3, right after the kernel data segment: `sysret` takes both user selectors
+    /// from one base, data at +8 and code at +16
+    pub user_data_selector: SegmentSelector,
+    pub user_code_selector: SegmentSelector,
     pub tss_selector: SegmentSelector,
 }
 
@@ -45,12 +53,17 @@ lazy_static! {
         let mut gdt = GlobalDescriptorTable::new();
         let code_selector = gdt.append(Descriptor::kernel_code_segment());
         let data_selector = gdt.append(Descriptor::kernel_data_segment());
-        let tss_selector = gdt.append(Descriptor::tss_segment(&TSS));
+        let user_data_selector = gdt.append(Descriptor::user_data_segment());
+        let user_code_selector = gdt.append(Descriptor::user_code_segment());
+        // SAFETY: TSS is a static, it never moves; RSP0 is changed only through `kernel_stack_slot`
+        let tss_selector = gdt.append(unsafe { Descriptor::tss_segment_unchecked(tss()) });
         (
             gdt,
             Selectors {
                 code_selector,
                 data_selector,
+                user_data_selector,
+                user_code_selector,
                 tss_selector,
             },
         )
@@ -95,14 +108,39 @@ pub fn ist_stacks() -> [IstStack; 3] {
     ]
 }
 
-lazy_static! {
-    static ref TSS: TaskStateSegment = {
-        let mut tss = TaskStateSegment::new();
+/// Changed in place: the CPU reads the stack for entries from ring 3 (RSP0) here
+static mut TSS: TaskStateSegment = TaskStateSegment::new();
+
+/// The TSS with the interrupt stacks filled in on first use
+fn tss() -> *mut TaskStateSegment {
+    static FILLED: spin::Once<()> = spin::Once::new();
+    let tss = addr_of_mut!(TSS);
+    FILLED.call_once(|| {
         for stack in ist_stacks() {
-            tss.interrupt_stack_table[stack.index as usize] = stack.top;
+            // SAFETY: only here, once, before the TSS is loaded
+            unsafe { (*tss).interrupt_stack_table[stack.index as usize] = stack.top };
         }
-        tss
-    };
+    });
+    tss
+}
+
+/// Where RSP0 lives in the TSS: the stack the CPU switches to when an interrupt or
+/// exception comes from ring 3. Written by the entry to user mode with interrupts off.
+pub fn kernel_stack_slot() -> *mut u64 {
+    // the TSS is packed, the slot is not 8 byte aligned: write it with `write_unaligned`
+    // SAFETY: only an address is taken, no reference to the packed field
+    unsafe { addr_of_mut!((*tss()).privilege_stack_table).cast::<u64>() }
+}
+
+/// Reloads the kernel data selector into SS, DS and ES: coming from ring 3, SS is null and
+/// DS and ES hold whatever the program left
+pub fn reload_data_segments() {
+    use x86_64::instructions::segmentation::{DS, ES, SS, Segment};
+    unsafe {
+        SS::set_reg(GDT.1.data_selector);
+        DS::set_reg(GDT.1.data_selector);
+        ES::set_reg(GDT.1.data_selector);
+    }
 }
 
 #[cfg(test)]
@@ -129,10 +167,25 @@ mod tests {
         assert_eq!(ldt, 0);
     }
 
+    /// `syscall` and `sysret` need this layout: kernel code, kernel data, then user data
+    /// and user code from one base, see STAR
+    #[test_case]
+    fn test_selectors_fit_syscall() {
+        let s = selectors();
+        assert_eq!(s.code_selector.0, 0x08);
+        assert_eq!(s.data_selector.0, 0x10);
+        assert_eq!(s.user_data_selector.0, USER_DATA_SELECTOR);
+        assert_eq!(s.user_code_selector.0, USER_CODE_SELECTOR);
+        // SYSRET: SS = base + 8, CS = base + 16
+        let base = s.data_selector.0;
+        assert_eq!(base + 8, s.user_data_selector.0 & !3);
+        assert_eq!(base + 16, s.user_code_selector.0 & !3);
+    }
+
     #[test_case]
     fn test_interrupt_stacks_are_in_the_tss() {
         // the TSS is packed, copy the field out before comparing
-        let table = { TSS.interrupt_stack_table };
+        let table = unsafe { (*tss()).interrupt_stack_table };
         let stacks = ist_stacks();
         for stack in stacks {
             assert_eq!(table[stack.index as usize], stack.top);

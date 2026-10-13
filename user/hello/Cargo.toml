@@ -1,0 +1,14 @@
+[package]
+name = "hello"
+description = "The first OSel program: prints a line through write and exits through exit"
+version = "0.1.0"
+edition = "2024"
+
+# built by the runner on its own, not a part of the kernel workspace
+[workspace]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

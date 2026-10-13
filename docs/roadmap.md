@@ -27,12 +27,14 @@ description: План развития OSel по этапам — от ядра 
 Подробности и порядок работы — [проектирование этапа 2](design/stage-2-user-mode.md).
 
 - [x] Ramdisk: архив cpio из папки `ramdisk/`, интерфейсы блочного устройства и файловой системы, ошибки Linux ([файлы и ramdisk](architecture/core/fs.md), [решение 0007](decisions/0007-storage-interfaces.md)).
-- [ ] Освобождение физических страниц, адресное пространство программы, проверка утечек страниц в тестах.
-- [ ] Пользовательский режим: сегменты кольца 3 в GDT, стек ядра в TSS, исключения программы не роняют ядро.
-- [ ] Загрузка ELF из ramdisk, стартовый стек с argv, envp и auxv; вход через `syscall`/`sysret`.
-- [ ] Системные вызовы `write` и `exit`. **Проверка:** программа на ассемблере печатает «hello».
-- [ ] SSE для пользовательских программ.
-- [ ] Потоки и планировщик с вытеснением по таймеру, `clone`, `futex`.
+- [x] Освобождение физических страниц, проверка утечек страниц в тестах ([память](architecture/core/memory.md#frames), [решение 0008](decisions/0008-frame-pool.md)).
+- [x] Адресное пространство программы ([память](architecture/core/memory.md#address-spaces), [решение 0009](decisions/0009-shared-kernel-half.md)).
+- [x] Загрузка ELF из ramdisk, стартовый стек с argv, envp и auxv ([программы](architecture/core/programs.md), [решение 0010](decisions/0010-static-elf-loader.md)).
+- [x] Пользовательский режим: сегменты кольца 3 в GDT, стек ядра в TSS, исключения программы не роняют ядро ([пользовательский режим](architecture/core/user-mode.md), [решение 0011](decisions/0011-user-entry.md)).
+- [x] Вход в ядро через `syscall`/`sysret`, системные вызовы `write` и `exit`. **Проверка:** программа на ассемблере из ramdisk печатает «Hello from ring 3!» ([системные вызовы](reference/syscalls.md), [решение 0012](decisions/0012-syscall-entry-and-user-programs.md)).
+- [x] SSE для пользовательских программ ([x87 и SSE](architecture/core/user-mode.md#fpu), [решение 0013](decisions/0013-fpu-state.md)).
+- [x] Потоки и планировщик с вытеснением по таймеру ([потоки и планировщик](architecture/core/threads.md), [решение 0015](decisions/0015-threads.md)).
+- [ ] `clone` и `futex`.
 - [ ] Системные вызовы Linux для рантайма Go (около 30). **Проверка:** Go-программа «hello world».
 - [ ] Таймеры и упрощённое ожидание событий. **Проверка:** Go-программа с горутинами и `time.Sleep`.
 

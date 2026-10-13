@@ -18,13 +18,39 @@ where
     fn run(&self) {
         serial_print!("{}...\t", core::any::type_name::<T>());
         // every test must give back what it allocated (Nikka's forbid_leaks)
+        let frames = forbid_frame_leaks();
         let heap_before = heap_in_use();
         self();
         let heap_after = heap_in_use();
         if heap_after != heap_before {
             panic!("the test leaked {} heap bytes", heap_after as isize - heap_before as isize);
         }
+        drop(frames);
         serial_println!("[ok]");
+    }
+}
+
+/// Panics when dropped if the number of used physical frames changed since its creation
+/// (Nikka's forbid_frame_leaks). Guards can be nested to check a part of a test,
+/// but not created or dropped inside `with_memory`: they take `MEMORY` themselves.
+#[must_use = "the check runs when the guard is dropped"]
+pub struct FrameLeakGuard {
+    used_before: usize,
+}
+
+pub fn forbid_frame_leaks() -> FrameLeakGuard {
+    FrameLeakGuard { used_before: crate::memory::used_frames() }
+}
+
+impl Drop for FrameLeakGuard {
+    fn drop(&mut self) {
+        let used = crate::memory::used_frames();
+        if used > self.used_before {
+            panic!("the test leaked {} frames", used - self.used_before);
+        }
+        if used < self.used_before {
+            panic!("the test freed {} frames it did not allocate", self.used_before - used);
+        }
     }
 }
 

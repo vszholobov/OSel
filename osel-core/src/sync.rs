@@ -47,6 +47,11 @@ impl<T> Spinlock<T> {
         self.name
     }
 
+    /// The value, consuming the lock
+    pub fn into_inner(self) -> T {
+        self.data.into_inner()
+    }
+
     /// Waits for the lock, panics with a deadlock report after `max_spins` attempts
     #[track_caller]
     pub fn lock(&self) -> SpinlockGuard<'_, T> {

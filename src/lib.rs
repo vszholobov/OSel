@@ -30,7 +30,18 @@ pub mod interrupts;
 pub mod gdt;
 pub mod keyboard;
 pub mod memory;
+pub mod program;
+pub mod user;
+pub mod syscall;
+pub mod fpu;
+pub mod tty;
+pub mod scheduler;
+pub mod time;
+pub mod futex;
+pub mod poll;
 pub mod sync;
+#[cfg(test)]
+mod security;
 
 /// Version of the kernel from Cargo.toml
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -59,7 +70,9 @@ pub fn init(boot_info: &'static BootInfo) {
     assert!(!INITIALIZED.swap(true, core::sync::atomic::Ordering::SeqCst), "osel::init called twice");
     BOOT_INFO.store(boot_info as *const BootInfo as *mut BootInfo, core::sync::atomic::Ordering::SeqCst);
     gdt::init();
+    fpu::init();
     interrupts::init_idt();
+    syscall::init();
 
     let physical_memory_offset = *boot_info
         .physical_memory_offset
@@ -67,9 +80,14 @@ pub fn init(boot_info: &'static BootInfo) {
         .expect("bootloader did not map physical memory");
     unsafe { memory::init(VirtAddr::new(physical_memory_offset), &boot_info.memory_regions) };
     allocator::init_heap().expect("heap initialization failed");
+    memory::enable_frame_tracking();
     fs::init(boot_info);
+    scheduler::init();
 
     interrupts::init_pics();
+    time::init(scheduler::MAX_THREADS);
+    futex::init(scheduler::MAX_THREADS);
+    poll::init(scheduler::MAX_THREADS);
     x86_64::instructions::interrupts::enable();
 }
 

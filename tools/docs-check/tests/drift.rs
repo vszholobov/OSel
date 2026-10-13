@@ -41,6 +41,17 @@ fn vectors_page_lists_every_handler() {
 }
 
 #[test]
+fn syscalls_page_lists_every_call() {
+    let source = read("osel-core/src/syscall.rs");
+    let table = source.split("pub const SYSCALLS").nth(1).expect("no SYSCALLS table in osel-core/src/syscall.rs");
+    let table = &table[..table.find("];").expect("the SYSCALLS table does not end")];
+    // every second piece between quotes is a name: `(WRITE, "write"), ...`
+    let names: Vec<String> = table.split('"').skip(1).step_by(2).map(str::to_string).collect();
+    assert!(names.len() >= 4, "too few system calls found: {names:?}");
+    assert_documented("docs/reference/syscalls.md", "system calls", &names);
+}
+
+#[test]
 fn locking_page_lists_every_lock() {
     let mut locks = Vec::new();
     for dir in ["src", "osel-core/src"] {

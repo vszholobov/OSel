@@ -43,6 +43,73 @@ impl InterruptIndex {
     }
 }
 
+/// Entry stub of an exception that a program can cause. From ring 0 it jumps to the
+/// kernel's handler with the stack untouched, so kernel exceptions behave as before. From
+/// ring 3 it pushes the vector (and a zero for a missing error code) and goes to
+/// `user::user_trap`, which ends the program's run.
+macro_rules! entry_stub {
+    ($stub:ident, $vector:literal, $handler:ident: HandlerFunc) => {
+        const _: x86_64::structures::idt::HandlerFunc = $handler;
+        #[unsafe(naked)]
+        unsafe extern "C" fn $stub() {
+            core::arch::naked_asm!(
+                // CS the CPU pushed: ring 0 or 3
+                "test qword ptr [rsp + 8], 3",
+                "jz {handler}",
+                "push 0",
+                "push {vector}",
+                "jmp {user_trap}",
+                handler = sym $handler,
+                vector = const $vector,
+                user_trap = sym crate::user::user_trap,
+            )
+        }
+    };
+    ($stub:ident, $vector:literal, $handler:ident: $kind:ident) => {
+        const _: x86_64::structures::idt::$kind = $handler;
+        #[unsafe(naked)]
+        unsafe extern "C" fn $stub() {
+            core::arch::naked_asm!(
+                // the error code sits below the CPU frame
+                "test qword ptr [rsp + 16], 3",
+                "jz {handler}",
+                "push {vector}",
+                "jmp {user_trap}",
+                handler = sym $handler,
+                vector = const $vector,
+                user_trap = sym crate::user::user_trap,
+            )
+        }
+    };
+}
+
+entry_stub!(divide_error_stub, 0, divide_error_handler: HandlerFunc);
+entry_stub!(debug_stub, 1, debug_handler: HandlerFunc);
+entry_stub!(breakpoint_stub, 3, breakpoint_handler: HandlerFunc);
+entry_stub!(overflow_stub, 4, overflow_handler: HandlerFunc);
+entry_stub!(bound_range_exceeded_stub, 5, bound_range_exceeded_handler: HandlerFunc);
+entry_stub!(invalid_opcode_stub, 6, invalid_opcode_handler: HandlerFunc);
+entry_stub!(device_not_available_stub, 7, device_not_available_handler: HandlerFunc);
+entry_stub!(invalid_tss_stub, 10, invalid_tss_handler: HandlerFuncWithErrCode);
+entry_stub!(segment_not_present_stub, 11, segment_not_present_handler: HandlerFuncWithErrCode);
+entry_stub!(stack_segment_fault_stub, 12, stack_segment_fault_handler: HandlerFuncWithErrCode);
+entry_stub!(general_protection_fault_stub, 13, general_protection_fault_handler: HandlerFuncWithErrCode);
+entry_stub!(page_fault_stub, 14, page_fault_handler: PageFaultHandlerFunc);
+entry_stub!(x87_floating_point_stub, 16, x87_floating_point_handler: HandlerFunc);
+entry_stub!(alignment_check_stub, 17, alignment_check_handler: HandlerFuncWithErrCode);
+entry_stub!(simd_floating_point_stub, 19, simd_floating_point_handler: HandlerFunc);
+entry_stub!(virtualization_stub, 20, virtualization_handler: HandlerFunc);
+entry_stub!(control_protection_stub, 21, control_protection_handler: HandlerFuncWithErrCode);
+entry_stub!(hv_injection_exception_stub, 28, hv_injection_exception_handler: HandlerFunc);
+entry_stub!(vmm_communication_exception_stub, 29, vmm_communication_exception_handler: HandlerFuncWithErrCode);
+entry_stub!(security_exception_stub, 30, security_exception_handler: HandlerFuncWithErrCode);
+
+/// Points `entry` at `stub` after `set_handler_fn` checked the handler's type. Resets the
+/// entry's options: set a stack index or a privilege level after this, not before.
+unsafe fn through_stub<F>(entry: &mut x86_64::structures::idt::Entry<F>, stub: unsafe extern "C" fn()) {
+    unsafe { entry.set_handler_addr(x86_64::VirtAddr::new(stub as usize as u64)) };
+}
+
 lazy_static! {
     static ref IDT: InterruptDescriptorTable = {
         let mut idt = InterruptDescriptorTable::new();
@@ -73,6 +140,29 @@ lazy_static! {
         idt.stack_segment_fault.set_handler_fn(stack_segment_fault_handler);
         idt.general_protection_fault.set_handler_fn(general_protection_fault_handler);
         idt.page_fault.set_handler_fn(page_fault_handler);
+        // the exceptions a program can cause enter through stubs that tell ring 3 from ring 0
+        unsafe {
+            through_stub(&mut idt.divide_error, divide_error_stub);
+            through_stub(&mut idt.debug, debug_stub);
+            through_stub(&mut idt.breakpoint, breakpoint_stub);
+            through_stub(&mut idt.overflow, overflow_stub);
+            through_stub(&mut idt.bound_range_exceeded, bound_range_exceeded_stub);
+            through_stub(&mut idt.invalid_opcode, invalid_opcode_stub);
+            through_stub(&mut idt.device_not_available, device_not_available_stub);
+            through_stub(&mut idt.invalid_tss, invalid_tss_stub);
+            through_stub(&mut idt.segment_not_present, segment_not_present_stub);
+            through_stub(&mut idt.stack_segment_fault, stack_segment_fault_stub);
+            through_stub(&mut idt.general_protection_fault, general_protection_fault_stub);
+            through_stub(&mut idt.page_fault, page_fault_stub);
+            through_stub(&mut idt.x87_floating_point, x87_floating_point_stub);
+            through_stub(&mut idt.alignment_check, alignment_check_stub);
+            through_stub(&mut idt.simd_floating_point, simd_floating_point_stub);
+            through_stub(&mut idt.virtualization, virtualization_stub);
+            through_stub(&mut idt.cp_protection_exception, control_protection_stub);
+            through_stub(&mut idt.hv_injection_exception, hv_injection_exception_stub);
+            through_stub(&mut idt.vmm_communication_exception, vmm_communication_exception_stub);
+            through_stub(&mut idt.security_exception, security_exception_stub);
+        }
         unsafe {
             idt.double_fault.set_handler_fn(double_fault_handler)
                 .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX); // new
@@ -131,6 +221,52 @@ static TICKS: AtomicU64 = AtomicU64::new(0);
 /// Number of timer interrupts since boot, `TICK_HZ` per second
 pub fn ticks() -> u64 {
     TICKS.load(Ordering::Relaxed)
+}
+
+/// Reads one CMOS register through the index/data ports
+fn cmos(register: u8) -> u8 {
+    let mut index = Port::<u8>::new(0x70);
+    let mut data = Port::<u8>::new(0x71);
+    unsafe {
+        index.write(register);
+        data.read()
+    }
+}
+
+/// The real-time clock as nanoseconds since the Unix epoch, read once at boot. Handles the
+/// BCD and 12-hour encodings the CMOS status register reports (QEMU uses BCD, 24-hour).
+pub fn wall_clock_unix_nanos() -> u64 {
+    // read twice and accept once two reads agree: an update may start mid-read
+    let mut last = read_cmos_datetime();
+    loop {
+        let again = read_cmos_datetime();
+        if again == last {
+            return osel_core::clock::unix_nanos(again);
+        }
+        last = again;
+    }
+}
+
+fn read_cmos_datetime() -> osel_core::clock::DateTime {
+    // wait out an update so the fields are consistent
+    while cmos(0x0a) & 0x80 != 0 {}
+    let status_b = cmos(0x0b);
+    let binary = status_b & 0x04 != 0;
+    let hour_24 = status_b & 0x02 != 0;
+    let decode = |value: u8| if binary { value } else { (value >> 4) * 10 + (value & 0x0f) };
+    let second = decode(cmos(0x00));
+    let minute = decode(cmos(0x02));
+    let raw_hour = cmos(0x04);
+    let mut hour = decode(raw_hour & 0x7f);
+    if !hour_24 && raw_hour & 0x80 != 0 {
+        hour = (hour % 12) + 12;
+    } else if !hour_24 && hour == 12 {
+        hour = 0;
+    }
+    let day = decode(cmos(0x07));
+    let month = decode(cmos(0x08));
+    let year = 2000 + decode(cmos(0x09)) as u16;
+    osel_core::clock::DateTime { year, month, day, hour, minute, second }
 }
 
 static BREAKPOINTS: AtomicU64 = AtomicU64::new(0);
@@ -254,11 +390,15 @@ fn fatal_exception(name: &str, frame: &InterruptStackFrame, details: Details) ->
     panic!("{}", ExceptionReport { name, frame, details });
 }
 
-extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
+extern "x86-interrupt" fn timer_interrupt_handler(stack_frame: InterruptStackFrame) {
     TICKS.fetch_add(1, Ordering::Relaxed);
     unsafe {
         PICS.lock().notify_end_of_interrupt(InterruptIndex::Timer.as_u8());
     }
+    // wake sleepers whose deadline passed, then let the next thread run
+    crate::time::wake_due();
+    // after the end of interrupt and with no lock held: the next thread may run for a while
+    crate::scheduler::tick(stack_frame.code_segment.rpl() == x86_64::PrivilegeLevel::Ring3);
 }
 
 /// Reads the in-service register of the PIC at `command_port`

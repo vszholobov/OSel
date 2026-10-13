@@ -46,6 +46,10 @@ items:
           - href: architecture/core/interrupts.md
           - href: architecture/core/locking.md
           - href: architecture/core/fs.md
+          - href: architecture/core/programs.md
+          - href: architecture/core/user-mode.md
+          - href: architecture/core/threads.md
+          - href: architecture/core/security.md
       - name: Драйверы
         items:
           - href: architecture/drivers/console.md
@@ -55,6 +59,7 @@ items:
     items:
       - href: reference/runner.md
       - href: reference/vectors.md
+      - href: reference/syscalls.md
       - name: Машины
         items:
           - href: reference/hardware/samsung-np530u4b.md
@@ -69,6 +74,15 @@ items:
       - href: decisions/0005-linux-abi-for-go.md
       - href: decisions/0006-higher-half-kernel.md
       - href: decisions/0007-storage-interfaces.md
+      - href: decisions/0008-frame-pool.md
+      - href: decisions/0009-shared-kernel-half.md
+      - href: decisions/0010-static-elf-loader.md
+      - href: decisions/0011-user-entry.md
+      - href: decisions/0012-syscall-entry-and-user-programs.md
+      - href: decisions/0013-fpu-state.md
+      - href: decisions/0014-file-descriptors.md
+      - href: decisions/0015-threads.md
+      - href: decisions/0016-lazy-anonymous-memory.md
   - name: Планы
     items:
       - href: roadmap.md

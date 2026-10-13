@@ -24,7 +24,7 @@ OSEL_EXPECT="OSel ready to go!" cargo run   # запуск настоящего 
 |---|---|
 | Добавить обработчик исключения | `docs/architecture/core/interrupts.md`, `docs/reference/vectors.md`, `docs/guides/testing.md` |
 | Добавить тест (хост, ядро, интеграционный, тест падения) | `docs/guides/testing.md`, `docs/architecture/testing.md` |
-| Добавить системный вызов (этап 2) | `docs/design/stage-2-user-mode.md` |
+| Добавить системный вызов (этап 2) | `docs/reference/syscalls.md`, `docs/architecture/core/user-mode.md`, `docs/design/stage-2-user-mode.md` |
 | Добавить переменную окружения runner | `docs/reference/runner.md`, `runner/src/main.rs` |
 | Обновить тулчейн Rust | `docs/guides/toolchain-and-ci.md`, `docs/decisions/0004-pinned-nightly.md` |
 | Перенести тест из курса ШАДа | `docs/nikka.md` |

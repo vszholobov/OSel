@@ -102,5 +102,16 @@ harness = false
 name = "leak_detection"
 
 [[test]]
+name = "frame_leak_detection"
+
+[[test]]
+name = "double_free"
+harness = false
+
+[[test]]
+name = "drop_active_space"
+harness = false
+
+[[test]]
 name = "hv_injection"
 harness = false

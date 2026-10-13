@@ -47,10 +47,13 @@ fn large_vec() {
     assert_eq!(vec.iter().sum::<u64>(), (n - 1) * n / 2);
 }
 
+/// Boxes take 16 bytes each, so this many add up to twice the heap size
+const MANY: u64 = HEAP_SIZE / 8;
+
 #[test_case]
 fn many_boxes() {
     // allocates much more than the heap size in total, so freed memory must be reused
-    for i in 0..HEAP_SIZE {
+    for i in 0..MANY {
         let x = Box::new(i);
         assert_eq!(*x, i);
     }
@@ -59,7 +62,7 @@ fn many_boxes() {
 #[test_case]
 fn many_boxes_long_lived() {
     let long_lived = Box::new(1);
-    for i in 0..HEAP_SIZE {
+    for i in 0..MANY {
         let x = Box::new(i);
         assert_eq!(*x, i);
     }
