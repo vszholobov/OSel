@@ -63,13 +63,18 @@ description: Потоки и планировщик OSel — стек ядра �
 
 `nanosleep` и будущие тайм-ауты `futex` и `epoll` блокируют поток до срока в наносекундах. Поток записывает себя в очередь `SLEEPERS` (`osel_core::sleeper`) и блокируется; таймер после каждого тика будит тех, чей срок прошёл (`time::wake_due`). Проверка срока и запись в очередь идут с выключенными прерываниями, поэтому таймер не разбудит поток между проверкой и сном. Самый короткий реальный сон — один тик (10 мс): этого Go хватает, `time.Sleep` опирается на таймер и `futex`, а не на точность `nanosleep`.
 
+## futex {#futex}
+
+`futex` паркует и будит потоки Go. Поддержаны две операции, обе в пределах одного процесса: `FUTEX_WAIT` засыпает, пока слово по адресу равно ожидаемому значению, `FUTEX_WAKE` будит ждущих. Очередь ожидания — `osel_core::futex`, по ключу (адресное пространство процесса, адрес): два процесса с одинаковым адресом не путаются. Значение сверяется и поток встаёт в очередь с выключенными прерываниями, чтобы будящий не проскочил между проверкой и сном; на одном процессоре этого достаточно. Относительный тайм-аут идёт через ту же очередь `SLEEPERS`, что и `nanosleep`. Пробуждение ложным не считается ошибкой: Go сам перепроверяет своё условие.
+
 ## Где в коде {#code}
 
 - `src/scheduler.rs` — `Thread`, `Process`, `Exit`, `init`, `spawn_user`, `spawn_kernel`, `schedule`, `prepare_switch`, `switch_to`, `finish_switch`, `thread_start`, `return_to_user`, `tick`, `block_current`, `wake`, `yield_now`, `exit_current`, `switches`, `runs`.
 - `osel-core/src/sched.rs` — `SchedPolicy`, `RoundRobin`, `StackSlots`.
 - `src/user.rs` — `start`, `run`, `run_with`, `user_trap`, `user_fault`.
 - `src/time.rs` — `monotonic_ns`, `realtime_ns`, `clock_ns`, `sleep_until`, `wait_until`, `wake_due`.
-- `osel-core/src/clock.rs`, `osel-core/src/sleeper.rs` — перевод тиков и очередь сроков.
+- `osel-core/src/clock.rs`, `osel-core/src/sleeper.rs`, `osel-core/src/futex.rs` — перевод тиков, очередь сроков, очереди `futex`.
+- `src/futex.rs` — `futex`: проверка значения, сон и пробуждение.
 - `src/syscall.rs` — вход через стек потока, `sched_yield`, проверка `kill` перед возвратом.
 - `src/interrupts.rs` — `timer_interrupt_handler` вызывает `tick`.
 

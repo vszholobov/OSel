@@ -116,6 +116,12 @@ impl Process {
         self.files.lock()
     }
 
+    /// An id unique to this address space while it lives: its level 4 table frame. Used to
+    /// key `futex` waits so two processes with the same address don't collide.
+    pub(crate) fn space_id(&self) -> u64 {
+        self.level_4.start_address().as_u64()
+    }
+
     /// Ends the process the next time one of its threads would return to ring 3
     pub fn kill(&self) {
         self.killed.store(true, Ordering::SeqCst);
@@ -839,6 +845,61 @@ mod tests {
         "mov eax, 60",
         "syscall",
         ".global osel_clone_bad_end", "osel_clone_bad_end:",
+        // the futex word is at 0x600200, a flag at 0x600208. The parent clones a child and
+        // waits on the futex while it is 0; the child sets it to 1 and wakes one waiter,
+        // then the parent exits the group with 55.
+        ".global osel_futex", "osel_futex:",
+        "mov eax, 56",
+        "mov edi, 0x50f00",
+        "mov esi, 0x600f00",
+        "xor edx, edx",
+        "xor r10d, r10d",
+        "xor r8d, r8d",
+        "syscall",
+        "test rax, rax",
+        "jz 7f",
+        // parent: futex wait while [0x600200] == 0
+        "8:",
+        "cmp dword ptr [0x600200], 0",
+        "jne 9f",
+        "mov edi, 0x600200",             // uaddr
+        "xor esi, esi",                  // FUTEX_WAIT
+        "xor edx, edx",                  // expected value 0
+        "xor r10d, r10d",                // no timeout
+        "mov eax, 202",
+        "syscall",
+        "jmp 8b",
+        "9:",
+        "mov edi, 55",
+        "mov eax, 231",
+        "syscall",
+        "7:",
+        // child: set the word, wake one waiter, spin until reaped
+        "mov dword ptr [0x600200], 1",
+        "mov edi, 0x600200",
+        "mov esi, 1",                    // FUTEX_WAKE
+        "mov edx, 1",                    // wake one
+        "mov eax, 202",
+        "syscall",
+        "10:", "jmp 10b",
+        ".global osel_futex_end", "osel_futex_end:",
+        // FUTEX_WAIT with a 30 ms timeout on a word that never changes: expect ETIMEDOUT,
+        // exit with -rax
+        ".global osel_futex_timeout", "osel_futex_timeout:",
+        "mov dword ptr [0x600208], 123456789",
+        "mov qword ptr [0x600210], 0",   // timespec: 0 seconds
+        "mov qword ptr [0x600218], 30000000",  // 30 ms
+        "mov edi, 0x600208",
+        "xor esi, esi",                  // FUTEX_WAIT
+        "mov edx, 123456789",            // the current value, so it really waits
+        "mov r10d, 0x600210",            // relative timeout
+        "mov eax, 202",
+        "syscall",
+        "neg rax",
+        "mov rdi, rax",
+        "mov eax, 60",
+        "syscall",
+        ".global osel_futex_timeout_end", "osel_futex_timeout_end:",
         ".popsection",
     );
 
@@ -992,6 +1053,31 @@ mod tests {
         }
         kernel_is_fine();
         assert_eq!(crate::memory::used_frames(), frames, "no leaked stacks");
+    }
+
+    /// One thread parks in `futex(FUTEX_WAIT)` and another wakes it with `FUTEX_WAKE`:
+    /// the whole program only finishes if the wake arrived
+    #[test_case]
+    fn test_futex_wait_and_wake() {
+        let frames = crate::memory::used_frames();
+        let mut loaded = load(code!(osel_futex, osel_futex_end));
+        let frame = initial_frame(loaded.entry, loaded.rsp);
+        let process = start(loaded.space.take(), standard_files(), frame, FpuState::initial(), 0).unwrap();
+        assert_eq!(process.wait().stop.exit_code(), 55, "the parent was woken by the child's FUTEX_WAKE");
+        drop(Arc::into_inner(process));
+        assert_eq!(crate::memory::used_frames(), frames);
+    }
+
+    /// `FUTEX_WAIT` with a timeout on a word that never changes ends with `ETIMEDOUT`
+    #[test_case]
+    fn test_futex_wait_times_out() {
+        let mut loaded = load(code!(osel_futex_timeout, osel_futex_timeout_end));
+        let before = crate::interrupts::ticks();
+        let frame = initial_frame(loaded.entry, loaded.rsp);
+        let process = start(loaded.space.take(), standard_files(), frame, FpuState::initial(), 0).unwrap();
+        assert_eq!(process.wait().stop.exit_code(), Errno::ETIMEDOUT.code() as u8);
+        assert!(crate::interrupts::ticks() >= before + 3, "it waited about the 30 ms timeout");
+        drop(Arc::into_inner(process));
     }
 
     /// `clone` flags other than the thread set Go uses are `EINVAL`

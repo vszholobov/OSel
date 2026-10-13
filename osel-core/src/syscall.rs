@@ -18,6 +18,7 @@ pub const MADVISE: u64 = 28;
 pub const NANOSLEEP: u64 = 35;
 pub const CLONE: u64 = 56;
 pub const GETTID: u64 = 186;
+pub const FUTEX: u64 = 202;
 pub const CLOCK_GETTIME: u64 = 228;
 pub const GETPID: u64 = 39;
 pub const EXIT: u64 = 60;
@@ -40,6 +41,7 @@ pub const SYSCALLS: &[(u64, &str)] = &[
     (NANOSLEEP, "nanosleep"),
     (CLONE, "clone"),
     (GETTID, "gettid"),
+    (FUTEX, "futex"),
     (CLOCK_GETTIME, "clock_gettime"),
     (GETPID, "getpid"),
     (EXIT, "exit"),

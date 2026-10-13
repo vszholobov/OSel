@@ -16,8 +16,8 @@ use alloc::sync::Arc;
 use alloc::vec;
 use osel_core::file::{FdTable, O_CLOEXEC, O_CREAT, OpenDescription, encode_stat, open_access};
 use osel_core::syscall::{
-    self, CLOCK_GETTIME, CLONE, CLOSE, EXIT, EXIT_GROUP, FCNTL, FSTAT, GETPID, GETTID, MADVISE, MMAP, MPROTECT, MUNMAP,
-    NANOSLEEP, NEWFSTATAT, OPENAT, READ, Return, SCHED_YIELD, SYSCALL_VECTOR, WRITE, fd_arg,
+    self, CLOCK_GETTIME, CLONE, CLOSE, EXIT, EXIT_GROUP, FCNTL, FSTAT, FUTEX, GETPID, GETTID, MADVISE, MMAP, MPROTECT,
+    MUNMAP, NANOSLEEP, NEWFSTATAT, OPENAT, READ, Return, SCHED_YIELD, SYSCALL_VECTOR, WRITE, fd_arg,
 };
 use osel_core::mmap::MAP_ANONYMOUS;
 use osel_core::user_mem::Access as MemAccess;
@@ -165,6 +165,7 @@ extern "C" fn dispatch(frame: &mut TrapFrame) -> u64 {
         Some(CLONE) => clone(frame, a0, a1),
         Some(NANOSLEEP) => nanosleep(a0, a1),
         Some(CLOCK_GETTIME) => clock_gettime(a0, a1),
+        Some(FUTEX) => futex(a0, a1, a2 as u32, a3),
         Some(GETTID) => Ok(scheduler::current_id()),
         Some(EXIT) => scheduler::exit_thread(Stop::Exit(a0 as u8), Some(*frame)),
         Some(EXIT_GROUP) => scheduler::exit_current(Stop::Exit(a0 as u8), Some(*frame)),
@@ -256,6 +257,24 @@ fn nanosleep(req: u64, rem: u64) -> KResult<u64> {
             Err(error)
         }
     }
+}
+
+/// `futex(uaddr, op, val, timeout)`: `timeout`, when `FUTEX_WAIT`, is a relative `timespec`
+fn futex(uaddr: u64, op: u64, val: u32, timeout: u64) -> KResult<u64> {
+    let relative = if timeout == 0 {
+        None
+    } else {
+        let mut bytes = [0u8; 16];
+        space().copy_from_user(timeout, &mut bytes)?;
+        Some(osel_core::clock::decode_timespec(bytes).ok_or(Errno::EINVAL)?)
+    };
+    // SAFETY: on a thread of the process, alive across the call
+    let space_id = unsafe { scheduler::current_process() }.space_id();
+    crate::futex::futex(space_id, uaddr, op, val, relative, |address| {
+        let mut word = [0u8; 4];
+        space().copy_from_user(address, &mut word)?;
+        Ok(u32::from_ne_bytes(word))
+    })
 }
 
 /// `clock_gettime(clock_id, timespec)`

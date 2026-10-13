@@ -51,6 +51,8 @@ pub enum Errno {
     ENAMETOOLONG = 36,
     /// Function not implemented
     ENOSYS = 38,
+    /// Connection timed out: a `futex` or wait deadline passed
+    ETIMEDOUT = 110,
 }
 
 impl Errno {
@@ -84,6 +86,7 @@ impl Errno {
             Errno::EROFS => "EROFS",
             Errno::ENAMETOOLONG => "ENAMETOOLONG",
             Errno::ENOSYS => "ENOSYS",
+            Errno::ETIMEDOUT => "ETIMEDOUT",
         }
     }
 }
@@ -127,6 +130,7 @@ mod tests {
             (Errno::EROFS, 30),
             (Errno::ENAMETOOLONG, 36),
             (Errno::ENOSYS, 38),
+            (Errno::ETIMEDOUT, 110),
         ];
         for (errno, code) in expected {
             assert_eq!(errno.code(), code, "{errno}");

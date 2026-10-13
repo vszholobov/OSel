@@ -33,3 +33,4 @@ pub mod vma;
 pub mod mmap;
 pub mod clock;
 pub mod sleeper;
+pub mod futex;
