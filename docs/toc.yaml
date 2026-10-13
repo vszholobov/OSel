@@ -40,6 +40,7 @@ items:
     items:
       - href: architecture/overview.md
       - href: architecture/testing.md
+      - href: architecture/tetris.md
       - name: Ядро
         items:
           - href: architecture/core/memory.md
@@ -83,10 +84,12 @@ items:
       - href: decisions/0014-file-descriptors.md
       - href: decisions/0015-threads.md
       - href: decisions/0016-lazy-anonymous-memory.md
+      - href: decisions/0017-child-processes.md
   - name: Планы
     items:
       - href: roadmap.md
       - href: design/stage-2-user-mode.md
+      - href: design/child-processes.md
       - href: design/tetris.md
       - href: debt.md
       - href: nikka.md

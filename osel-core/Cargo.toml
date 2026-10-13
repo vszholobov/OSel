@@ -10,8 +10,3 @@ x86_64 = { version = "0.15.5", default-features = false }
 bootloader_api = "0.11.17"
 pc-keyboard = "0.9"
 linked_list_allocator = "0.10"
-
-[dependencies.noto-sans-mono-bitmap]
-version = "0.3.2"
-default-features = false
-features = ["regular", "size_16", "unicode-basic-latin", "unicode-specials"]

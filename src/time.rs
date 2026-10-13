@@ -57,17 +57,18 @@ pub fn clock_ns(clock_id: u64) -> Option<u64> {
 /// with `EINTR` if the process is killed. One tick (10 ms) is the finest real wait.
 pub fn sleep_until(deadline_ns: u64) -> KResult<()> {
     loop {
+        // Kill, deadline and registration are checked with interrupts off: neither a
+        // killer nor the timer can run between the check and making us Blocked.
+        irq::disable();
         if scheduler::current_killed() {
+            irq::enable();
             return Err(Errno::EINTR);
         }
-        // checked and queued with interrupts off: the timer can't wake us in between
-        irq::disable();
         if monotonic_ns() >= deadline_ns {
             irq::enable();
             return Ok(());
         }
-        SLEEPERS.lock().add(deadline_ns, scheduler::current_id());
-        scheduler::block_current();
+        wait_until(Some(deadline_ns), scheduler::current_id());
         irq::enable();
     }
 }
@@ -76,6 +77,7 @@ pub fn sleep_until(deadline_ns: u64) -> KResult<()> {
 /// but the caller re-checks its own condition (a `futex` value, an `epoll` event) on wake.
 /// Interrupts must be off; they stay off.
 pub fn wait_until(deadline_ns: Option<u64>, thread: ThreadId) {
+    debug_assert!(!irq::are_enabled());
     if let Some(deadline) = deadline_ns {
         SLEEPERS.lock().add(deadline, thread);
     }

@@ -3,35 +3,37 @@
 //! Numbers, arguments and the choice of the way back live in `osel_core::syscall`; the
 //! list of calls is in docs/reference/syscalls.md.
 
+use crate::fs;
 use crate::gdt::{self, USER_CODE_SELECTOR, USER_DATA_SELECTOR};
+use crate::memory::UserSpace;
 use crate::memory::{PAGE_SIZE, USER_END};
 use crate::scheduler;
 use crate::user::Stop;
 use alloc::string::String;
-use core::arch::naked_asm;
-use osel_core::errno::{Errno, KResult};
-use crate::fs;
-use crate::memory::UserSpace;
 use alloc::sync::Arc;
 use alloc::vec;
-use osel_core::file::{Access, FdTable, O_CLOEXEC, O_CREAT, O_NONBLOCK, OpenDescription, encode_stat, open_access};
-use osel_core::syscall::{
-    self, ARCH_PRCTL, CLOCK_GETTIME, CLONE, CLOSE, EPOLL_CREATE1, EPOLL_CTL, EPOLL_PWAIT, EVENTFD2, EXIT, EXIT_GROUP,
-    FCNTL, FSTAT, FUTEX, GETPID, GETRANDOM, GETTID, MADVISE, MMAP, MPROTECT, MUNMAP, NANOSLEEP, NEWFSTATAT, OPENAT,
-    PRCTL, PRLIMIT64, READ, RT_SIGACTION, RT_SIGPROCMASK, Return, SCHED_GETAFFINITY, SCHED_YIELD, SIGALTSTACK,
-    SYSCALL_VECTOR, TGKILL, WRITE, fd_arg,
+use core::arch::naked_asm;
+use osel_core::errno::{Errno, KResult};
+use osel_core::file::{
+    Access, FdTable, O_CLOEXEC, O_CREAT, O_NONBLOCK, OpenDescription, encode_stat, open_access,
 };
 use osel_core::mmap::MAP_ANONYMOUS;
+use osel_core::syscall::{
+    self, ARCH_PRCTL, CLOCK_GETTIME, CLONE, CLOSE, DUP, DUP2, DUP3, EPOLL_CREATE1, EPOLL_CTL,
+    EPOLL_PWAIT, EVENTFD2, EXECVE, EXIT, EXIT_GROUP, FCNTL, FSTAT, FUTEX, GETPID, GETPPID,
+    GETRANDOM, GETTID, IOCTL, MADVISE, MMAP, MPROTECT, MUNMAP, NANOSLEEP, NEWFSTATAT, OPENAT,
+    PIPE2, PRCTL, PRLIMIT64, READ, RT_SIGACTION, RT_SIGPROCMASK, Return, SCHED_GETAFFINITY,
+    SCHED_YIELD, SIGALTSTACK, SYSCALL_VECTOR, TGKILL, WAIT4, WRITE, fd_arg,
+};
+use osel_core::trap::TrapFrame;
 use osel_core::user_mem::Access as MemAccess;
 use osel_core::vfs::{FileType, Inode, PATH_MAX, resolve};
-use osel_core::trap::TrapFrame;
 use x86_64::VirtAddr;
 use x86_64::registers::model_specific::{Efer, EferFlags, LStar, SFMask, Star};
 use x86_64::registers::rflags::RFlags;
 
 /// The program's stack pointer while the entry switches stacks
 static mut USER_RSP: u64 = 0;
-
 
 /// Turns `syscall` on: selectors in STAR, the entry in LSTAR, and the flags the CPU clears
 /// on entry. Interrupts stay off until the entry is on the kernel stack.
@@ -159,7 +161,20 @@ extern "C" fn dispatch(frame: &mut TrapFrame) -> u64 {
         Some(MUNMAP) => space().munmap(a0, a1).map(|()| 0),
         Some(MPROTECT) => space().mprotect(a0, a1, prot_arg(a2)).map(|()| 0),
         Some(MADVISE) => space().madvise(a0, a1, a2 as u32 as i32 as u64).map(|()| 0),
-        Some(GETPID) => Ok(1),
+        Some(GETPID) => Ok(unsafe { scheduler::current_process() }.pid()),
+        Some(GETPPID) => Ok(unsafe { scheduler::current_process() }.parent_pid()),
+        Some(IOCTL) => ioctl(fd_arg(a0), a1 as u32, a2),
+        Some(DUP) => files().dup(fd_arg(a0), 0, false).map(|fd| fd as u64),
+        Some(DUP2) => {
+            let old = fd_arg(a0);
+            let new = fd_arg(a1);
+            if old == new { files().get(old).map(|_| old as u64) }
+            else { files().dup_to(old, new, false).map(|fd| fd as u64) }
+        }
+        Some(DUP3) => dup3(fd_arg(a0), fd_arg(a1), a2 as u32),
+        Some(PIPE2) => pipe2(a0, a1 as u32),
+        Some(EXECVE) => execve(frame, a0, a1, a2),
+        Some(WAIT4) => wait4(fd_arg(a0) as i64, a1, a2 as u32, a3),
         Some(SCHED_YIELD) => {
             scheduler::yield_now();
             Ok(0)
@@ -231,11 +246,154 @@ const FD_CLOEXEC: u64 = 1;
 const CLONE_THREAD_FLAGS: u64 = 0x100 | 0x200 | 0x400 | 0x800 | 0x10000 | 0x40000;
 const CLONE_SETTLS: u64 = 0x80000;
 
+fn ioctl(fd: i32, request: u32, address: u64) -> KResult<u64> {
+    let stat = files().get(fd)?.stat();
+    if stat.file_type != FileType::CharDevice || stat.rdev != osel_core::devices::TTY {
+        return Err(Errno::ENOTTY);
+    }
+    match request {
+        0x5401 => space().copy_to_user(address, &crate::tty::get_termios())?,
+        0x5402..=0x5404 => {
+            let mut value = [0; 36];
+            space().copy_from_user(address, &mut value)?;
+            crate::tty::set_termios(&value, request == 0x5404)?;
+        }
+        0x5413 => space().copy_to_user(address, &crate::tty::winsize())?,
+        _ => return Err(Errno::ENOTTY),
+    }
+    Ok(0)
+}
+
+fn dup3(old: i32, new: i32, flags: u32) -> KResult<u64> {
+    if old == new || flags & !O_CLOEXEC != 0 {
+        return Err(Errno::EINVAL);
+    }
+    files()
+        .dup_to(old, new, flags & O_CLOEXEC != 0)
+        .map(|fd| fd as u64)
+}
+
+fn pipe2(address: u64, flags: u32) -> KResult<u64> {
+    space().check_user(address, 8, MemAccess::Write)?;
+    let (read, write) = crate::pipe::create(flags)?;
+    let mut table = files();
+    let read = table.insert(read, flags & O_CLOEXEC != 0)?;
+    let write = match table.insert(write, flags & O_CLOEXEC != 0) {
+        Ok(fd) => fd,
+        Err(error) => {
+            table.close(read)?;
+            return Err(error);
+        }
+    };
+    drop(table);
+    let mut bytes = [0; 8];
+    bytes[..4].copy_from_slice(&read.to_le_bytes());
+    bytes[4..].copy_from_slice(&write.to_le_bytes());
+    if let Err(error) = space().copy_to_user(address, &bytes) {
+        files().close(read)?;
+        files().close(write)?;
+        return Err(error);
+    }
+    Ok(0)
+}
+
+/// Bounded snapshots: no user pointers survive replacement of the address space.
+fn exec_strings(address: u64, budget: &mut usize) -> KResult<alloc::vec::Vec<alloc::vec::Vec<u8>>> {
+    let mut strings = alloc::vec::Vec::new();
+    if address == 0 {
+        return Ok(strings);
+    }
+    for index in 0..1024u64 {
+        let mut pointer = [0; 8];
+        space().copy_from_user(
+            address.checked_add(index * 8).ok_or(Errno::EFAULT)?,
+            &mut pointer,
+        )?;
+        let pointer = u64::from_le_bytes(pointer);
+        if pointer == 0 {
+            return Ok(strings);
+        }
+        if *budget == 0 {
+            return Err(Errno::E2BIG);
+        }
+        let value = space()
+            .copy_string_from_user(pointer, *budget)
+            .map_err(|error| {
+                if error == Errno::ENAMETOOLONG {
+                    Errno::E2BIG
+                } else {
+                    error
+                }
+            })?;
+        *budget = budget.checked_sub(value.len() + 1).ok_or(Errno::E2BIG)?;
+        strings.push(value);
+    }
+    Err(Errno::E2BIG)
+}
+
+fn execve(frame: &mut TrapFrame, path: u64, argv: u64, envp: u64) -> KResult<u64> {
+    let path = path_from_user(path)?;
+    let stat = fs::lookup(&path)?.stat();
+    if stat.file_type != FileType::Regular || stat.permissions & 0o111 == 0 {
+        return Err(Errno::EACCES);
+    }
+    let mut budget = 128 * 1024;
+    let argv = exec_strings(argv, &mut budget)?;
+    let envp = exec_strings(envp, &mut budget)?;
+    let argv: alloc::vec::Vec<&[u8]> = argv.iter().map(|v| v.as_slice()).collect();
+    let envp: alloc::vec::Vec<&[u8]> = envp.iter().map(|v| v.as_slice()).collect();
+    let loaded = crate::program::load(&path, &argv, &envp)?;
+    let next = crate::user::initial_frame(loaded.entry, loaded.rsp);
+    scheduler::exec(loaded.space)?;
+    *frame = next;
+    Ok(0)
+}
+
+fn wait4(pid: i64, status: u64, options: u32, rusage: u64) -> KResult<u64> {
+    if options & !1 != 0 {
+        return Err(Errno::EINVAL);
+    }
+    if status != 0 {
+        space().check_user(status, 4, MemAccess::Write)?;
+    }
+    if rusage != 0 {
+        space().check_user(rusage, 144, MemAccess::Write)?;
+    }
+    let Some((pid, _)) = scheduler::wait_child(pid, options & 1 != 0, |code| {
+        let mut memory = space();
+        if status != 0 { memory.check_user(status, 4, MemAccess::Write)?; }
+        if rusage != 0 { memory.check_user(rusage, 144, MemAccess::Write)?; }
+        if status != 0 { memory.copy_to_user(status, &code.to_le_bytes())?; }
+        if rusage != 0 { memory.copy_to_user(rusage, &[0; 144])?; }
+        Ok(())
+    })? else {
+        return Ok(0);
+    };
+    Ok(pid)
+}
+
 /// `clone(flags, child_stack, ptid, ctid, tls)`: starts another thread of the running
 /// process. The child returns 0 with its own stack and, with `CLONE_SETTLS`, the FS base
 /// in `tls`; the parent gets the child's thread id. Only the thread flavour Go uses; other
 /// flags are `EINVAL`.
 fn clone(frame: &TrapFrame, flags: u64, child_stack: u64, tls: u64) -> KResult<u64> {
+    if flags == (0x100 | 0x4000 | 17) {
+        let mut child = *frame;
+        child.rax = 0;
+        if child_stack != 0 {
+            if child_stack >= USER_END {
+                return Err(Errno::EINVAL);
+            }
+            child.rsp = child_stack;
+        }
+        let mut fpu = osel_core::fpu::FpuState::initial();
+        crate::fpu::save(&mut fpu);
+        return scheduler::vfork(
+            child,
+            fpu,
+            x86_64::registers::model_specific::FsBase::read().as_u64(),
+        );
+    }
     if flags & 0xff != 0 {
         // the low byte is the signal sent on exit; Go passes 0
         return Err(Errno::EINVAL);
@@ -536,7 +694,8 @@ fn write(fd: i32, buf: u64, count: u64) -> KResult<u64> {
     let count = usize::try_from(count).map_err(|_| Errno::EFAULT)?;
     // all of it or nothing: a bad buffer writes no part of it
     space().check_user(buf, count, MemAccess::Read)?;
-    let mut chunk = [0u8; 256];
+    // Writes up to PIPE_BUF must reach the pipe in one operation.
+    let mut chunk = [0u8; osel_core::pipe::PIPE_BUF];
     let mut done = 0;
     while done < count {
         let len = (count - done).min(chunk.len());
@@ -791,7 +950,7 @@ mod tests {
         let after = code!(osel_getpid, osel_getpid_after).len() as u64;
         let (frame, stop, _loaded) = run_program(code);
         assert_eq!(stop.fault().vector, 14);
-        assert_eq!(frame.rax, 1, "the pid");
+        assert!(frame.rax > 0, "a positive pid");
         assert_eq!(frame.rcx, TEXT + after, "RCX: where the call returned to");
         assert_eq!(frame.r11 & !(1 << 16), 0x202, "R11: the program's flags");
         let kept = [
@@ -833,10 +992,25 @@ mod tests {
     #[test_case]
     fn test_unknown_calls_and_descriptors() {
         let call = code!(osel_call, osel_call_end);
-        assert_eq!(run_with(call, 9999, 0, 0, 0).exit_code(), errno(Errno::ENOSYS));
-        assert_eq!(run_with(call, u64::MAX, 0, 0, 0).exit_code(), errno(Errno::ENOSYS), "-1");
-        assert_eq!(run_with(call, 0x1_0000_0000 | GETPID, 0, 0, 0).exit_code(), 1, "only the low 32 bits count");
-        assert_eq!(run_with(call, EXIT, 256, 0, 0).exit_code(), 0, "the status is 8 bits");
+        assert_eq!(
+            run_with(call, 9999, 0, 0, 0).exit_code(),
+            errno(Errno::ENOSYS)
+        );
+        assert_eq!(
+            run_with(call, u64::MAX, 0, 0, 0).exit_code(),
+            errno(Errno::ENOSYS),
+            "-1"
+        );
+        assert_eq!(
+            run_with(call, 0x1_0000_0000 | EXIT, 37, 0, 0).exit_code(),
+            37,
+            "only the low 32 bits count"
+        );
+        assert_eq!(
+            run_with(call, EXIT, 256, 0, 0).exit_code(),
+            0,
+            "the status is 8 bits"
+        );
         assert_eq!(run_with(call, EXIT_GROUP, 7, 0, 0).exit_code(), 7);
         for fd in [3, 99, 1024, u64::MAX] {
             assert_eq!(run_with(call, WRITE, fd, TEXT, 1).exit_code(), errno(Errno::EBADF), "fd {:#x}", fd);
@@ -935,8 +1109,8 @@ mod tests {
     fn test_many_runs_leak_nothing() {
         let frames = memory::used_frames();
         for _ in 0..100 {
-            let stop = run_with(code!(osel_call, osel_call_end), GETPID, 0, 0, 0);
-            assert_eq!(stop.exit_code(), 1);
+            let stop = run_with(code!(osel_call, osel_call_end), EXIT, 0, 0, 0);
+            assert_eq!(stop.exit_code(), 0);
         }
         assert_eq!(memory::used_frames(), frames);
     }
@@ -1157,7 +1331,9 @@ mod file_tests {
     fn test_dirfd() {
         let call = code!(osel_any_call, osel_any_call_end);
         let with_dirfd = |dirfd: u64, path: &[u8]| {
-            let (_frame, stop, _loaded) = run_program(call, path, |frame| (frame.rax, frame.rdi, frame.rsi, frame.rdx) = (OPENAT, dirfd, DATA, 0));
+            let (_frame, stop, _loaded) = run_program(call, path, |frame| {
+                (frame.rax, frame.rdi, frame.rsi, frame.rdx) = (OPENAT, dirfd, DATA, 0)
+            });
             stop.exit_code()
         };
         assert_eq!(with_dirfd(99, b"/etc/motd"), 3, "an absolute path ignores dirfd");
@@ -1181,7 +1357,9 @@ mod file_tests {
         assert_eq!(open_read(b"/etc/motd", 0, 0), 0);
         let call = code!(osel_any_call, osel_any_call_end);
         let read = |fd: u64, buf: u64| {
-            let (_frame, stop, _loaded) = run_program(call, b"", |frame| (frame.rax, frame.rdi, frame.rsi, frame.rdx) = (READ, fd, buf, 4));
+            let (_frame, stop, _loaded) = run_program(call, b"", |frame| {
+                (frame.rax, frame.rdi, frame.rsi, frame.rdx) = (READ, fd, buf, 4)
+            });
             stop.exit_code()
         };
         assert_eq!(read(99, BUFFER), errno(Errno::EBADF));
@@ -1194,7 +1372,9 @@ mod file_tests {
         assert_eq!(stop.exit_code(), errno(Errno::EBADF));
         let call = code!(osel_any_call, osel_any_call_end);
         let fcntl = |fd: u64, cmd: u64, arg: u64| {
-            let (_frame, stop, _loaded) = run_program(call, b"", |frame| (frame.rax, frame.rdi, frame.rsi, frame.rdx) = (FCNTL, fd, cmd, arg));
+            let (_frame, stop, _loaded) = run_program(call, b"", |frame| {
+                (frame.rax, frame.rdi, frame.rsi, frame.rdx) = (FCNTL, fd, cmd, arg)
+            });
             stop.exit_code()
         };
         // Go's checkfds: F_GETFD on 0, 1 and 2 must work
@@ -1230,7 +1410,9 @@ mod file_tests {
         crate::keyboard::handle_scancode(0x1e);
         crate::keyboard::handle_scancode(0x9e);
         let call = code!(osel_any_call, osel_any_call_end);
-        let (_frame, stop, mut loaded) = run_program(call, b"", |frame| (frame.rax, frame.rdi, frame.rsi, frame.rdx) = (READ, 0, BUFFER, 16));
+        let (_frame, stop, mut loaded) = run_program(call, b"", |frame| {
+            (frame.rax, frame.rdi, frame.rsi, frame.rdx) = (READ, 0, BUFFER, 16)
+        });
         assert_eq!(stop.exit_code(), 1);
         let mut key = [0u8; 1];
         loaded.space.read_bytes(BUFFER, &mut key).unwrap();
@@ -1499,14 +1681,22 @@ mod memory_tests {
         let stat = loaded.space.mmap(0, P, RW, ANON).unwrap();
         let none = loaded.space.mmap(0, P, 0, ANON).unwrap();
         let read = loaded.space.mmap(0, P, PROT_READ, ANON).unwrap();
-        for (buffer, expected) in [(stat, 0), (none, errno(Errno::EFAULT)), (read, errno(Errno::EFAULT))] {
-            let (_frame, stop) = run_on(&mut loaded, |frame| (frame.rax, frame.rdi, frame.rsi) = (FSTAT, 1, buffer));
+        for (buffer, expected) in [
+            (stat, 0),
+            (none, errno(Errno::EFAULT)),
+            (read, errno(Errno::EFAULT)),
+        ] {
+            let (_frame, stop) = run_on(&mut loaded, |frame| {
+                (frame.rax, frame.rdi, frame.rsi) = (FSTAT, 1, buffer)
+            });
             assert_eq!(stop.exit_code(), expected, "{buffer:#x}");
         }
         assert_ne!(loaded.space.page_flags(VirtAddr::new(stat)), None);
         // and reads from one: the path there is empty
-        let (_frame, stop) =
-            run_on(&mut loaded, |frame| (frame.rax, frame.rdi, frame.rsi, frame.rdx) = (NEWFSTATAT, AT_FDCWD as u32 as u64, read, stat));
+        let (_frame, stop) = run_on(&mut loaded, |frame| {
+            (frame.rax, frame.rdi, frame.rsi, frame.rdx) =
+                (NEWFSTATAT, AT_FDCWD as u32 as u64, read, stat)
+        });
         assert_eq!(stop.exit_code(), errno(Errno::ENOENT));
     }
 
@@ -1696,7 +1886,6 @@ mod poll_tests {
     use crate::user::tests::{code, load};
     use crate::user::{Stop, initial_frame, run};
     use core::arch::global_asm;
-
 
     global_asm!(
         ".pushsection .rodata.osel_poll_programs, \"a\"",

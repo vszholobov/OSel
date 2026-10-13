@@ -1,7 +1,7 @@
 //! keyboard module decodes PS/2 scancodes and buffers typed characters
 
-use osel_core::keyboard::{RingBuffer, ScancodeDecoder};
 use crate::sync::IrqSpinlock;
+use osel_core::keyboard::{RingBuffer, ScancodeDecoder};
 
 pub const BUFFER_SIZE: usize = 64;
 
@@ -15,6 +15,7 @@ pub fn handle_scancode(scancode: u8) {
     if let Some(c) = DECODER.lock().decode(scancode) {
         // when nobody reads the input it is dropped
         BUFFER.lock().push(c);
+        crate::tty::notify_input();
     }
 }
 
@@ -59,10 +60,16 @@ mod tests {
         let mut command: Port<u8> = Port::new(0x64);
         let mut data: Port<u8> = Port::new(0x60);
         // the interrupt handler has to consume the previous byte first
-        wait_until("keyboard interrupt to read the previous byte", || status() & STATUS_OUTPUT_FULL == 0);
-        wait_until("controller to accept a command", || status() & STATUS_INPUT_FULL == 0);
+        wait_until("keyboard interrupt to read the previous byte", || {
+            status() & STATUS_OUTPUT_FULL == 0
+        });
+        wait_until("controller to accept a command", || {
+            status() & STATUS_INPUT_FULL == 0
+        });
         unsafe { command.write(0xd2) }; // write keyboard output buffer
-        wait_until("controller to accept data", || status() & STATUS_INPUT_FULL == 0);
+        wait_until("controller to accept data", || {
+            status() & STATUS_INPUT_FULL == 0
+        });
         unsafe { data.write(scancode) };
     }
 
@@ -70,7 +77,9 @@ mod tests {
         for &scancode in scancodes {
             inject_scancode(scancode);
         }
-        wait_until("the last byte to be handled", || status() & STATUS_OUTPUT_FULL == 0);
+        wait_until("the last byte to be handled", || {
+            status() & STATUS_OUTPUT_FULL == 0
+        });
     }
 
     fn drain() -> String {

@@ -27,6 +27,8 @@ pub enum FileType {
     Directory,
     /// A device read and written byte by byte, like `/dev/tty`
     CharDevice,
+    /// An anonymous byte-stream pipe
+    Fifo,
 }
 
 impl FileType {
@@ -36,6 +38,7 @@ impl FileType {
             FileType::Regular => 0o100000,
             FileType::Directory => 0o040000,
             FileType::CharDevice => 0o020000,
+            FileType::Fifo => 0o010000,
         }
     }
 }
@@ -225,15 +228,26 @@ mod tests {
         fn stat(&self) -> Stat {
             let (ino, _, data, _) = self.node();
             match data {
-                Some(data) => {
-                    Stat { ino: *ino, file_type: FileType::Regular, permissions: 0o644, size: data.len() as u64, ..Stat::default() }
-                }
-                None => Stat { ino: *ino, file_type: FileType::Directory, permissions: 0o755, ..Stat::default() },
+                Some(data) => Stat {
+                    ino: *ino,
+                    file_type: FileType::Regular,
+                    permissions: 0o644,
+                    size: data.len() as u64,
+                    ..Stat::default()
+                },
+                None => Stat {
+                    ino: *ino,
+                    file_type: FileType::Directory,
+                    permissions: 0o755,
+                    ..Stat::default()
+                },
             }
         }
 
         fn read_at(&self, offset: u64, buf: &mut [u8]) -> KResult<usize> {
-            let Some(data) = &self.node().2 else { return Err(Errno::EISDIR) };
+            let Some(data) = &self.node().2 else {
+                return Err(Errno::EISDIR);
+            };
             let start = (offset as usize).min(data.len());
             let len = (data.len() - start).min(buf.len());
             buf[..len].copy_from_slice(&data[start..start + len]);

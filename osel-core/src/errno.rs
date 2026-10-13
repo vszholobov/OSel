@@ -23,10 +23,14 @@ pub enum Errno {
     ENOEXEC = 8,
     /// Bad file descriptor
     EBADF = 9,
+    /// No unwaited-for child process
+    ECHILD = 10,
     /// Try again: nothing to read without waiting
     EAGAIN = 11,
     /// Out of memory
     ENOMEM = 12,
+    /// Permission denied
+    EACCES = 13,
     /// Bad address
     EFAULT = 14,
     /// File exists
@@ -47,6 +51,8 @@ pub enum Errno {
     ENOSPC = 28,
     /// Read-only file system
     EROFS = 30,
+    /// Broken pipe: no reader remains
+    EPIPE = 32,
     /// File name too long
     ENAMETOOLONG = 36,
     /// Function not implemented
@@ -72,8 +78,10 @@ impl Errno {
             Errno::E2BIG => "E2BIG",
             Errno::ENOEXEC => "ENOEXEC",
             Errno::EBADF => "EBADF",
+            Errno::ECHILD => "ECHILD",
             Errno::EAGAIN => "EAGAIN",
             Errno::ENOMEM => "ENOMEM",
+            Errno::EACCES => "EACCES",
             Errno::EFAULT => "EFAULT",
             Errno::EEXIST => "EEXIST",
             Errno::ENODEV => "ENODEV",
@@ -84,6 +92,7 @@ impl Errno {
             Errno::ENOTTY => "ENOTTY",
             Errno::ENOSPC => "ENOSPC",
             Errno::EROFS => "EROFS",
+            Errno::EPIPE => "EPIPE",
             Errno::ENAMETOOLONG => "ENAMETOOLONG",
             Errno::ENOSYS => "ENOSYS",
             Errno::ETIMEDOUT => "ETIMEDOUT",
@@ -116,8 +125,10 @@ mod tests {
             (Errno::E2BIG, 7),
             (Errno::ENOEXEC, 8),
             (Errno::EBADF, 9),
+            (Errno::ECHILD, 10),
             (Errno::EAGAIN, 11),
             (Errno::ENOMEM, 12),
+            (Errno::EACCES, 13),
             (Errno::EFAULT, 14),
             (Errno::EEXIST, 17),
             (Errno::ENODEV, 19),
@@ -128,6 +139,7 @@ mod tests {
             (Errno::ENOTTY, 25),
             (Errno::ENOSPC, 28),
             (Errno::EROFS, 30),
+            (Errno::EPIPE, 32),
             (Errno::ENAMETOOLONG, 36),
             (Errno::ENOSYS, 38),
             (Errno::ETIMEDOUT, 110),

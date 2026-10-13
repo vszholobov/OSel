@@ -1,14 +1,14 @@
 /// CPU interrupts module
 use crate::gdt;
 use crate::keyboard;
-use core::sync::atomic::{AtomicU64, Ordering};
-use osel_core::pit;
-use lazy_static::lazy_static;
-use pic8259::ChainedPics;
 use crate::sync::IrqSpinlock;
+use core::sync::atomic::{AtomicU64, Ordering};
+use lazy_static::lazy_static;
+use osel_core::exception::{Details, ExceptionReport, Frame};
+use osel_core::pit;
+use pic8259::ChainedPics;
 use x86_64::instructions::port::Port;
 use x86_64::registers::control::Cr2;
-use osel_core::exception::{Details, ExceptionReport, Frame};
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
 
 /// Hardware interrupts are remapped right after the 32 CPU exception vectors
@@ -253,7 +253,13 @@ fn read_cmos_datetime() -> osel_core::clock::DateTime {
     let status_b = cmos(0x0b);
     let binary = status_b & 0x04 != 0;
     let hour_24 = status_b & 0x02 != 0;
-    let decode = |value: u8| if binary { value } else { (value >> 4) * 10 + (value & 0x0f) };
+    let decode = |value: u8| {
+        if binary {
+            value
+        } else {
+            (value >> 4) * 10 + (value & 0x0f)
+        }
+    };
     let second = decode(cmos(0x00));
     let minute = decode(cmos(0x02));
     let raw_hour = cmos(0x04);
@@ -398,6 +404,7 @@ extern "x86-interrupt" fn timer_interrupt_handler(stack_frame: InterruptStackFra
     // wake sleepers whose deadline passed, then let the next thread run
     crate::time::wake_due();
     // after the end of interrupt and with no lock held: the next thread may run for a while
+    crate::tty::poll_serial();
     crate::scheduler::tick(stack_frame.code_segment.rpl() == x86_64::PrivilegeLevel::Ring3);
 }
 

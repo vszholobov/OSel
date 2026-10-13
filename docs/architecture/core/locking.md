@@ -44,7 +44,10 @@ description: Блокировки OSel — IrqSpinlock, отчёт о взаим
 | `ALLOCATOR` | `src/allocator.rs` | куча | глобальный аллокатор, `with_allocator` |
 | `MEMORY` | `src/memory.rs` | таблица страниц и аллокатор страниц | `with_memory`; page fault программы на нетронутой странице (`UserSpace::fault`), когда ядро не держит ни одной блокировки |
 | `TTY_TEXT` | `src/tty.rs` | недособранный символ UTF-8 вывода терминала между вызовами `write` | `Tty::write`; печать — после того, как блокировка отпущена |
-| `TTY_PENDING` | `src/tty.rs` | байты набранного символа, не поместившиеся в прошлое чтение | `Tty::read` |
+| `TTY_INPUT` | `src/tty.rs` | режимы termios и буфер терминального ввода | `Tty::read`, `get_termios`, `set_termios` |
+| `TTY_SERIAL_INPUT` | `src/tty.rs` | байты COM1 до обработки читающим потоком | таймер через `poll_serial`, `Tty::read` |
+| `TTY_WAITERS` | `src/tty.rs` | потоки, ожидающие терминальный ввод | `Tty::read`, `notify_input`, `forget`; ёмкость выделяется при загрузке |
+| `TTY_OUTPUT` | `src/tty.rs` | занятость терминального вывода и очередь писателей | `OutputGuard`, `forget`; ожидающие спят без спинлока, вывод идёт с разрешёнными прерываниями |
 | `OFFSET` | `osel-core/src/file.rs` | смещение описания открытого файла (`Spinlock`, без выключения прерываний) | `OpenDescription::read`, `write` для файлов со смещением |
 | `SCHEDULER` | `src/scheduler.rs` | потоки, очередь готовых, текущий поток | `schedule`, `spawn_*`, `wake`, `block_current`, `exit_current`, `finish_switch`; из обработчика таймера через `tick`. Через `switch_to` не переносится |
 | `STACK_SLOTS` | `src/scheduler.rs` | места стеков ядра | создание и освобождение стека потока |
@@ -52,10 +55,15 @@ description: Блокировки OSel — IrqSpinlock, отчёт о взаим
 | `FILES` | `src/scheduler.rs`, поле `Process` | таблица дескрипторов процесса, по одной на процесс | `files()`: найти, добавить, закрыть дескриптор; не держится на чтении и записи |
 | `PROCESS_EXIT` | `src/scheduler.rs`, поле `Process` | итог процесса, по одной на процесс | `exit_current`, `Process::wait` |
 | `PROCESS_WAITER` | `src/scheduler.rs`, поле `Process` | поток, который ждёт процесс | `Process::wait`, `exit_current` |
+| `CHILDREN` | `src/scheduler.rs`, поле `Process` | дочерние процессы и ещё не забранные результаты завершения | `vfork`, `wait_child`, завершение родителя; перед ожиданием ребёнка отпускается |
+| `CHILD_WAITERS` | `src/scheduler.rs`, поле `Process` | потоки родителя, ожидающие завершение ребёнка | `wait_child`, завершение ребёнка; пробуждение берёт `SCHEDULER` |
+| `VFORK` | `src/scheduler.rs`, поле `Process` | ожидание родителя до `exec` или завершения ребёнка | `release_vfork`; блокировка отпускается до пробуждения |
 | `SLEEPERS` | `src/time.rs` | потоки, ждущие до срока (`nanosleep`, тайм-ауты) | `time::sleep_until`, `wait_until`, `wake_due` из таймера |
 | `REALTIME_BASE` | `src/time.rs` | реальное время в момент нуля монотонных часов | `time::init`, `realtime_ns` |
 | `FUTEXES` | `src/futex.rs` | потоки, ждущие на `futex` по адресу | `futex::futex`, `wake` |
 | `POLL_WAITERS` | `src/poll.rs` | потоки, ждущие в `epoll_pwait` | `poll::epoll_pwait`, `notify` |
+| `PIPE` | `src/pipe.rs` | ограниченный буфер и открытые концы одного канала | чтение, запись, закрытие конца; перед сном отпускается |
+| `PIPE_WAITERS` | `src/pipe.rs` | потоки, ожидающие данные или место в канале | чтение, запись, закрытие конца, удаление потока; пробуждение берёт `SCHEDULER` |
 | `EVENTFD`, `EPOLL` | `osel-core/src/poll.rs` | счётчик eventfd и список наблюдения epoll (`Spinlock`) | `EventFd`, `Epoll` |
 | `ROOT_FS` | `src/fs.rs` | корневая файловая система | `fs::init`, `fs::root`; держится только на время копирования `Arc` |
 

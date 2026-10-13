@@ -54,14 +54,16 @@ pub fn futex(
 /// Sleeps while the word at the key still equals `val`. Returns 0 when woken, `EAGAIN` if
 /// the value already differs, `ETIMEDOUT` at the deadline, `EINTR` on a kill.
 fn wait(key: FutexKey, val: u32, deadline: Option<u64>, reader: &mut impl FnMut(u64) -> KResult<u32>) -> KResult<u64> {
-    if scheduler::current_killed() {
-        return Err(Errno::EINTR);
-    }
     // interrupts off so no waker runs between the value check and the enqueue; one CPU, so
     // this is enough. The read goes through the physical map, not a fault, so holding no
     // futex lock yet is fine.
     irq::disable();
     let result = (|| {
+        // Killing must be checked in the same critical section as registration. A
+        // kill before the thread becomes Blocked otherwise has nobody to wake.
+        if scheduler::current_killed() {
+            return Err(Errno::EINTR);
+        }
         if reader(key.address)? != val {
             return Err(Errno::EAGAIN);
         }

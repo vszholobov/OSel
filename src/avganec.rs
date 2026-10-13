@@ -3,11 +3,12 @@
 //! Works the same way under UEFI (GOP) and BIOS (VESA). The drawing itself lives in
 //! `osel_core::console`, here is only the global console and the print macros.
 
+use crate::sync::IrqSpinlock;
 use bootloader_api::info::FrameBuffer;
 use core::fmt;
 use core::panic::PanicInfo;
 use osel_core::console::Console;
-use crate::sync::IrqSpinlock;
+use osel_core::font::Font;
 use x86_64::instructions::interrupts;
 
 pub use osel_core::console::Color;
@@ -50,8 +51,12 @@ pub static WRITER: IrqSpinlock<Option<Console<'static>>> = IrqSpinlock::new("WRI
 pub fn init(framebuffer: Option<FrameBuffer>) {
     let console = framebuffer.and_then(|fb| {
         let info = fb.info();
-        Console::new(fb.into_buffer(), info)
-            .map_err(|error| crate::serial_println!("avganec: framebuffer {:?} is not usable: {:?}", info, error))
+        // Keep an 80x25 terminal even when firmware falls back to a small mode.
+        let font = Font::for_screen(info.width, info.height);
+        Console::new_with_font(fb.into_buffer(), info, font)
+            .map_err(|error| {
+                crate::serial_println!("avganec: framebuffer {:?} is not usable: {:?}", info, error)
+            })
             .ok()
     });
     *WRITER.lock() = console;
@@ -85,12 +90,23 @@ pub fn panic_screen(info: &PanicInfo) -> bool {
     if let Some(console) = WRITER.lock().as_mut() {
         console.set_colors(Color::WHITE, Color::RED);
         console.clear();
-        let _ = write!(console, "OSel crashed :(\nOSel {}, commit {}\n\n{}\n", crate::VERSION, crate::COMMIT, info);
+        let _ = write!(
+            console,
+            "OSel crashed :(\nOSel {}, commit {}\n\n{}\n",
+            crate::VERSION,
+            crate::COMMIT,
+            info
+        );
     }
     // the framebuffer is never read back by the kernel, make sure the writes happen
     core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
     unsafe { crate::cereal::SERIAL1.force_unlock() };
-    crate::serial_println!("OSel {} (commit {}) crashed: {}", crate::VERSION, crate::COMMIT, info);
+    crate::serial_println!(
+        "OSel {} (commit {}) crashed: {}",
+        crate::VERSION,
+        crate::COMMIT,
+        info
+    );
     true
 }
 
@@ -103,7 +119,10 @@ mod tests {
         println!("test_println_simple output");
         let shown = with_console(|console| {
             let row = console.cursor().0 - 1;
-            "test_println_simple output".chars().enumerate().all(|(i, c)| console.cell_shows(row, i, c))
+            "test_println_simple output"
+                .chars()
+                .enumerate()
+                .all(|(i, c)| console.cell_shows(row, i, c))
         });
         assert_eq!(shown, Some(true));
     }
@@ -121,7 +140,11 @@ mod tests {
         }
         let (row, column) = with_console(|c| c.cursor()).expect("no framebuffer");
         let rows = with_console(|c| c.rows()).unwrap();
-        assert_eq!((row, column), (rows - 1, 0), "the screen is full and scrolled");
+        assert_eq!(
+            (row, column),
+            (rows - 1, 0),
+            "the screen is full and scrolled"
+        );
     }
 
     #[test_case]
@@ -131,7 +154,9 @@ mod tests {
         let shown = with_console(|console| {
             // println moved the cursor to the start of the next line
             let row = console.cursor().0 - 1;
-            s.chars().enumerate().all(|(i, c)| console.cell_shows(row, i, c))
+            s.chars()
+                .enumerate()
+                .all(|(i, c)| console.cell_shows(row, i, c))
         });
         assert_eq!(shown, Some(true));
     }
@@ -143,7 +168,11 @@ mod tests {
         print!("cd");
         let shown = with_console(|console| {
             let (row, column) = console.cursor();
-            column == 4 && "abcd".chars().enumerate().all(|(i, c)| console.cell_shows(row, i, c))
+            column == 4
+                && "abcd"
+                    .chars()
+                    .enumerate()
+                    .all(|(i, c)| console.cell_shows(row, i, c))
         });
         assert_eq!(shown, Some(true));
         println!();
@@ -161,6 +190,25 @@ mod tests {
     #[test_case]
     fn test_screen_is_big_enough() {
         let (columns, rows) = with_console(|c| (c.columns(), c.rows())).expect("no framebuffer");
-        assert!(columns >= 80 && rows >= 25, "{}x{} text cells", columns, rows);
+        assert!(
+            columns >= 80 && rows >= 25,
+            "{}x{} text cells",
+            columns,
+            rows
+        );
+    }
+
+    #[test_case]
+    fn test_console_font_matches_framebuffer() {
+        with_console(|c| {
+            let info = c.info();
+            let font = Font::for_screen(info.width, info.height);
+            assert_eq!(c.scale(), 1);
+            assert_eq!(c.cell_width(), font.width());
+            assert_eq!(c.line_height(), font.height());
+            assert_eq!(c.rows(), info.height / c.line_height());
+            assert_eq!(c.columns(), info.width / c.cell_width());
+        })
+        .expect("no framebuffer");
     }
 }

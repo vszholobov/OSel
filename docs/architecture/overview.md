@@ -39,11 +39,12 @@ description: Обзор OSel — из каких крейтов и модуле�
 | `time` | `src/time.rs` | монотонные и реальные часы, сон до срока (`SLEEPERS`) | [потоки](core/threads.md#time) |
 | `futex` | `src/futex.rs` | `futex`: ожидание и пробуждение потоков по адресу (`FUTEXES`) | [потоки](core/threads.md#futex) |
 | `poll` | `src/poll.rs` | блокирующий `epoll_pwait` и пробуждение при записи в eventfd (`POLL_WAITERS`) | [открытые файлы](core/fs.md#epoll) |
+| `pipe` | `src/pipe.rs` | концы анонимного канала, блокирующее чтение и запись, пробуждение при закрытии | [Каналы](core/fs.md#pipes) |
 | `security` | `src/security.rs` | враждебные программы-тесты изоляции ring 3 (только тесты) | [изоляция программ](core/security.md) |
 | `memory` | `src/memory.rs` | таблица страниц, пул физических страниц, `with_memory`, `UserSpace` | [Память](core/memory.md) |
 | `program` | `src/program.rs` | загрузка программы из файловой системы в `UserSpace`, стек главного потока | [Программы](core/programs.md) |
 | `fs` | `src/fs.rs` | монтирует ramdisk как корень с `/dev`, `lookup`, `file_for`, `read_file` | [Файлы и ramdisk](core/fs.md) |
-| `tty` | `src/tty.rs` | терминал: запись на экран и в порт, чтение клавиатуры | [Файлы и ramdisk](core/fs.md#open-files) |
+| `tty` | `src/tty.rs` | терминал: экран и порт, ввод PS/2 и COM1, режимы и очередь ожидающих потоков | [Файлы и ramdisk](core/fs.md#open-files) |
 | `allocator` | `src/allocator.rs` | куча ядра и глобальный аллокатор | [Память](core/memory.md#heap) |
 | `sync` | `src/sync.rs` | `IrqSpinlock` — блокировка, выключающая прерывания | [Блокировки](core/locking.md) |
 | `qemuno` | `src/qemuno.rs` | выход из QEMU через устройство `isa-debug-exit` | [Как устроены тесты](testing.md) |
@@ -54,6 +55,7 @@ description: Обзор OSel — из каких крейтов и модуле�
 | Модуль | Где | Что делает | Страница |
 |---|---|---|---|
 | `console` | `osel-core/src/console.rs` | отрисовка текста в любой байтовый буфер | [Консоль](drivers/console.md) |
+| `font` | `osel-core/src/font.rs` | встроенные растры шрифта 8×16 и 16×32, выбор размера и глифа | [Консоль](drivers/console.md#font) |
 | `keyboard` | `osel-core/src/keyboard.rs` | `RingBuffer`, `ScancodeDecoder` | [Клавиатура](drivers/keyboard.md) |
 | `pit` | `osel-core/src/pit.rs` | делитель таймера, маски PIC, распознавание ложных IRQ | [Прерывания](core/interrupts.md#pic-pit) |
 | `memory` | `osel-core/src/memory.rs` | раскладка адресов, `RegionFrameAllocator`, `map_range`, `unmap_range`, `protect_range`, `prune_empty_tables` | [Память](core/memory.md) |
@@ -64,6 +66,8 @@ description: Обзор OSel — из каких крейтов и модуле�
 | `sleeper` | `osel-core/src/sleeper.rs` | очередь потоков, ждущих до срока | [потоки](core/threads.md#time) |
 | `futex` | `osel-core/src/futex.rs` | очереди ожидания `futex` по адресу | [потоки](core/threads.md#futex) |
 | `poll` | `osel-core/src/poll.rs` | `eventfd` и `epoll`: счётчик и список наблюдения | [открытые файлы](core/fs.md#epoll) |
+| `pipe` | `osel-core/src/pipe.rs` | ограниченный буфер канала, EOF, EPIPE и готовность к вводу-выводу | [Каналы](core/fs.md#pipes) |
+| `terminal` | `osel-core/src/terminal.rs` | Linux termios, буфер терминала, построчный ввод и эхо | [Файлы и ramdisk](core/fs.md#open-files) |
 | `frames` | `osel-core/src/frames.rs` | интерфейс `FrameSource`, `FramePool` с освобождением страниц | [Память](core/memory.md#frames) |
 | `heap` | `osel-core/src/heap.rs` | `FixedSizeBlockAllocator` | [Память](core/memory.md#heap) |
 | `exception` | `osel-core/src/exception.rs` | текст отчёта об исключении, `FixedBuf` | [Прерывания](core/interrupts.md#exceptions) |
@@ -100,7 +104,7 @@ description: Обзор OSel — из каких крейтов и модуле�
    11. `interrupts::init_pics` — сброс буфера клавиатуры, PIC, таймер на 100 Гц;
    12. `time::init`, `futex::init`, `poll::init` — часы и очереди ожидания;
    13. включает прерывания.
-4. Ядро печатает `/etc/motd` из ramdisk, запускает `/bin/hello` (он печатает «Hello from ring 3!»), затем «OSel ready to go!» на экран и в последовательный порт, затем `echo_keyboard` печатает нажатые клавиши и спит в `hlt`, пока нет ввода.
+4. Ядро печатает `/etc/motd` из ramdisk, запускает `/bin/hello` (он печатает «Hello from ring 3!»), затем «OSel ready to go!» на экран и в последовательный порт. При наличии `/bin/tetris` запускается [одиночная игра](tetris.md); после её выхода `echo_keyboard` печатает нажатые клавиши и спит в `hlt`, пока нет ввода.
 
 После `osel::init` то, что передал загрузчик (карта памяти, ramdisk, таблицы ACPI), доступно через `osel::boot_info()`.
 

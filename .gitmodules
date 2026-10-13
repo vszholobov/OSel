@@ -1,0 +1,3 @@
+[submodule "apps/tetris"]
+	path = apps/tetris
+	url = https://github.com/vszholobov/Tetris.git
