@@ -1,0 +1,13 @@
+[package]
+name = "clear"
+description = "Clear an ANSI terminal through the Linux write syscall"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

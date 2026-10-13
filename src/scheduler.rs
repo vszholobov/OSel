@@ -17,8 +17,10 @@ use crate::sync::IrqSpinlock;
 use crate::user::{Stop, Trap};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
+use alloc::vec::Vec;
 use core::arch::naked_asm;
+use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use osel_core::errno::{Errno, KResult};
 use osel_core::file::FdTable;
@@ -74,15 +76,27 @@ pub struct Exit {
 /// (`clone` makes more). The locks guard every access from a thread or the page-fault
 /// handler; see the locking section of `docs/architecture/core/threads.md`.
 pub struct Process {
-    space: IrqSpinlock<UserSpace>,
+    space: UnsafeCell<Arc<IrqSpinlock<UserSpace>>>,
     files: IrqSpinlock<FdTable>,
-    level_4: PhysFrame,
+    level_4: AtomicU64,
+    pid: u64,
+    parent: Weak<Process>,
+    children: IrqSpinlock<BTreeMap<u64, Arc<Process>>>,
+    child_waiters: IrqSpinlock<Vec<ThreadId>>,
+    vfork: IrqSpinlock<Option<Arc<Vfork>>>,
+    completed: AtomicBool,
     killed: AtomicBool,
     /// Live threads; the last one out records the exit and wakes the waiter
     threads: AtomicU64,
     exit: IrqSpinlock<Option<Exit>>,
     waiter: IrqSpinlock<Option<ThreadId>>,
 }
+
+struct Vfork {
+    done: AtomicBool,
+    caller: ThreadId,
+}
+static NEXT_PID: AtomicU64 = AtomicU64::new(1);
 
 // SAFETY: the address space and the descriptors are only reached through the locks; the
 // waiter takes them back after the process died
@@ -93,9 +107,15 @@ impl Process {
     pub fn new(space: UserSpace, files: FdTable) -> Arc<Process> {
         let level_4 = space.level_4_frame();
         Arc::new(Process {
-            space: IrqSpinlock::new("MM", space),
+            space: UnsafeCell::new(Arc::new(IrqSpinlock::new("MM", space))),
             files: IrqSpinlock::new("FILES", files),
-            level_4,
+            level_4: AtomicU64::new(level_4.start_address().as_u64()),
+            pid: NEXT_PID.fetch_add(1, Ordering::SeqCst),
+            parent: Weak::new(),
+            children: IrqSpinlock::new("CHILDREN", BTreeMap::new()),
+            child_waiters: IrqSpinlock::new("CHILD_WAITERS", Vec::with_capacity(MAX_THREADS)),
+            vfork: IrqSpinlock::new("VFORK", None),
+            completed: AtomicBool::new(false),
             killed: AtomicBool::new(false),
             threads: AtomicU64::new(1),
             exit: IrqSpinlock::new("PROCESS_EXIT", None),
@@ -107,7 +127,9 @@ impl Process {
     /// kernel never dereferences a program address while holding it (it goes through the
     /// physical map), so the page-fault handler may take it too.
     pub(crate) fn lock_space(&self) -> crate::sync::IrqSpinlockGuard<'_, UserSpace> {
-        self.space.lock()
+        // Only single-threaded exec can replace this Arc, with interrupts disabled and
+        // no outstanding MM guard. All other accesses merely borrow the shared lock.
+        unsafe { &*self.space.get() }.lock()
     }
 
     /// The descriptors, locked for the call. Held only to look up or change a descriptor,
@@ -119,12 +141,26 @@ impl Process {
     /// An id unique to this address space while it lives: its level 4 table frame. Used to
     /// key `futex` waits so two processes with the same address don't collide.
     pub(crate) fn space_id(&self) -> u64 {
-        self.level_4.start_address().as_u64()
+        self.level_4.load(Ordering::SeqCst)
     }
 
     /// Ends the process the next time one of its threads would return to ring 3
     pub fn kill(&self) {
         self.killed.store(true, Ordering::SeqCst);
+        let mut guard = SCHEDULER.lock();
+        if let Some(scheduler) = guard.as_mut() {
+            for (&id, thread) in &mut scheduler.threads {
+                if thread.state == State::Blocked
+                    && thread
+                        .process
+                        .as_deref()
+                        .is_some_and(|p| core::ptr::eq(p, self))
+                {
+                    thread.state = State::Ready;
+                    scheduler.policy.add(id);
+                }
+            }
+        }
     }
 
     pub fn is_killed(&self) -> bool {
@@ -133,7 +169,7 @@ impl Process {
 
     /// Whether the process ended and nobody took its exit yet
     pub fn has_exited(&self) -> bool {
-        self.exit.lock().is_some()
+        self.completed.load(Ordering::SeqCst) && self.exit.lock().is_some()
     }
 
     /// Waits until the whole process ended; one waiter at a time
@@ -143,7 +179,11 @@ impl Process {
             // checked and marked with interrupts off: the exit can't slip in between
             interrupts::disable();
             // taken out first: the lock goes before interrupts come back
-            let exit = self.exit.lock().take();
+            let exit = if self.completed.load(Ordering::SeqCst) {
+                self.exit.lock().take()
+            } else {
+                None
+            };
             if let Some(exit) = exit {
                 interrupts::enable();
                 return exit;
@@ -156,13 +196,142 @@ impl Process {
 
     /// The space and the descriptors back, after the process ended
     pub fn into_parts(self) -> (UserSpace, FdTable) {
-        (self.space.into_inner(), self.files.into_inner())
+        let mm = Arc::into_inner(self.space.into_inner())
+            .expect("a child still shares the address space");
+        (mm.into_inner(), self.files.into_inner())
+    }
+
+    pub(crate) fn pid(&self) -> u64 {
+        self.pid
+    }
+    pub(crate) fn parent_pid(&self) -> u64 {
+        self.parent.upgrade().map_or(0, |p| p.pid)
+    }
+
+    fn release_vfork(&self) {
+        let wait = self.vfork.lock().take();
+        if let Some(wait) = wait {
+            wait.done.store(true, Ordering::SeqCst);
+            wake(wait.caller);
+        }
     }
 }
 
-/// Whether two processes are the same one
-fn same_process(a: &Arc<Process>, b: &Arc<Process>) -> bool {
-    Arc::ptr_eq(a, b)
+/// A separate descriptor table and a shared address space until exec or exit.
+pub(crate) fn vfork(frame: TrapFrame, fpu: FpuState, fs_base: u64) -> KResult<u64> {
+    let parent = unsafe { current_process_arc() };
+    if parent.children.lock().len() >= 128 {
+        return Err(Errno::EAGAIN);
+    }
+    let wait = Arc::new(Vfork {
+        done: AtomicBool::new(false),
+        caller: current_id(),
+    });
+    let pid = NEXT_PID.fetch_add(1, Ordering::SeqCst);
+    let child = Arc::new(Process {
+        space: UnsafeCell::new(unsafe { &*parent.space.get() }.clone()),
+        files: IrqSpinlock::new("FILES", parent.lock_files().clone()),
+        level_4: AtomicU64::new(parent.space_id()),
+        pid,
+        parent: Arc::downgrade(&parent),
+        children: IrqSpinlock::new("CHILDREN", BTreeMap::new()),
+        child_waiters: IrqSpinlock::new("CHILD_WAITERS", Vec::with_capacity(MAX_THREADS)),
+        vfork: IrqSpinlock::new("VFORK", Some(wait.clone())),
+        completed: AtomicBool::new(false),
+        killed: AtomicBool::new(false),
+        threads: AtomicU64::new(1),
+        exit: IrqSpinlock::new("PROCESS_EXIT", None),
+        waiter: IrqSpinlock::new("PROCESS_WAITER", None),
+    });
+    let thread = new_thread(Some(child.clone()), None, frame, fpu, fs_base)?;
+    interrupts::disable();
+    // Other parent threads could have spawned while the kernel stack was allocated.
+    if parent.children.lock().len() >= 128 || parent.is_killed() {
+        interrupts::enable();
+        return Err(Errno::EAGAIN);
+    }
+    parent.children.lock().insert(pid, child);
+    SCHEDULER.lock().as_mut().unwrap().add(thread);
+    while !wait.done.load(Ordering::SeqCst) && !parent.is_killed() {
+        block_current();
+    }
+    interrupts::enable();
+    Ok(pid)
+}
+
+/// Commits an already validated ELF. Failure before this point preserves the old image.
+pub(crate) fn exec(space: UserSpace) -> KResult<()> {
+    let process = unsafe { current_process() };
+    if process.threads.load(Ordering::SeqCst) != 1 {
+        return Err(Errno::EINVAL);
+    }
+    let level_4 = space.level_4_frame();
+    let new = Arc::new(IrqSpinlock::new("MM", space));
+    interrupts::disable();
+    let old = unsafe { core::mem::replace(&mut *process.space.get(), new) };
+    process
+        .level_4
+        .store(level_4.start_address().as_u64(), Ordering::SeqCst);
+    unsafe { Cr3::write(level_4, Cr3::read().1) };
+    x86_64::registers::model_specific::FsBase::write(VirtAddr::zero());
+    unsafe { (*CURRENT).fs_base = 0 };
+    fpu::restore(&FpuState::initial());
+    process.lock_files().close_on_exec();
+    drop(old);
+    process.release_vfork();
+    interrupts::enable();
+    Ok(())
+}
+
+/// Copies the status before reaping, atomically against other waiters and munmap.
+pub(crate) fn wait_child(pid: i64, nohang: bool, mut report: impl FnMut(u32) -> KResult<()>) -> KResult<Option<(u64, u32)>> {
+    if pid != -1 && pid <= 0 {
+        return Err(Errno::EINVAL);
+    }
+    let process = unsafe { current_process() };
+    loop {
+        interrupts::disable();
+        let mut children = process.children.lock();
+        let found = children
+            .iter()
+            .find(|(id, p)| (pid == -1 || **id == pid as u64) && p.has_exited())
+            .map(|(&id, p)| {
+                let status = match p.exit.lock().as_ref().unwrap().stop {
+                    Stop::Exit(code) => (code as u32) << 8,
+                    Stop::Killed => 9,
+                    Stop::Fault(_) => 11,
+                };
+                (id, status)
+            });
+        let exists = children.keys().any(|&id| pid == -1 || id == pid as u64);
+        if let Some((_, status)) = found {
+            if let Err(error) = report(status) {
+                drop(children);
+                interrupts::enable();
+                return Err(error);
+            }
+        }
+        let reaped = found.and_then(|(id, _)| children.remove(&id));
+        drop(children);
+        drop(reaped);
+        if found.is_some() || !exists || nohang || process.is_killed() {
+            interrupts::enable();
+            return if !exists {
+                Err(Errno::ECHILD)
+            } else if process.is_killed() {
+                Err(Errno::EINTR)
+            } else {
+                Ok(found)
+            };
+        }
+        process.child_waiters.lock().push(current_id());
+        block_current();
+        process
+            .child_waiters
+            .lock()
+            .retain(|&id| id != current_id());
+        interrupts::enable();
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -410,7 +579,14 @@ pub fn schedule() {
         // skip ids of reaped threads still queued: a killed process leaves them behind
         let next_id = loop {
             match scheduler.policy.next() {
-                Some(id) if scheduler.threads.get(&id).is_some_and(|t| t.state == State::Ready) => break id,
+                Some(id)
+                    if scheduler
+                        .threads
+                        .get(&id)
+                        .is_some_and(|t| t.state == State::Ready) =>
+                {
+                    break id;
+                }
                 Some(_) => continue,
                 None => break scheduler.idle,
             }
@@ -465,7 +641,7 @@ unsafe fn prepare_switch(prev: &mut Thread, next: &mut Thread) {
             // so the null selector first, then the base
             unsafe { FS::set_reg(SegmentSelector(0)) };
             FsBase::write(VirtAddr::new(next.fs_base));
-            process.level_4
+            PhysFrame::containing_address(x86_64::PhysAddr::new(process.space_id()))
         }
         None => next.level_4.or(unsafe { KERNEL_LEVEL_4 }).expect("scheduler is not initialized"),
     };
@@ -583,7 +759,9 @@ pub fn block_current() {
 /// Makes a blocked thread ready again
 pub fn wake(id: ThreadId) {
     let mut guard = SCHEDULER.lock();
-    let Some(scheduler) = guard.as_mut() else { return };
+    let Some(scheduler) = guard.as_mut() else {
+        return;
+    };
     if id == scheduler.idle {
         return;
     }
@@ -622,7 +800,8 @@ pub(crate) fn current_killed() -> bool {
 }
 
 /// Ends the running thread and the whole process with `stop`, `frame` and the thread's x87
-/// and SSE state: every other thread is removed, the exit recorded and the waiter woken.
+/// and SSE state: other threads are woken to leave their syscalls and release locals.
+/// The last thread publishes completion after shutting down child processes.
 /// Used by `exit_group`, a fault, a kill and a kernel thread. Nothing may be held.
 pub fn exit_current(stop: Stop, frame: Option<TrapFrame>) -> ! {
     end_current(stop, frame, true)
@@ -636,64 +815,70 @@ pub fn exit_thread(stop: Stop, frame: Option<TrapFrame>) -> ! {
 
 fn end_current(stop: Stop, frame: Option<TrapFrame>, whole_process: bool) -> ! {
     interrupts::disable();
-    let thread = unsafe { &mut *CURRENT };
-    assert_ne!(thread.id, BOOT_THREAD, "the boot thread can't exit");
-    if let Some(process) = thread.process.clone() {
+    let id = current_id();
+    assert_ne!(id, BOOT_THREAD, "the boot thread can't exit");
+    let process = unsafe { (*CURRENT).process.clone() };
+    if let Some(process) = process {
         // this thread is leaving: the last one out, or everyone when the process ends
         let was_last = process.threads.fetch_sub(1, Ordering::SeqCst) == 1;
         if whole_process || was_last {
             if whole_process {
                 process.kill();
-                reap_other_threads(&process, thread.id);
-                process.threads.store(0, Ordering::SeqCst);
             }
             let mut fpu_state = FpuState::initial();
             fpu::save(&mut fpu_state);
-            *process.exit.lock() = Some(Exit { stop, frame: frame.unwrap_or_default(), fpu: fpu_state });
+            if process.exit.lock().is_none() {
+                *process.exit.lock() = Some(Exit {
+                    stop,
+                    frame: frame.unwrap_or_default(),
+                    fpu: fpu_state,
+                });
+            }
+        }
+        if was_last {
+            // This kernel has no init/reparenting service: a process owns its children.
+            // Let blocked syscalls return and drop their Rust locals before stacks die.
+            let children = core::mem::take(&mut *process.children.lock());
+            for child in children.values() {
+                child.kill();
+            }
+            interrupts::enable();
+            for child in children.values() {
+                child.wait();
+            }
+            drop(children);
+            interrupts::disable();
+            // Kernel callers retain their root descriptor table for inspection; children
+            // must close theirs before notifying a parent (pipe EOF precedes wait).
+            if process.parent.strong_count() != 0 {
+                let files = core::mem::take(&mut *process.files.lock());
+                drop(files);
+            }
+            process.release_vfork();
+            process.completed.store(true, Ordering::SeqCst);
             let waiter = process.waiter.lock().take();
             if let Some(waiter) = waiter {
                 wake(waiter);
             }
+            if let Some(parent) = process.parent.upgrade() {
+                for &waiter in parent.child_waiters.lock().iter() {
+                    wake(waiter);
+                }
+            }
         }
     }
+    crate::futex::forget(id);
+    crate::poll::forget(id);
+    crate::time::forget(id);
+    crate::pipe::forget(id);
+    crate::tty::forget(id);
     {
         let mut guard = SCHEDULER.lock();
         let scheduler = guard.as_mut().unwrap();
-        scheduler.threads.get_mut(&thread.id).unwrap().state = State::Dead;
+        scheduler.threads.get_mut(&id).unwrap().state = State::Dead;
     }
     schedule();
     unreachable!("a dead thread was switched to");
-}
-
-/// Removes every thread of `process` but `keep` from the scheduler, freeing their kernel
-/// stacks and dropping their `Arc<Process>`. A thread blocked in `futex` or sleeping is
-/// just taken out; it will never run again, and a later wake of its id finds it gone.
-fn reap_other_threads(process: &Arc<Process>, keep: ThreadId) {
-    let doomed: alloc::vec::Vec<ThreadId> = {
-        let mut guard = SCHEDULER.lock();
-        let scheduler = guard.as_mut().unwrap();
-        scheduler
-            .threads
-            .iter()
-            .filter(|(id, thread)| **id != keep && thread.process.as_ref().is_some_and(|p| same_process(p, process)))
-            .map(|(id, _)| *id)
-            .collect()
-    };
-    for id in doomed {
-        // a reaped thread never runs its own cleanup, so drop its waits here, and take it
-        // out of the run queue so `schedule` and `wake` never meet a stale id
-        crate::futex::forget(id);
-        crate::poll::forget(id);
-        crate::time::forget(id);
-        let gone = {
-            let mut guard = SCHEDULER.lock();
-            let scheduler = guard.as_mut().unwrap();
-            scheduler.policy.remove(id);
-            scheduler.threads.remove(&id)
-        };
-        // dropped outside the lock: freeing a stack takes MEMORY and STACK_SLOTS
-        drop(gone);
-    }
 }
 
 /// The trap of a fault from ring 3, for `Stop::Fault`
@@ -974,9 +1159,18 @@ mod tests {
         let (a, b) = (start_checker(1), start_checker(2));
         // the boot thread takes turns too: 150 switches give each checker 50 turns
         let before = switches();
-        wait_ticks_until(2000, || switches() >= before + 3 * 50 || a.has_exited() || b.has_exited());
-        assert!(!a.has_exited() && !b.has_exited(), "a checker found a broken register");
-        assert!(switches() >= before + 3 * 50, "only {} switches", switches() - before);
+        wait_ticks_until(2000, || {
+            switches() >= before + 3 * 50 || a.has_exited() || b.has_exited()
+        });
+        assert!(
+            !a.has_exited() && !b.has_exited(),
+            "a checker found a broken register"
+        );
+        assert!(
+            switches() >= before + 3 * 50,
+            "only {} switches",
+            switches() - before
+        );
         a.kill();
         b.kill();
         for process in [&a, &b] {
@@ -1114,9 +1308,17 @@ mod tests {
     fn test_kernel_threads_take_turns() {
         STOP.store(false, Ordering::SeqCst);
         FINISHED.store(0, Ordering::SeqCst);
-        let threads = [spawn_kernel(|| count(0)).unwrap(), spawn_kernel(|| count(1)).unwrap()];
-        wait_ticks_until(500, || COUNTERS.iter().all(|c| c.load(Ordering::Relaxed) > 0));
-        assert!(COUNTERS.iter().all(|c| c.load(Ordering::Relaxed) > 0), "a thread never ran");
+        let threads = [
+            spawn_kernel(|| count(0)).unwrap(),
+            spawn_kernel(|| count(1)).unwrap(),
+        ];
+        wait_ticks_until(500, || {
+            COUNTERS.iter().all(|c| c.load(Ordering::Relaxed) > 0)
+        });
+        assert!(
+            COUNTERS.iter().all(|c| c.load(Ordering::Relaxed) > 0),
+            "a thread never ran"
+        );
         STOP.store(true, Ordering::SeqCst);
         wait_ticks_until(500, || FINISHED.load(Ordering::SeqCst) == 2);
         assert_eq!(FINISHED.load(Ordering::SeqCst), 2);

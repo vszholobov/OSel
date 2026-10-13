@@ -25,6 +25,12 @@ pub trait FileLike: Send + Sync {
         Err(Errno::EINVAL)
     }
 
+    /// Writes with the description's current nonblocking mode. Stream implementations
+    /// override this; ordinary files keep the simpler `write` implementation.
+    fn write_with_flags(&self, offset: u64, buf: &[u8], _nonblock: bool) -> KResult<usize> {
+        self.write(offset, buf)
+    }
+
     fn stat(&self) -> Stat;
 
     /// The node of the file system behind it, for `openat` relative to a directory
@@ -221,11 +227,12 @@ impl OpenDescription {
         if !self.access.write {
             return Err(Errno::EBADF);
         }
+        let nonblock = self.status.load(Ordering::Relaxed) & O_NONBLOCK != 0;
         if !self.file.seekable() {
-            return self.file.write(0, buf);
+            return self.file.write_with_flags(0, buf, nonblock);
         }
         let mut offset = self.offset.lock();
-        let written = self.file.write(*offset, buf)?;
+        let written = self.file.write_with_flags(*offset, buf, nonblock)?;
         *offset += written as u64;
         Ok(written)
     }
@@ -330,6 +337,39 @@ impl FdTable {
 
     pub fn cloexec(&self, fd: i32) -> KResult<bool> {
         Ok(self.entry(fd)?.cloexec)
+    }
+
+    /// Duplicates to an exact descriptor, replacing its old description atomically.
+    /// Like `dup3`, identical source and destination are invalid.
+    pub fn dup_to(&mut self, old: i32, new: i32, cloexec: bool) -> KResult<i32> {
+        if old == new {
+            return Err(Errno::EINVAL);
+        }
+        let description = self.get(old)?;
+        let index = usize::try_from(new)
+            .ok()
+            .filter(|&fd| fd < MAX_FDS)
+            .ok_or(Errno::EBADF)?;
+        if index >= self.slots.len() {
+            self.slots.resize(index + 1, None);
+        }
+        self.slots[index] = Some(FdEntry {
+            description,
+            cloexec,
+        });
+        Ok(new)
+    }
+
+    /// Drops descriptors marked close-on-exec, only after a new image is ready.
+    pub fn close_on_exec(&mut self) {
+        for slot in &mut self.slots {
+            if slot.as_ref().is_some_and(|entry| entry.cloexec) {
+                *slot = None;
+            }
+        }
+        while self.slots.last().is_some_and(Option::is_none) {
+            self.slots.pop();
+        }
     }
 
     pub fn set_cloexec(&mut self, fd: i32, cloexec: bool) -> KResult<()> {
@@ -495,6 +535,56 @@ mod tests {
     }
 
     #[test]
+    fn inherited_table_and_exec_preserve_shared_open_descriptions() {
+        let description = Arc::new(OpenDescription::new(file(b"hello"), READ, 0));
+        let mut parent = FdTable::new();
+        parent.insert(description.clone(), true).unwrap();
+        parent.dup(0, 0, false).unwrap();
+        let mut child = parent.clone();
+        child.close_on_exec();
+        assert_eq!(
+            child.get(0).err().map(|e| e.code()),
+            Some(Errno::EBADF.code())
+        );
+        assert_eq!(parent.len(), 2);
+        assert_eq!(child.len(), 1);
+        let mut byte = [0];
+        child.get(1).unwrap().read(&mut byte).unwrap();
+        assert_eq!(byte, [b'h']);
+        parent.get(0).unwrap().read(&mut byte).unwrap();
+        assert_eq!(byte, [b'e'], "inherited offsets are shared");
+        child.close(1).unwrap();
+        assert!(
+            parent.get(1).is_ok(),
+            "child close leaves parent's descriptor open"
+        );
+        assert_eq!(Arc::strong_count(&description), 3);
+    }
+
+    #[test]
+    fn duplicate_exact_fd_replaces_and_checks_before_mutation() {
+        let a = Arc::new(OpenDescription::new(file(b"a"), READ, 0));
+        let b = Arc::new(OpenDescription::new(file(b"b"), READ, 0));
+        let mut table = FdTable::new();
+        table.insert(a.clone(), false).unwrap();
+        table.insert(b.clone(), false).unwrap();
+        assert_eq!(table.dup_to(0, 1, true), Ok(1));
+        assert_eq!(
+            Arc::strong_count(&b),
+            1,
+            "the replaced description was closed"
+        );
+        assert!(Arc::ptr_eq(&table.get(1).unwrap(), &a));
+        assert_eq!(table.cloexec(1), Ok(true));
+        assert_eq!(table.dup_to(0, 0, false), Err(Errno::EINVAL));
+        assert_eq!(table.dup_to(0, MAX_FDS as i32, false), Err(Errno::EBADF));
+        assert_eq!(table.dup_to(-1, 1, false), Err(Errno::EBADF));
+        assert!(Arc::ptr_eq(&table.get(1).unwrap(), &a));
+        assert_eq!(table.dup_to(0, 12, false), Ok(12));
+        assert_eq!(table.insert(b, false), Ok(2), "holes remain available");
+    }
+
+    #[test]
     fn random_operations_match_a_model() {
         let description = Arc::new(OpenDescription::new(file(b""), READ, 0));
         let mut table = FdTable::new();
@@ -509,7 +599,9 @@ mod tests {
         for _ in 0..5000 {
             let lowest = (0..).find(|fd| !model.contains_key(fd)).unwrap();
             match random(3) {
-                0 if lowest as usize == MAX_FDS => assert_eq!(table.insert(description.clone(), false), Err(Errno::EMFILE)),
+                0 if lowest as usize == MAX_FDS => {
+                    assert_eq!(table.insert(description.clone(), false), Err(Errno::EMFILE))
+                }
                 0 => {
                     assert_eq!(table.insert(description.clone(), false), Ok(lowest));
                     model.insert(lowest, false);

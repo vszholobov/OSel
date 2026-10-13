@@ -1,7 +1,7 @@
 //! cereal module provides serial port access methods
 
-use core::sync::atomic::{AtomicBool, Ordering};
 use crate::sync::{IrqSpinlock, IrqSpinlockGuard};
+use core::sync::atomic::{AtomicBool, Ordering};
 use uart_16550::{Config, Uart16550Tty, backend::PioBackend};
 
 #[doc(hidden)]
@@ -53,11 +53,19 @@ macro_rules! serial_println {
 
 /// COM1, `None` when the machine has no working serial port (most laptops):
 /// printing to it is skipped then instead of failing
-pub static SERIAL1: IrqSpinlock<Option<Uart16550Tty<PioBackend>>> = IrqSpinlock::new("SERIAL1", None);
+pub static SERIAL1: IrqSpinlock<Option<Uart16550Tty<PioBackend>>> =
+    IrqSpinlock::new("SERIAL1", None);
 
 /// The port is probed once, on first use. Not a `lazy_static`: a panic during the
 /// probe would leave it half initialized and hang every later use, the panic path too.
 static PROBED: AtomicBool = AtomicBool::new(false);
+
+/// Drains only bytes already received; safe from the timer interrupt and absent hardware.
+pub fn receive(bytes: &mut [u8]) -> usize {
+    port()
+        .as_mut()
+        .map_or(0, |port| port.inner_mut().receive_bytes(bytes))
+}
 
 /// Locks COM1 (and disables interrupts), probing it on the first call
 #[track_caller]

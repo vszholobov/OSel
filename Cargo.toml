@@ -115,3 +115,7 @@ harness = false
 [[test]]
 name = "hv_injection"
 harness = false
+
+[[test]]
+name = "child_processes"
+harness = false

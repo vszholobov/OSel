@@ -25,6 +25,8 @@ use std::sync::mpsc;
 use std::thread::{self, sleep};
 use std::time::{Duration, Instant};
 
+mod fixtures;
+
 /// `exit_qemu(QemuExitCode::Success)` makes QEMU exit with `(0x10 << 1) | 1`
 const TEST_SUCCESS_EXIT_CODE: i32 = 33;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
@@ -35,9 +37,9 @@ const DEFAULT_RAMDISK_DIR: &str = "ramdisk";
 /// Where the bootloader looks for the ramdisk in the image, `RAMDISK_FILE_NAME` of `bootloader`
 const RAMDISK_FILE_NAME: &str = "ramdisk";
 /// Programs in user/ of the repository, each a crate of its own, added as /bin/<name>
-const USER_PROGRAMS: &[&str] = &["hello"];
+const USER_PROGRAMS: &[&str] = &["hello", "clear"];
 /// Go programs built with the host `go`, added as `/bin/<name>` when it is present
-const GO_PROGRAMS: &[&str] = &["gohello"];
+const GO_PROGRAMS: &[&str] = &["gohello", "goexec"];
 /// Their target: `ET_EXEC` at a fixed address, the kernel loads no position independent code
 const USER_TARGET: &str = "x86_64-unknown-none";
 /// Files the host leaves behind that must not make the ramdisk differ between machines
@@ -69,10 +71,18 @@ fn main() -> ExitCode {
         let ramdisk_dir = ramdisk_dir(env::var_os("OSEL_RAMDISK").as_deref(), &repository());
         let mut programs = build_user_programs(&repository())?;
         programs.extend(build_go_programs(&repository())?);
+        programs.extend(build_tetris(&repository())?);
+        let tetris_present = programs.iter().any(|(name, _)| name == "tetris");
+        if kernel
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with("child_processes-"))
+        {
+            programs.extend(fixtures::child_programs());
+        }
         let ramdisk = pack_ramdisk(&ramdisk_dir, &programs)?;
-        Ok((boot, timeout, ramdisk))
+        Ok((boot, timeout, ramdisk, tetris_present))
     });
-    let (boot, timeout, ramdisk) = match config {
+    let (boot, timeout, ramdisk, tetris_present) = match config {
         Ok(config) => config,
         Err(message) => {
             eprintln!("{message}");
@@ -121,6 +131,14 @@ fn main() -> ExitCode {
         // nothing reads the host keyboard, and QEMU must not switch the terminal to raw mode
         qemu.stdin(Stdio::null());
     }
+    let scripted_tetris = mode == Mode::Test
+        && kernel
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("tetris-"));
+    if scripted_tetris {
+        qemu.stdin(Stdio::piped());
+    }
     qemu.args(&extra_qemu_args);
     qemu.stdout(Stdio::piped());
 
@@ -128,21 +146,41 @@ fn main() -> ExitCode {
     let stdout = child.stdout.take().expect("qemu stdout is not piped");
     let exit_code = match &mode {
         Mode::Run => {
-            let output = thread::spawn(move || forward_serial_output(BufReader::new(stdout), std::io::stdout(), None));
+            // Interactive terminals need the game's cursor and clear sequences intact.
+            let output = thread::spawn(move || {
+                std::io::copy(&mut BufReader::new(stdout), &mut std::io::stdout())
+            });
             let status = child.wait().expect("failed to wait for qemu");
             let _ = output.join();
             ExitCode::from(run_exit_code(status))
         }
         Mode::Test => {
-            let output = thread::spawn(move || forward_serial_output(BufReader::new(stdout), std::io::stdout(), None));
+            let input = child.stdin.take();
+            let output = thread::spawn(move || {
+                let mut script = scripted_tetris.then(|| TetrisInput::new(tetris_present));
+                let summary = forward_serial_with_input(
+                    BufReader::new(stdout),
+                    std::io::stdout(),
+                    None,
+                    input,
+                    script.as_mut(),
+                );
+                (summary, script.is_none_or(|script| script.complete()))
+            });
             let status = wait_with_timeout(&mut child, timeout, None);
-            let summary = output.join().unwrap_or_default();
-            report(test_outcome(status, &summary, timeout))
+            let (summary, input_complete) = output.join().unwrap_or_default();
+            report(test_outcome(status, &summary, timeout).and_then(|()| {
+                input_complete
+                    .then_some(())
+                    .ok_or_else(|| "tetris input scenario did not finish".to_string())
+            }))
         }
         Mode::Expect(text) => {
             let (found_tx, found_rx) = mpsc::channel();
             let watch = Some((text.to_string(), found_tx));
-            let output = thread::spawn(move || forward_serial_output(BufReader::new(stdout), std::io::stdout(), watch));
+            let output = thread::spawn(move || {
+                forward_serial_output(BufReader::new(stdout), std::io::stdout(), watch)
+            });
             let status = wait_with_timeout(&mut child, timeout, Some(&found_rx));
             let found = found_rx.try_recv().is_ok() || output.join().is_ok_and(|summary| summary.found);
             report(expect_outcome(status, found, text, timeout))
@@ -286,13 +324,50 @@ fn build_go_programs(repository: &Path) -> Result<Vec<(String, Vec<u8>)>, String
         match result {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(programs),
             Err(error) => return Err(format!("cannot start go to build user-go/{name}: {error}")),
-            Ok(status) if !status.success() => return Err(format!("building user-go/{name} failed")),
+            Ok(status) if !status.success() => {
+                return Err(format!("building user-go/{name} failed"));
+            }
             Ok(_) => {}
         }
         let data = std::fs::read(&output).map_err(|e| format!("cannot read {}: {e}", output.display()))?;
         programs.push((name.to_string(), data));
     }
     Ok(programs)
+}
+
+/// The gitlink pins the real game's source, including its shared local library.
+fn build_tetris(repository: &Path) -> Result<Vec<(String, Vec<u8>)>, String> {
+    match Command::new("go").arg("version").output() {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(format!("cannot start go to build tetris: {error}")),
+        Ok(output) if !output.status.success() => return Err("go version failed".into()),
+        Ok(_) => {}
+    }
+    let source = repository.join("apps/tetris/client");
+    if !source.join("go.mod").is_file() {
+        return Err(
+            "tetris submodule is missing: run git submodule update --init --recursive".into(),
+        );
+    }
+    let output = repository.join("user-go/target/tetris");
+    let status = Command::new("go")
+        .args(["build", "-trimpath", "-o"])
+        .arg(&output)
+        .arg(".")
+        .current_dir(source)
+        .env("CGO_ENABLED", "0")
+        .env("GOOS", "linux")
+        .env("GOARCH", "amd64")
+        .env("GOAMD64", "v1")
+        .env("GOTOOLCHAIN", "local")
+        .status()
+        .map_err(|error| format!("cannot build tetris: {error}"))?;
+    if !status.success() {
+        return Err("building apps/tetris/client failed".into());
+    }
+    let data = std::fs::read(&output)
+        .map_err(|error| format!("cannot read {}: {error}", output.display()))?;
+    Ok(vec![("tetris".into(), data)])
 }
 
 /// Packs `dir` into a cpio archive: directories and regular files with their
@@ -383,7 +458,10 @@ impl TestSummary {
         if let Some(count) = line
             .find("Running ")
             .map(|start| &line[start + "Running ".len()..])
-            .and_then(|rest| rest.strip_suffix(" tests").or_else(|| rest.trim_end().strip_suffix(" tests")))
+            .and_then(|rest| {
+                rest.strip_suffix(" tests")
+                    .or_else(|| rest.trim_end().strip_suffix(" tests"))
+            })
             .and_then(|count| count.parse().ok())
         {
             self.expected = Some(count);
@@ -400,8 +478,60 @@ impl TestSummary {
 /// through the channel as soon as a line contains the watched text.
 fn forward_serial_output(
     reader: impl BufRead,
+    out: impl Write,
+    watch: Option<(String, mpsc::Sender<()>)>,
+) -> TestSummary {
+    forward_serial_with_input(reader, out, watch, None::<std::io::Sink>, None)
+}
+
+/// Only advance after the previous real input is acknowledged by the application.
+#[derive(Default)]
+struct TetrisInput {
+    next: usize,
+    skipped: bool,
+    allow_skip: bool,
+}
+
+impl TetrisInput {
+    fn new(tetris_present: bool) -> Self {
+        Self { allow_skip: !tetris_present, ..Self::default() }
+    }
+
+    const STEPS: &[(&str, &[u8])] = &[
+        ("TETRIS READY", b""),
+        ("TETRIS TICK", b"a"),
+        ("TETRIS INPUT key=a changed=true", b"d"),
+        ("TETRIS INPUT key=d changed=true", b"s"),
+        ("TETRIS INPUT key=s changed=true", b"q"),
+        ("TETRIS INPUT key=q changed=true", b"e"),
+        ("TETRIS INPUT key=e changed=true", b"x"),
+        ("TETRIS EXIT", b""),
+    ];
+
+    fn observe(&mut self, line: &str) -> Option<&'static [u8]> {
+        if line.trim() == "TETRIS SKIP: Go is not installed" {
+            self.skipped = self.allow_skip && self.next == 0;
+            return None;
+        }
+        let &(expected, input) = Self::STEPS.get(self.next)?;
+        if line.trim() != expected {
+            return None;
+        }
+        self.next += 1;
+        Some(input)
+    }
+
+    fn complete(&self) -> bool {
+        self.skipped || self.next == Self::STEPS.len()
+    }
+}
+
+fn forward_serial_with_input(
+    reader: impl BufRead,
     mut out: impl Write,
     watch: Option<(String, mpsc::Sender<()>)>,
+    mut input: Option<impl Write>,
+    mut script: Option<&mut TetrisInput>,
 ) -> TestSummary {
     let mut summary = TestSummary::default();
     for line in reader.split(b'\n') {
@@ -411,6 +541,13 @@ fn forward_serial_output(
             continue;
         }
         let text = String::from_utf8_lossy(&stripped);
+        if let Some(script) = script.as_mut()
+            && let Some(keys) = script.observe(&text)
+            && let Some(input) = input.as_mut()
+        {
+            let _ = input.write_all(keys);
+            let _ = input.flush();
+        }
         summary.observe(&text);
         if let Some((expected, found)) = &watch
             && text.contains(expected.as_str())
@@ -492,9 +629,10 @@ fn test_outcome(status: Option<ExitStatus>, summary: &TestSummary, timeout: Dura
         return Err(format!("qemu exit code {:?}", status.code()));
     }
     match summary.expected {
-        Some(expected) if summary.passed != expected => {
-            Err(format!("{} of {} tests reported [ok]", summary.passed, expected))
-        }
+        Some(expected) if summary.passed != expected => Err(format!(
+            "{} of {} tests reported [ok]",
+            summary.passed, expected
+        )),
         // a test kernel that exits with success before reporting anything is broken
         None if summary.passed == 0 => Err("no test reported [ok]".into()),
         _ => Ok(()),
@@ -551,6 +689,53 @@ mod tests {
     }
 
     const TIMEOUT: Duration = Duration::from_secs(60);
+
+    #[test]
+    fn tetris_input_waits_for_gravity_and_acknowledges_each_key() {
+        let mut script = TetrisInput::default();
+        assert_eq!(script.observe("TETRIS TICK"), None);
+        assert_eq!(script.observe("TETRIS READY"), Some(&b""[..]));
+        assert_eq!(script.observe("TETRIS READY"), None);
+        assert_eq!(script.observe("TETRIS TICK"), Some(&b"a"[..]));
+        assert_eq!(script.observe("TETRIS INPUT key=a changed=false"), None);
+        assert_eq!(script.observe("TETRIS INPUT key=d changed=true"), None);
+        for &(line, input) in &TetrisInput::STEPS[2..] {
+            assert_eq!(script.observe(line), Some(input));
+        }
+        assert!(script.complete());
+        assert_eq!(script.observe("TETRIS EXIT"), None);
+    }
+
+    #[test]
+    fn serial_input_uses_clean_lines_and_rejects_skip_after_start() {
+        let mut serial = Vec::new();
+        let mut script = TetrisInput::default();
+        forward_serial_with_input(
+            Cursor::new(b"\x1b[HTETRIS READY\r\nTETRIS TICK\r\n"),
+            std::io::sink(),
+            None,
+            Some(&mut serial),
+            Some(&mut script),
+        );
+        assert_eq!(serial, b"a");
+        assert!(!script.complete());
+        script.observe("TETRIS SKIP: Go is not installed");
+        assert!(!script.complete());
+    }
+
+    #[test]
+    fn tetris_skip_is_allowed_only_when_no_binary_was_built() {
+        let mut built = TetrisInput::new(true);
+        built.observe("TETRIS SKIP: Go is not installed");
+        assert!(!built.complete(), "a lookup failure must not bypass the real game test");
+        let mut missing = TetrisInput::new(false);
+        missing.observe("TETRIS SKIP: Go is not installed");
+        assert!(missing.complete());
+        let mut started = TetrisInput::new(false);
+        started.observe("TETRIS READY");
+        started.observe("TETRIS SKIP: Go is not installed");
+        assert!(!started.complete());
+    }
 
     #[test]
     fn boot_mode_parsing() {

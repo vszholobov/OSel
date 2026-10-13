@@ -83,6 +83,10 @@ pub fn epoll_pwait(
         // `notify`) between the scan above and here would otherwise be missed, hanging an
         // untimed wait forever
         irq::disable();
+        if scheduler::current_killed() {
+            irq::enable();
+            return Err(Errno::EINTR);
+        }
         POLL_WAITERS.lock().push(id);
         if scan(maxevents).is_empty() {
             time::wait_until(deadline, id);

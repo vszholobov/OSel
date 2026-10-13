@@ -8,10 +8,10 @@ extern crate alloc;
 
 use bootloader_api::{BootInfo, entry_point};
 use core::panic::PanicInfo;
-use osel::{print, println};
 #[cfg(not(test))]
 #[allow(unused_imports)]
 use osel::testosterone::test_main;
+use osel::{print, println};
 
 entry_point!(kernel_main, config = &osel::BOOTLOADER_CONFIG);
 
@@ -26,6 +26,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     println!("OSel ready to go!");
     // the smoke test in CI waits for this line on the serial port
     osel::serial_println!("OSel ready to go!");
+    run_tetris();
     echo_keyboard();
 }
 
@@ -64,6 +65,21 @@ fn echo_keyboard() -> ! {
                 print!("{}", c);
             }
             None => interrupts::enable_and_hlt(),
+        }
+    }
+}
+
+/// Runs the pinned Go game; clear remains an ordinary child program found through PATH.
+fn run_tetris() {
+    match osel::program::run(
+        "/bin/tetris",
+        &[b"/bin/tetris", b"--single"],
+        &[b"PATH=/bin", b"TERM=xterm", b"GODEBUG=asyncpreemptoff=1"],
+    ) {
+        Ok(osel::user::Stop::Exit(0)) | Err(osel::fs::Errno::ENOENT) => {}
+        result => {
+            println!("/bin/tetris ended: {:?}", result);
+            osel::serial_println!("/bin/tetris ended: {:?}", result);
         }
     }
 }

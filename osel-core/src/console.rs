@@ -37,7 +37,9 @@ impl Color {
 
     /// Mixes `self` (background) with `fg` using glyph pixel intensity 0..=255
     pub fn blend(self, fg: Color, intensity: u8) -> Color {
-        let mix = |bg: u8, fg: u8| ((bg as u16 * (255 - intensity as u16) + fg as u16 * intensity as u16) / 255) as u8;
+        let mix = |bg: u8, fg: u8| {
+            ((bg as u16 * (255 - intensity as u16) + fg as u16 * intensity as u16) / 255) as u8
+        };
         Color::new(mix(self.r, fg.r), mix(self.g, fg.g), mix(self.b, fg.b))
     }
 }
@@ -66,6 +68,20 @@ pub struct Console<'a> {
     column: usize,
     foreground: Color,
     background: Color,
+    escape: Escape,
+    cursor_visible: bool,
+}
+
+#[derive(Clone, Copy)]
+enum Escape {
+    Text,
+    Start,
+    Csi {
+        params: [u16; 8],
+        index: usize,
+        private: bool,
+        invalid: bool,
+    },
 }
 
 impl fmt::Write for Console<'_> {
@@ -107,6 +123,8 @@ impl<'a> Console<'a> {
             column: 0,
             foreground: Color::GREEN,
             background: Color::BLACK,
+            escape: Escape::Text,
+            cursor_visible: true,
         };
         console.clear();
         Ok(console)
@@ -145,6 +163,9 @@ impl<'a> Console<'a> {
     }
 
     pub fn write_char(&mut self, c: char) {
+        if self.escape_char(c) {
+            return;
+        }
         match c {
             '\n' => self.new_line(),
             '\r' => self.column = 0,
@@ -171,16 +192,133 @@ impl<'a> Console<'a> {
                 if self.column >= self.columns {
                     self.new_line();
                 }
-                self.draw_glyph(self.row, self.column, glyph(c));
+                self.clear_cell(self.row, self.column);
+                self.draw_glyph(self.row, self.column, c);
                 self.column += 1;
             }
         }
     }
 
     pub fn clear(&mut self) {
+        self.escape = Escape::Text;
         self.fill_rect(0, 0, self.info.width, self.info.height, self.background);
         self.row = 0;
         self.column = 0;
+    }
+
+    pub fn cursor_visible(&self) -> bool {
+        self.cursor_visible
+    }
+
+    /// A bounded streaming parser: sequences can span writes; malformed parameters never grow.
+    fn escape_char(&mut self, c: char) -> bool {
+        if c == '\x1b' {
+            self.escape = Escape::Start;
+            return true;
+        }
+        match self.escape {
+            Escape::Text => false,
+            Escape::Start => {
+                self.escape = if c == '[' {
+                    Escape::Csi {
+                        params: [0; 8],
+                        index: 0,
+                        private: false,
+                        invalid: false,
+                    }
+                } else {
+                    Escape::Text
+                };
+                c == '[' || !c.is_control()
+            }
+            Escape::Csi {
+                mut params,
+                mut index,
+                mut private,
+                mut invalid,
+            } => {
+                match c {
+                    '0'..='9' => {
+                        params[index] = params[index]
+                            .saturating_mul(10)
+                            .saturating_add(c as u16 - '0' as u16)
+                    }
+                    ';' if index < params.len() - 1 => index += 1,
+                    '?' if index == 0 && params[0] == 0 => private = true,
+                    '\x40'..='\x7e' => {
+                        self.escape = Escape::Text;
+                        if !invalid {
+                            self.csi(c, &params[..=index], private);
+                        }
+                        return true;
+                    }
+                    _ => invalid = true,
+                }
+                self.escape = Escape::Csi {
+                    params,
+                    index,
+                    private,
+                    invalid,
+                };
+                true
+            }
+        }
+    }
+
+    fn csi(&mut self, command: char, params: &[u16], private: bool) {
+        let amount = (params[0] as usize).max(1);
+        if private {
+            if params == [25] && matches!(command, 'h' | 'l') {
+                self.cursor_visible = command == 'h';
+            }
+            return;
+        }
+        match command {
+            'A' => self.row = self.row.saturating_sub(amount),
+            'B' => self.row = self.row.saturating_add(amount).min(self.rows - 1),
+            'C' => self.column = self.column.saturating_add(amount).min(self.columns - 1),
+            'D' => self.column = self.column.saturating_sub(amount),
+            'G' => self.column = (amount - 1).min(self.columns - 1),
+            'H' | 'f' => {
+                self.row = (amount - 1).min(self.rows - 1);
+                self.column = (params.get(1).copied().unwrap_or(1) as usize)
+                    .saturating_sub(1)
+                    .min(self.columns - 1);
+            }
+            'J' | 'K' => {
+                let cursor = self.row * self.columns + self.column.min(self.columns - 1);
+                let (start, end) = if command == 'J' {
+                    (0, self.rows * self.columns)
+                } else {
+                    (self.row * self.columns, (self.row + 1) * self.columns)
+                };
+                let range = match params[0] {
+                    0 => cursor..end,
+                    1 => start..cursor + 1,
+                    2 | 3 if command == 'J' => start..end,
+                    2 => start..end,
+                    _ => return,
+                };
+                for cell in range {
+                    self.clear_cell(cell / self.columns, cell % self.columns);
+                }
+            }
+            'm' => {
+                for &param in params {
+                    match param {
+                        0 => self.set_colors(Color::GREEN, Color::BLACK),
+                        30..=37 => self.foreground = ansi_color(param - 30, false),
+                        40..=47 => self.background = ansi_color(param - 40, false),
+                        90..=97 => self.foreground = ansi_color(param - 90, true),
+                        100..=107 => self.background = ansi_color(param - 100, true),
+                        39 => self.foreground = Color::GREEN,
+                        49 => self.background = Color::BLACK,
+                        _ => {} // blink and other text attributes are accepted but not rendered
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Color of the pixel at (`x`, `y`), `None` outside of the visible screen
@@ -205,8 +343,9 @@ impl<'a> Console<'a> {
             return false;
         }
         let (x0, y0) = (col * CHAR_WIDTH, row * LINE_HEIGHT);
-        glyph(c).raster().iter().enumerate().all(|(dy, line)| {
-            line.iter().enumerate().all(|(dx, &intensity)| {
+        (0..CHAR_RASTER_HEIGHT.val()).all(|dy| {
+            (0..CHAR_WIDTH).all(|dx| {
+                let intensity = glyph_pixel(c, dx, dy);
                 let offset = self.pixel_offset(x0 + dx, y0 + dy);
                 let (expected, len) = self.encode(background.blend(foreground, intensity));
                 self.buffer[offset..offset + len] == expected[..len]
@@ -242,10 +381,11 @@ impl<'a> Console<'a> {
         }
     }
 
-    fn draw_glyph(&mut self, row: usize, col: usize, glyph: RasterizedChar) {
+    fn draw_glyph(&mut self, row: usize, col: usize, c: char) {
         let (x0, y0) = (col * CHAR_WIDTH, row * LINE_HEIGHT);
-        for (dy, line) in glyph.raster().iter().enumerate() {
-            for (dx, &intensity) in line.iter().enumerate() {
+        for dy in 0..CHAR_RASTER_HEIGHT.val() {
+            for dx in 0..CHAR_WIDTH {
+                let intensity = glyph_pixel(c, dx, dy);
                 let color = self.background.blend(self.foreground, intensity);
                 self.write_pixel(x0 + dx, y0 + dy, color);
             }
@@ -293,6 +433,37 @@ fn gray(color: Color) -> u8 {
 fn glyph(c: char) -> RasterizedChar {
     get_raster(c, FONT_WEIGHT, CHAR_RASTER_HEIGHT)
         .unwrap_or_else(|| get_raster(UNKNOWN_CHAR, FONT_WEIGHT, CHAR_RASTER_HEIGHT).unwrap())
+}
+
+fn ansi_color(index: u16, bright: bool) -> Color {
+    let low = if bright { 85 } else { 0 };
+    let high = if bright { 255 } else { 170 };
+    Color::new(
+        if index & 1 != 0 { high } else { low },
+        if index & 2 != 0 { high } else { low },
+        if index & 4 != 0 { high } else { low },
+    )
+}
+
+/// Original 7x9 bitmap for the game's Ж, centered in the existing cell.
+fn glyph_pixel(c: char, x: usize, y: usize) -> u8 {
+    if c == 'Ж' {
+        const ZHE: [u8; 9] = [
+            0b1001001, 0b1001001, 0b0101010, 0b0011100, 0b0001000, 0b0011100, 0b0101010, 0b1001001,
+            0b1001001,
+        ];
+        let left = CHAR_WIDTH.saturating_sub(7) / 2;
+        if (3..12).contains(&y)
+            && (left..left + 7).contains(&x)
+            && ZHE[y - 3] & (1 << (6 - (x - left))) != 0
+        {
+            255
+        } else {
+            0
+        }
+    } else {
+        glyph(c).raster()[y][x]
+    }
 }
 
 #[cfg(test)]
@@ -696,9 +867,12 @@ mod tests {
         let info = screen_info();
         let mut buffer = buffer(&info);
         let mut console = console(&mut buffer, info);
-        write!(console, "Ж").unwrap();
+        write!(console, "中").unwrap();
         assert!(console.cell_shows(0, 0, UNKNOWN_CHAR));
-        assert!(console.cell_shows(0, 0, 'Ж'), "cell_shows uses the same fallback");
+        assert!(
+            console.cell_shows(0, 0, '中'),
+            "cell_shows uses the same fallback"
+        );
     }
 
     #[test]
@@ -712,6 +886,56 @@ mod tests {
         assert_eq!(console.read_pixel(0, 0), Some(Color::RED));
         write!(console, "x").unwrap();
         assert!(console.cell_shows(0, 0, 'x'));
+    }
+
+    #[test]
+    fn ansi_sequences_span_writes_and_position_without_drawing_codes() {
+        let info = screen_info();
+        let mut buffer = buffer(&info);
+        let mut console = console(&mut buffer, info);
+        write!(console, "ab\x1b[").unwrap();
+        write!(console, "3;4HЖ\x1b[2A\x1b[2DX").unwrap();
+        assert!(console.cell_shows(2, 3, 'Ж'));
+        assert!(!console.cell_shows(2, 3, UNKNOWN_CHAR));
+        assert!(console.cell_shows(0, 2, 'X'));
+        write!(console, "\x1b[999999999999B\x1b[99999C").unwrap();
+        assert_eq!(console.cursor(), (3, 9));
+        write!(console, "\x1b[H\x1b[2J").unwrap();
+        assert_eq!(console.cursor(), (0, 0));
+        assert!(console.cell_shows(2, 3, ' '));
+        assert_guard_untouched(&buffer, &info);
+    }
+
+    #[test]
+    fn ansi_erase_preserves_cursor_and_sgr_restores_colors() {
+        let info = screen_info();
+        let mut buffer = buffer(&info);
+        let mut console = console(&mut buffer, info);
+        write!(console, "abcdef\x1b[1;3H\x1b[K").unwrap();
+        assert!(row_text_is(&console, 0, "ab    "));
+        assert_eq!(console.cursor(), (0, 2));
+        write!(console, "\x1b[30;5;107mX\x1b[0m").unwrap();
+        assert!(console.cell_shows_in(0, 2, 'X', Color::BLACK, Color::WHITE));
+        assert_eq!(console.colors(), (Color::GREEN, Color::BLACK));
+        write!(console, "\x1b[?25l").unwrap();
+        assert!(!console.cursor_visible());
+        write!(console, "\x1b[?25h").unwrap();
+        assert!(console.cursor_visible());
+        write!(console, "\x1b[2J").unwrap();
+        assert_eq!(console.cursor(), (0, 3));
+    }
+
+    #[test]
+    fn malformed_ansi_is_bounded_and_recovers_at_final_byte() {
+        let info = screen_info();
+        let mut buffer = buffer(&info);
+        let mut console = console(&mut buffer, info);
+        write!(console, "\x1b[1;2;3;4;5;6;7;8;9;10HQ").unwrap();
+        assert_eq!(console.cursor(), (0, 1));
+        assert!(console.cell_shows(0, 0, 'Q'));
+        write!(console, "\x1b[\x1b[2;2HZ").unwrap();
+        assert!(console.cell_shows(1, 1, 'Z'));
+        assert_guard_untouched(&buffer, &info);
     }
 
     #[test]

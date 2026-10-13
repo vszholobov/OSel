@@ -22,26 +22,27 @@ use x86_64::VirtAddr;
 
 pub mod allocator;
 pub mod avganec;
-pub mod fs;
 pub mod cereal;
-pub mod qemuno;
-pub mod testosterone;
-pub mod interrupts;
+pub mod fpu;
+pub mod fs;
+pub mod futex;
 pub mod gdt;
+pub mod interrupts;
 pub mod keyboard;
 pub mod memory;
-pub mod program;
-pub mod user;
-pub mod syscall;
-pub mod fpu;
-pub mod tty;
-pub mod scheduler;
-pub mod time;
-pub mod futex;
+pub mod pipe;
 pub mod poll;
-pub mod sync;
+pub mod program;
+pub mod qemuno;
+pub mod scheduler;
 #[cfg(test)]
 mod security;
+pub mod sync;
+pub mod syscall;
+pub mod testosterone;
+pub mod time;
+pub mod tty;
+pub mod user;
 
 /// Version of the kernel from Cargo.toml
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -59,7 +60,8 @@ pub const BOOTLOADER_CONFIG: BootloaderConfig = {
 };
 
 static INITIALIZED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
-static BOOT_INFO: core::sync::atomic::AtomicPtr<BootInfo> = core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+static BOOT_INFO: core::sync::atomic::AtomicPtr<BootInfo> =
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
 
 /// Initializes the CPU tables, memory and interrupts. Panics when called twice: a second
 /// run would create another `&mut` to the live page table and hand out used frames again.
@@ -67,8 +69,14 @@ static BOOT_INFO: core::sync::atomic::AtomicPtr<BootInfo> = core::sync::atomic::
 pub fn init(boot_info: &'static BootInfo) {
     // the firmware should hand over with interrupts off, but nothing can handle them yet
     x86_64::instructions::interrupts::disable();
-    assert!(!INITIALIZED.swap(true, core::sync::atomic::Ordering::SeqCst), "osel::init called twice");
-    BOOT_INFO.store(boot_info as *const BootInfo as *mut BootInfo, core::sync::atomic::Ordering::SeqCst);
+    assert!(
+        !INITIALIZED.swap(true, core::sync::atomic::Ordering::SeqCst),
+        "osel::init called twice"
+    );
+    BOOT_INFO.store(
+        boot_info as *const BootInfo as *mut BootInfo,
+        core::sync::atomic::Ordering::SeqCst,
+    );
     gdt::init();
     fpu::init();
     interrupts::init_idt();
@@ -78,7 +86,12 @@ pub fn init(boot_info: &'static BootInfo) {
         .physical_memory_offset
         .as_ref()
         .expect("bootloader did not map physical memory");
-    unsafe { memory::init(VirtAddr::new(physical_memory_offset), &boot_info.memory_regions) };
+    unsafe {
+        memory::init(
+            VirtAddr::new(physical_memory_offset),
+            &boot_info.memory_regions,
+        )
+    };
     allocator::init_heap().expect("heap initialization failed");
     memory::enable_frame_tracking();
     fs::init(boot_info);
@@ -88,6 +101,8 @@ pub fn init(boot_info: &'static BootInfo) {
     time::init(scheduler::MAX_THREADS);
     futex::init(scheduler::MAX_THREADS);
     poll::init(scheduler::MAX_THREADS);
+    pipe::init(scheduler::MAX_THREADS);
+    tty::init(scheduler::MAX_THREADS);
     x86_64::instructions::interrupts::enable();
 }
 

@@ -39,9 +39,25 @@ pub const FCNTL: u64 = 72;
 pub const EXIT_GROUP: u64 = 231;
 pub const OPENAT: u64 = 257;
 pub const NEWFSTATAT: u64 = 262;
+pub const IOCTL: u64 = 16;
+pub const DUP: u64 = 32;
+pub const DUP2: u64 = 33;
+pub const DUP3: u64 = 292;
+pub const PIPE2: u64 = 293;
+pub const EXECVE: u64 = 59;
+pub const WAIT4: u64 = 61;
+pub const GETPPID: u64 = 110;
 
 /// Every system call OSel implements: Linux x86_64 number and name
 pub const SYSCALLS: &[(u64, &str)] = &[
+    (IOCTL, "ioctl"),
+    (DUP, "dup"),
+    (DUP2, "dup2"),
+    (DUP3, "dup3"),
+    (PIPE2, "pipe2"),
+    (EXECVE, "execve"),
+    (WAIT4, "wait4"),
+    (GETPPID, "getppid"),
     (READ, "read"),
     (WRITE, "write"),
     (CLOSE, "close"),

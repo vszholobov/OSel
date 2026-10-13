@@ -3,11 +3,11 @@
 //! Works the same way under UEFI (GOP) and BIOS (VESA). The drawing itself lives in
 //! `osel_core::console`, here is only the global console and the print macros.
 
+use crate::sync::IrqSpinlock;
 use bootloader_api::info::FrameBuffer;
 use core::fmt;
 use core::panic::PanicInfo;
 use osel_core::console::Console;
-use crate::sync::IrqSpinlock;
 use x86_64::instructions::interrupts;
 
 pub use osel_core::console::Color;
@@ -51,7 +51,9 @@ pub fn init(framebuffer: Option<FrameBuffer>) {
     let console = framebuffer.and_then(|fb| {
         let info = fb.info();
         Console::new(fb.into_buffer(), info)
-            .map_err(|error| crate::serial_println!("avganec: framebuffer {:?} is not usable: {:?}", info, error))
+            .map_err(|error| {
+                crate::serial_println!("avganec: framebuffer {:?} is not usable: {:?}", info, error)
+            })
             .ok()
     });
     *WRITER.lock() = console;
