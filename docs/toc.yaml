@@ -41,6 +41,7 @@ items:
       - href: architecture/overview.md
       - href: architecture/testing.md
       - href: architecture/tetris.md
+      - href: architecture/shell.md
       - name: Ядро
         items:
           - href: architecture/core/memory.md

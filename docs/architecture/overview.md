@@ -43,6 +43,7 @@ description: Обзор OSel — из каких крейтов и модуле�
 | `security` | `src/security.rs` | враждебные программы-тесты изоляции ring 3 (только тесты) | [изоляция программ](core/security.md) |
 | `memory` | `src/memory.rs` | таблица страниц, пул физических страниц, `with_memory`, `UserSpace` | [Память](core/memory.md) |
 | `program` | `src/program.rs` | загрузка программы из файловой системы в `UserSpace`, стек главного потока | [Программы](core/programs.md) |
+| `shell` | `src/shell.rs` | интерактивные команды и запуск программ с возвратом в приглашение | [Оболочка](shell.md) |
 | `fs` | `src/fs.rs` | монтирует ramdisk как корень с `/dev`, `lookup`, `file_for`, `read_file` | [Файлы и ramdisk](core/fs.md) |
 | `tty` | `src/tty.rs` | терминал: экран и порт, ввод PS/2 и COM1, режимы и очередь ожидающих потоков | [Файлы и ramdisk](core/fs.md#open-files) |
 | `allocator` | `src/allocator.rs` | куча ядра и глобальный аллокатор | [Память](core/memory.md#heap) |
@@ -55,6 +56,7 @@ description: Обзор OSel — из каких крейтов и модуле�
 | Модуль | Где | Что делает | Страница |
 |---|---|---|---|
 | `console` | `osel-core/src/console.rs` | отрисовка текста в любой байтовый буфер | [Консоль](drivers/console.md) |
+| `shell` | `osel-core/src/shell.rs` | ограниченный редактор строки, разбор аргументов и имён программ | [Оболочка](shell.md) |
 | `font` | `osel-core/src/font.rs` | встроенные растры шрифта 8×16 и 16×32, выбор размера и глифа | [Консоль](drivers/console.md#font) |
 | `keyboard` | `osel-core/src/keyboard.rs` | `RingBuffer`, `ScancodeDecoder` | [Клавиатура](drivers/keyboard.md) |
 | `pit` | `osel-core/src/pit.rs` | делитель таймера, маски PIC, распознавание ложных IRQ | [Прерывания](core/interrupts.md#pic-pit) |
@@ -104,7 +106,7 @@ description: Обзор OSel — из каких крейтов и модуле�
    11. `interrupts::init_pics` — сброс буфера клавиатуры, PIC, таймер на 100 Гц;
    12. `time::init`, `futex::init`, `poll::init` — часы и очереди ожидания;
    13. включает прерывания.
-4. Ядро печатает `/etc/motd` из ramdisk, запускает `/bin/hello` (он печатает «Hello from ring 3!»), затем «OSel ready to go!» на экран и в последовательный порт. При наличии `/bin/tetris` запускается [одиночная игра](tetris.md); после её выхода `echo_keyboard` печатает нажатые клавиши и спит в `hlt`, пока нет ввода.
+4. Ядро печатает `/etc/motd` из ramdisk, запускает `/bin/hello` (он печатает «Hello from ring 3!»), затем «OSel ready to go!» на экран и в последовательный порт. Далее запускается [оболочка](shell.md) с приглашением `osel>`; игра запускается командой `tetris` и после выхода возвращает в оболочку.
 
 После `osel::init` то, что передал загрузчик (карта памяти, ramdisk, таблицы ACPI), доступно через `osel::boot_info()`.
 
@@ -134,4 +136,4 @@ description: Обзор OSel — из каких крейтов и модуле�
 - [0014 — дескрипторы и устройства](../decisions/0014-file-descriptors.md)
 - [0015 — потоки и вытеснение](../decisions/0015-threads.md)
 
-_Сверено с кодом: 2026-10-13, коммит 9c0f1c6._
+_Сверено с кодом: 2026-10-13, рабочая ветка оболочки._

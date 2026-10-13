@@ -26,8 +26,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     println!("OSel ready to go!");
     // the smoke test in CI waits for this line on the serial port
     osel::serial_println!("OSel ready to go!");
-    run_tetris();
-    echo_keyboard();
+    osel::shell::run();
 }
 
 /// Greets with /etc/motd from the ramdisk, if there is one
@@ -48,38 +47,6 @@ fn run_hello() {
         Err(error) => {
             println!("/bin/hello did not start: {}", error);
             osel::serial_println!("/bin/hello did not start: {}", error);
-        }
-    }
-}
-
-/// Prints typed characters until the machine is turned off
-fn echo_keyboard() -> ! {
-    use x86_64::instructions::interrupts;
-    loop {
-        // check the buffer with interrupts off, otherwise a key pressed right
-        // after the check would wait for the next interrupt to be noticed
-        interrupts::disable();
-        match osel::keyboard::pop_char() {
-            Some(c) => {
-                interrupts::enable();
-                print!("{}", c);
-            }
-            None => interrupts::enable_and_hlt(),
-        }
-    }
-}
-
-/// Runs the pinned Go game; clear remains an ordinary child program found through PATH.
-fn run_tetris() {
-    match osel::program::run(
-        "/bin/tetris",
-        &[b"/bin/tetris", b"--single"],
-        &[b"PATH=/bin", b"TERM=xterm", b"GODEBUG=asyncpreemptoff=1"],
-    ) {
-        Ok(osel::user::Stop::Exit(0)) | Err(osel::fs::Errno::ENOENT) => {}
-        result => {
-            println!("/bin/tetris ended: {:?}", result);
-            osel::serial_println!("/bin/tetris ended: {:?}", result);
         }
     }
 }
