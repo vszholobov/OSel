@@ -38,6 +38,7 @@ description: Обзор OSel — из каких крейтов и модуле�
 | `time` | `src/time.rs` | монотонные и реальные часы, сон до срока (`SLEEPERS`) | [потоки](core/threads.md#time) |
 | `futex` | `src/futex.rs` | `futex`: ожидание и пробуждение потоков по адресу (`FUTEXES`) | [потоки](core/threads.md#futex) |
 | `poll` | `src/poll.rs` | блокирующий `epoll_pwait` и пробуждение при записи в eventfd (`POLL_WAITERS`) | [открытые файлы](core/fs.md#epoll) |
+| `security` | `src/security.rs` | враждебные программы-тесты изоляции ring 3 (только тесты) | [изоляция программ](core/security.md) |
 | `memory` | `src/memory.rs` | таблица страниц, пул физических страниц, `with_memory`, `UserSpace` | [Память](core/memory.md) |
 | `program` | `src/program.rs` | загрузка программы из файловой системы в `UserSpace`, стек главного потока | [Программы](core/programs.md) |
 | `fs` | `src/fs.rs` | монтирует ramdisk как корень с `/dev`, `lookup`, `file_for`, `read_file` | [Файлы и ramdisk](core/fs.md) |

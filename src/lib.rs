@@ -40,6 +40,8 @@ pub mod time;
 pub mod futex;
 pub mod poll;
 pub mod sync;
+#[cfg(test)]
+mod security;
 
 /// Version of the kernel from Cargo.toml
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

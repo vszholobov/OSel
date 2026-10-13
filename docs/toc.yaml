@@ -49,6 +49,7 @@ items:
           - href: architecture/core/programs.md
           - href: architecture/core/user-mode.md
           - href: architecture/core/threads.md
+          - href: architecture/core/security.md
       - name: Драйверы
         items:
           - href: architecture/drivers/console.md
