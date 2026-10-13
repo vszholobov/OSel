@@ -4,7 +4,7 @@
 //! list of calls is in docs/reference/syscalls.md.
 
 use crate::gdt::{self, USER_CODE_SELECTOR, USER_DATA_SELECTOR};
-use crate::memory::USER_END;
+use crate::memory::{PAGE_SIZE, USER_END};
 use crate::scheduler;
 use crate::user::Stop;
 use alloc::string::String;
@@ -16,9 +16,10 @@ use alloc::sync::Arc;
 use alloc::vec;
 use osel_core::file::{FdTable, O_CLOEXEC, O_CREAT, OpenDescription, encode_stat, open_access};
 use osel_core::syscall::{
-    self, CLOSE, EXIT, EXIT_GROUP, FCNTL, FSTAT, GETPID, NEWFSTATAT, OPENAT, READ, Return, SCHED_YIELD, SYSCALL_VECTOR, WRITE,
-    fd_arg,
+    self, CLOSE, EXIT, EXIT_GROUP, FCNTL, FSTAT, GETPID, MADVISE, MMAP, MPROTECT, MUNMAP, NEWFSTATAT, OPENAT, READ, Return,
+    SCHED_YIELD, SYSCALL_VECTOR, WRITE, fd_arg,
 };
+use osel_core::mmap::MAP_ANONYMOUS;
 use osel_core::user_mem::Access as MemAccess;
 use osel_core::vfs::{FileType, Inode, PATH_MAX, resolve};
 use osel_core::trap::TrapFrame;
@@ -143,7 +144,7 @@ unsafe extern "C" fn syscall_entry() {
 /// Runs the call the program asked for with interrupts on, puts the result into RAX of the
 /// frame and says how to go back
 extern "C" fn dispatch(frame: &mut TrapFrame) -> u64 {
-    let [a0, a1, a2, a3, ..] = syscall::args(frame);
+    let [a0, a1, a2, a3, a4, a5] = syscall::args(frame);
     let result = match syscall::number(frame) {
         Some(READ) => read(fd_arg(a0), a1, a2),
         Some(WRITE) => write(fd_arg(a0), a1, a2),
@@ -152,6 +153,10 @@ extern "C" fn dispatch(frame: &mut TrapFrame) -> u64 {
         Some(FSTAT) => fstat(fd_arg(a0), a1),
         Some(NEWFSTATAT) => newfstatat(fd_arg(a0), a1, a2, a3 as u32),
         Some(FCNTL) => fcntl(fd_arg(a0), a1 as u32, a2),
+        Some(MMAP) => mmap(a0, a1, a2, a3, fd_arg(a4), a5),
+        Some(MUNMAP) => space().munmap(a0, a1).map(|()| 0),
+        Some(MPROTECT) => space().mprotect(a0, a1, prot_arg(a2)).map(|()| 0),
+        Some(MADVISE) => space().madvise(a0, a1, a2 as u32 as i32 as u64).map(|()| 0),
         Some(GETPID) => Ok(1),
         Some(SCHED_YIELD) => {
             scheduler::yield_now();
@@ -196,6 +201,23 @@ const F_GETFL: u32 = 3;
 const F_SETFL: u32 = 4;
 const F_DUPFD_CLOEXEC: u32 = 1030;
 const FD_CLOEXEC: u64 = 1;
+
+/// `PROT_*` bits; bits beyond 32 make it `EINVAL` like unknown ones
+fn prot_arg(value: u64) -> u32 {
+    u32::try_from(value).unwrap_or(u32::MAX)
+}
+
+/// `mmap(addr, len, prot, flags, fd, offset)`: anonymous memory only, a file is `ENODEV`
+fn mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: i32, offset: u64) -> KResult<u64> {
+    if offset % PAGE_SIZE != 0 {
+        return Err(Errno::EINVAL);
+    }
+    let flags = flags as u32 as u64;
+    if flags & MAP_ANONYMOUS == 0 {
+        files().get(fd)?;
+    }
+    space().mmap(addr, len, prot_arg(prot), flags)
+}
 
 /// `read(fd, buf, count)`
 fn read(fd: i32, buf: u64, count: u64) -> KResult<u64> {
@@ -922,6 +944,344 @@ mod file_tests {
             assert_eq!(stop.exit_code(), 0);
         }
         assert_eq!(crate::memory::used_frames(), frames);
+        assert_eq!(crate::allocator::with_allocator(|allocator| allocator.in_use()), heap);
+    }
+}
+
+/// `mmap`, `munmap`, `mprotect`, `madvise` and pages mapped on the first touch
+#[cfg(test)]
+mod memory_tests {
+    use super::*;
+    use crate::memory::used_frames;
+    use crate::program::Loaded;
+    use crate::user::tests::{code, load};
+    use crate::user::{Stop, initial_frame, run};
+    use core::arch::global_asm;
+    use osel_core::mmap::{MAP_FIXED, MAP_PRIVATE, MMAP_TOP};
+    use osel_core::trap::{INVALID_OPCODE, PAGE_FAULT, PF_FETCH, PF_PRESENT, PF_WRITE};
+    use osel_core::user_mem::Access;
+    use osel_core::vma::{PROT_EXEC, PROT_READ, PROT_WRITE};
+
+    const P: u64 = PAGE_SIZE;
+    const MIB: u64 = 1 << 20;
+    const RW: u32 = PROT_READ | PROT_WRITE;
+    const ANON: u64 = MAP_PRIVATE | MAP_ANONYMOUS;
+
+    global_asm!(
+        ".pushsection .rodata.osel_memory_programs, \"a\"",
+        // mmap with the registers the test set, write 7 to the first page, read the second
+        // into rcx, stop with rbx = the address
+        ".global osel_mmap_touch", "osel_mmap_touch:",
+        "mov eax, 9",
+        "syscall",
+        "mov rbx, rax",
+        "mov byte ptr [rax], 7",
+        "movzx ecx, byte ptr [rax + 4096]",
+        "ud2",
+        ".global osel_mmap_touch_end", "osel_mmap_touch_end:",
+        // write 1 to [rdi]
+        ".global osel_store", "osel_store:",
+        "mov byte ptr [rdi], 1",
+        "ud2",
+        ".global osel_store_end", "osel_store_end:",
+        // read [rdi] into rcx
+        ".global osel_load", "osel_load:",
+        "movzx ecx, byte ptr [rdi]",
+        "ud2",
+        ".global osel_load_end", "osel_load_end:",
+        // jump to rdi
+        ".global osel_jump", "osel_jump:",
+        "jmp rdi",
+        ".global osel_jump_end", "osel_jump_end:",
+        // read the read-only page at rdi, make it RW, write 9 and read it back into rcx;
+        // rbx = what mprotect returned
+        ".global osel_widen", "osel_widen:",
+        "mov r12, rdi",
+        "movzx ebx, byte ptr [rdi]",
+        "mov esi, 4096",
+        "mov edx, 3",
+        "mov eax, 10",
+        "syscall",
+        "mov rbx, rax",
+        "mov byte ptr [r12], 9",
+        "movzx ecx, byte ptr [r12]",
+        "ud2",
+        ".global osel_widen_end", "osel_widen_end:",
+        // write 5 to [rdi], MADV_DONTNEED the page, read it into rcx; rbx = what madvise returned
+        ".global osel_dontneed", "osel_dontneed:",
+        "mov r12, rdi",
+        "mov byte ptr [rdi], 5",
+        "mov esi, 4096",
+        "mov edx, 4",
+        "mov eax, 28",
+        "syscall",
+        "mov rbx, rax",
+        "movzx ecx, byte ptr [r12]",
+        "ud2",
+        ".global osel_dontneed_end", "osel_dontneed_end:",
+        // any call with the registers the test set, exit with the result
+        ".global osel_memory_call", "osel_memory_call:",
+        "syscall",
+        "mov rdi, rax",
+        "mov eax, 60",
+        "syscall",
+        ".global osel_memory_call_end", "osel_memory_call_end:",
+        ".popsection",
+    );
+
+    /// Runs `code` on `loaded` with registers the test sets
+    fn run_on(loaded: &mut Loaded, setup: impl FnOnce(&mut TrapFrame)) -> (TrapFrame, Stop) {
+        let mut frame = initial_frame(loaded.entry, loaded.rsp);
+        setup(&mut frame);
+        let stop = run(&mut loaded.space, &mut frame);
+        (frame, stop)
+    }
+
+    fn byte_at(loaded: &mut Loaded, address: u64) -> u8 {
+        let mut byte = [0u8];
+        loaded.space.read_bytes(address, &mut byte).unwrap();
+        byte[0]
+    }
+
+    fn errno(errno: Errno) -> u8 {
+        (-(errno.code())) as u8
+    }
+
+    /// The program's own `mmap` gives zeroed memory, and only touched pages take frames
+    #[test_case]
+    fn test_mmap_memory_is_lazy_and_zero() {
+        let mut loaded = load(code!(osel_mmap_touch, osel_mmap_touch_end));
+        let before = used_frames();
+        let (frame, stop) = run_on(&mut loaded, |frame| {
+            (frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8, frame.r9) = (0, 64 * MIB, RW as u64, ANON, u64::MAX, 0);
+        });
+        assert_eq!(stop.fault().vector, INVALID_OPCODE);
+        assert_eq!(frame.rbx, MMAP_TOP - 64 * MIB, "from the top");
+        assert_eq!(frame.rcx, 0, "fresh memory reads zero");
+        assert_eq!(byte_at(&mut loaded, frame.rbx), 7);
+        let used = used_frames() - before;
+        assert!((2..=5).contains(&used), "two pages and their tables, not 64 MiB: {used}");
+    }
+
+    /// Go's start: a gigabyte of `PROT_NONE` reservations, then memory committed inside
+    /// with `MAP_FIXED`
+    #[test_case]
+    fn test_reservations_cost_nothing() {
+        let mut loaded = load(code!(osel_store, osel_store_end));
+        let before = used_frames();
+        let hint = 0xc0_0000_0000;
+        assert_eq!(loaded.space.mmap(hint, 64 * MIB, 0, ANON), Ok(hint));
+        loaded.space.mmap(0, 512 * MIB, 0, ANON).unwrap();
+        loaded.space.mmap(0, 512 * MIB, 0, ANON).unwrap();
+        assert_eq!(used_frames(), before, "reservations take no frames");
+        assert_eq!(loaded.space.mmap(hint + 4 * MIB, 4 * MIB, RW, ANON | MAP_FIXED), Ok(hint + 4 * MIB));
+        let (_frame, stop) = run_on(&mut loaded, |frame| frame.rdi = hint + 5 * MIB);
+        assert_eq!(stop.fault().vector, INVALID_OPCODE);
+        assert_eq!(byte_at(&mut loaded, hint + 5 * MIB), 1);
+        let (_frame, stop) = run_on(&mut loaded, |frame| frame.rdi = hint + 8 * MIB);
+        let trap = stop.fault();
+        assert_eq!((trap.vector, trap.cr2), (PAGE_FAULT, hint + 8 * MIB), "the reservation around stays PROT_NONE");
+    }
+
+    #[test_case]
+    fn test_rights_of_an_area() {
+        let mut loaded = load(code!(osel_load, osel_load_end));
+        let none = loaded.space.mmap(0, P, 0, ANON).unwrap();
+        let (_frame, stop) = run_on(&mut loaded, |frame| frame.rdi = none);
+        let trap = stop.fault();
+        assert_eq!((trap.vector, trap.cr2, trap.error_code & PF_PRESENT), (PAGE_FAULT, none, 0), "PROT_NONE can't be read");
+
+        let mut loaded = load(code!(osel_store, osel_store_end));
+        let read = loaded.space.mmap(0, P, PROT_READ, ANON).unwrap();
+        let (_frame, stop) = run_on(&mut loaded, |frame| frame.rdi = read);
+        let trap = stop.fault();
+        assert_eq!((trap.vector, trap.cr2), (PAGE_FAULT, read), "a read-only page can't be written");
+        assert_eq!(trap.error_code & (PF_PRESENT | PF_WRITE), PF_WRITE, "a write to an untouched page is not allowed either");
+
+        let mut loaded = load(code!(osel_jump, osel_jump_end));
+        let data = loaded.space.mmap(0, P, RW, ANON).unwrap();
+        let (_frame, stop) = run_on(&mut loaded, |frame| frame.rdi = data);
+        let trap = stop.fault();
+        assert_eq!((trap.vector, trap.cr2), (PAGE_FAULT, data));
+        assert_ne!(trap.error_code & PF_FETCH, 0, "data is not code");
+    }
+
+    /// Jumping into an untouched `PROT_EXEC` page maps it on the fetch: its zeros decode as
+    /// `add [rax], al`, which faults at `rax`, a `PROT_NONE` page
+    #[test_case]
+    fn test_a_fetch_maps_a_lazy_page() {
+        let mut loaded = load(code!(osel_jump, osel_jump_end));
+        let code = loaded.space.mmap(0, P, PROT_READ | PROT_EXEC, ANON).unwrap();
+        let none = loaded.space.mmap(0, P, 0, ANON).unwrap();
+        let (frame, stop) = run_on(&mut loaded, |frame| (frame.rdi, frame.rax) = (code, none));
+        let trap = stop.fault();
+        assert_eq!((trap.vector, trap.cr2, frame.rip), (PAGE_FAULT, none, code), "the code page was mapped and ran");
+    }
+
+    /// A page of a `PROT_EXEC` area runs after its first touch, here the kernel's
+    #[test_case]
+    fn test_lazy_code_runs() {
+        let mut loaded = load(code!(osel_jump, osel_jump_end));
+        let code = loaded.space.mmap(0, P, PROT_READ | PROT_EXEC, ANON).unwrap();
+        loaded.space.check_user(code, 2, Access::Read).unwrap();
+        loaded.space.write_bytes(code, &[0x0f, 0x0b]).unwrap();
+        let (frame, stop) = run_on(&mut loaded, |frame| frame.rdi = code);
+        assert_eq!(stop.fault().vector, INVALID_OPCODE);
+        assert_eq!(frame.rip, code);
+    }
+
+    /// A page first touched under `PROT_READ` gets its page tables; they must not keep the
+    /// write right from it once `mprotect` allows writing
+    #[test_case]
+    fn test_mprotect_widens_rights() {
+        let mut loaded = load(code!(osel_widen, osel_widen_end));
+        // a fresh 1 GiB slot: its tables are made by the read
+        let addr = loaded.space.mmap(0x7000_0000_0000, P, PROT_READ, ANON).unwrap();
+        let (frame, stop) = run_on(&mut loaded, |frame| frame.rdi = addr);
+        assert_eq!(stop.fault().vector, INVALID_OPCODE);
+        assert_eq!((frame.rbx, frame.rcx), (0, 9));
+    }
+
+    #[test_case]
+    fn test_mprotect_none_keeps_the_data() {
+        let mut loaded = load(code!(osel_load, osel_load_end));
+        let addr = loaded.space.mmap(0, 2 * P, RW, ANON).unwrap();
+        loaded.space.check_user(addr, 1, Access::Write).unwrap();
+        loaded.space.write_bytes(addr, &[42]).unwrap();
+        let frames = used_frames();
+        loaded.space.mprotect(addr, 2 * P, 0).unwrap();
+        assert_eq!(used_frames(), frames, "the frame stays");
+        assert_eq!(loaded.space.check_user(addr, 1, Access::Read), Err(Errno::EFAULT), "the kernel can't use it for the program");
+        let (_frame, stop) = run_on(&mut loaded, |frame| frame.rdi = addr);
+        assert_eq!(stop.fault().vector, PAGE_FAULT);
+        loaded.space.mprotect(addr, P, PROT_READ).unwrap();
+        let (frame, stop) = run_on(&mut loaded, |frame| frame.rdi = addr);
+        assert_eq!(stop.fault().vector, INVALID_OPCODE);
+        assert_eq!(frame.rcx, 42, "the data came back");
+        loaded.space.mprotect(addr, P, 0).unwrap();
+        drop(loaded);
+        // the frame of a PROT_NONE page goes with the program
+    }
+
+    #[test_case]
+    fn test_madvise_dontneed_gives_zeros() {
+        let mut loaded = load(code!(osel_dontneed, osel_dontneed_end));
+        let addr = loaded.space.mmap(0, P, RW, ANON).unwrap();
+        let (frame, stop) = run_on(&mut loaded, |frame| frame.rdi = addr);
+        assert_eq!(stop.fault().vector, INVALID_OPCODE);
+        assert_eq!((frame.rbx, frame.rcx), (0, 0));
+    }
+
+    #[test_case]
+    fn test_munmap_takes_the_pages() {
+        let mut loaded = load(code!(osel_load, osel_load_end));
+        let addr = loaded.space.mmap(0, 3 * P, RW, ANON).unwrap();
+        loaded.space.check_user(addr, 3 * P as usize, Access::Write).unwrap();
+        let frames = used_frames();
+        loaded.space.munmap(addr + P, P).unwrap();
+        assert_eq!(used_frames(), frames - 1);
+        let (_frame, stop) = run_on(&mut loaded, |frame| frame.rdi = addr + P);
+        assert_eq!(stop.fault().cr2, addr + P);
+        let (_frame, stop) = run_on(&mut loaded, |frame| frame.rdi = addr + 2 * P);
+        assert_eq!(stop.fault().vector, INVALID_OPCODE, "the rest of the area stays");
+        // a huge range walks only the tables there are
+        loaded.space.munmap(0x10_0000_0000, 1 << 46).unwrap();
+    }
+
+    /// The kernel writes into an untouched page of an area like the program would
+    #[test_case]
+    fn test_kernel_copies_reach_lazy_pages() {
+        let call = code!(osel_memory_call, osel_memory_call_end);
+        let mut loaded = load(call);
+        let stat = loaded.space.mmap(0, P, RW, ANON).unwrap();
+        let none = loaded.space.mmap(0, P, 0, ANON).unwrap();
+        let read = loaded.space.mmap(0, P, PROT_READ, ANON).unwrap();
+        for (buffer, expected) in [(stat, 0), (none, errno(Errno::EFAULT)), (read, errno(Errno::EFAULT))] {
+            let (_frame, stop) = run_on(&mut loaded, |frame| (frame.rax, frame.rdi, frame.rsi) = (FSTAT, 1, buffer));
+            assert_eq!(stop.exit_code(), expected, "{buffer:#x}");
+        }
+        assert_ne!(loaded.space.page_flags(VirtAddr::new(stat)), None);
+        // and reads from one: the path there is empty
+        let (_frame, stop) =
+            run_on(&mut loaded, |frame| (frame.rax, frame.rdi, frame.rsi, frame.rdx) = (NEWFSTATAT, AT_FDCWD as u32 as u64, read, stat));
+        assert_eq!(stop.exit_code(), errno(Errno::ENOENT));
+    }
+
+    #[test_case]
+    fn test_memory_calls_through_syscall() {
+        let call = code!(osel_memory_call, osel_memory_call_end);
+        let mut loaded = load(call);
+        let call_on = |loaded: &mut Loaded, rax: u64, args: [u64; 6]| {
+            let (_frame, stop) = run_on(loaded, |frame| {
+                (frame.rax, frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8, frame.r9) =
+                    (rax, args[0], args[1], args[2], args[3], args[4], args[5]);
+            });
+            stop.exit_code()
+        };
+        assert_eq!(call_on(&mut loaded, MMAP, [0, 0, 3, ANON, u64::MAX, 0]), errno(Errno::EINVAL), "length 0");
+        assert_eq!(call_on(&mut loaded, MMAP, [0, P, 3, ANON, u64::MAX, 1]), errno(Errno::EINVAL), "unaligned offset");
+        assert_eq!(call_on(&mut loaded, MMAP, [0, P, 3, MAP_PRIVATE, u64::MAX, 0]), errno(Errno::EBADF), "a file without a descriptor");
+        assert_eq!(call_on(&mut loaded, MMAP, [0, P, 3, MAP_PRIVATE, 1, 0]), errno(Errno::ENODEV), "a file");
+        assert_eq!(call_on(&mut loaded, MMAP, [P, P, 3, ANON | MAP_FIXED, u64::MAX, 0]), errno(Errno::EPERM), "below 0x10000");
+        assert_eq!(call_on(&mut loaded, MMAP, [0, P, 1 << 32 | 3, ANON, u64::MAX, 0]), errno(Errno::EINVAL), "rights beyond 32 bits");
+        let addr = 0x50_0000_0000;
+        assert_eq!(call_on(&mut loaded, MMAP, [addr, P, 3, ANON | MAP_FIXED, u64::MAX, 0]), addr as u8);
+        assert!(loaded.space.mappings().find(addr).is_some());
+        assert_eq!(call_on(&mut loaded, MPROTECT, [addr, P, 1, 0, 0, 0]), 0);
+        assert_eq!(call_on(&mut loaded, MPROTECT, [addr, 2 * P, 1, 0, 0, 0]), errno(Errno::ENOMEM), "a hole");
+        assert_eq!(call_on(&mut loaded, MADVISE, [addr, P, 15, 0, 0, 0]), 0, "MADV_NOHUGEPAGE");
+        assert_eq!(call_on(&mut loaded, MADVISE, [addr, P, 0xffff_ffff_0000_0004, 0, 0, 0]), 0, "advice is an int");
+        assert_eq!(call_on(&mut loaded, MADVISE, [addr, P, 77, 0, 0, 0]), errno(Errno::EINVAL));
+        assert_eq!(call_on(&mut loaded, MUNMAP, [addr, P, 0, 0, 0, 0]), 0);
+        assert_eq!(call_on(&mut loaded, MUNMAP, [addr + 1, P, 0, 0, 0, 0]), errno(Errno::EINVAL));
+        assert!(loaded.space.mappings().find(addr).is_none());
+    }
+
+    /// `MAP_FIXED` over touched pages and `munmap` of the program's own pages give the
+    /// frames back
+    #[test_case]
+    fn test_replaced_and_unmapped_pages_are_freed() {
+        let mut loaded = load(code!(osel_load, osel_load_end));
+        let addr = loaded.space.mmap(0, 4 * P, RW, ANON).unwrap();
+        loaded.space.check_user(addr, 4 * P as usize, Access::Write).unwrap();
+        let frames = used_frames();
+        loaded.space.mmap(addr, 4 * P, RW, ANON | MAP_FIXED).unwrap();
+        // the level 3 table stays: the stack is in it too
+        assert_eq!(used_frames(), frames - 4 - 2, "the pages and their emptied level 1 and 2 tables");
+        let stack_top = crate::program::STACK_TOP;
+        let frames = used_frames();
+        loaded.space.munmap(stack_top - 4 * P, 4 * P).unwrap();
+        assert_eq!(used_frames(), frames - 4, "eagerly mapped stack pages");
+        let (_frame, stop) = run_on(&mut loaded, |frame| frame.rdi = stack_top - P);
+        assert_eq!(stop.fault().cr2, stack_top - P);
+    }
+
+    /// The program's own segments and stack are areas too
+    #[test_case]
+    fn test_program_pages_are_areas() {
+        let loaded = load(code!(osel_load, osel_load_end));
+        let text = loaded.space.mappings().find(loaded.entry).expect("the code is an area");
+        assert_eq!(text.prot, PROT_READ | PROT_EXEC);
+        let stack = loaded.space.mappings().find(loaded.rsp).expect("the stack is an area");
+        assert_eq!(stack.prot, RW);
+        assert!(loaded.space.mappings().find(crate::program::STACK_BOTTOM - 8).is_none(), "the guard page is not");
+    }
+
+    #[test_case]
+    fn test_memory_programs_leak_nothing() {
+        let frames = used_frames();
+        let heap = crate::allocator::with_allocator(|allocator| allocator.in_use());
+        for _ in 0..30 {
+            let mut loaded = load(code!(osel_mmap_touch, osel_mmap_touch_end));
+            let none = loaded.space.mmap(0, 2 * P, RW, ANON).unwrap();
+            loaded.space.check_user(none, 2 * P as usize, Access::Write).unwrap();
+            loaded.space.mprotect(none, 2 * P, 0).unwrap();
+            let (_frame, stop) = run_on(&mut loaded, |frame| {
+                (frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8, frame.r9) = (0, 64 * MIB, RW as u64, ANON, u64::MAX, 0);
+            });
+            assert_eq!(stop.fault().vector, INVALID_OPCODE);
+        }
+        assert_eq!(used_frames(), frames);
         assert_eq!(crate::allocator::with_allocator(|allocator| allocator.in_use()), heap);
     }
 }

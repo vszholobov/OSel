@@ -2,7 +2,8 @@
 //!
 //! A program is a process with one thread (`scheduler`). Exceptions from ring 3 go through
 //! the entry stubs of `interrupts`: they push every register into a `TrapFrame` at the top
-//! of the thread's kernel stack, and `user_trap` ends the thread there. `run` starts a
+//! of the thread's kernel stack, and `user_trap` hands it to `user_fault`: that maps the
+//! page of a first touch or ends the thread. `run` starts a
 //! program from a frame and waits for it to stop.
 
 use crate::gdt;
@@ -15,7 +16,8 @@ use osel_core::devices;
 use osel_core::file::{Access, FdTable, OpenDescription};
 use osel_core::errno::{Errno, KResult};
 use osel_core::fpu::FpuState;
-use osel_core::trap::{GENERAL_PROTECTION, TrapFrame};
+use osel_core::mmap::Touch;
+use osel_core::trap::{GENERAL_PROTECTION, PAGE_FAULT, PF_FETCH, PF_PRESENT, PF_RESERVED, PF_WRITE, TrapFrame};
 
 /// How a program's run ended
 #[derive(Debug, Clone, Copy)]
@@ -121,7 +123,7 @@ pub fn start(space: UserSpace, files: FdTable, mut frame: TrapFrame, fpu: FpuSta
 
 /// Reached by a `jmp` from an entry stub after a trap from ring 3, with the vector and the
 /// error code pushed on top of what the CPU pushed. Completes the `TrapFrame` at the top of
-/// the kernel stack and ends the thread.
+/// the kernel stack and calls `user_fault`.
 #[unsafe(naked)]
 pub(crate) unsafe extern "C" fn user_trap() {
     naked_asm!(
@@ -149,12 +151,38 @@ pub(crate) unsafe extern "C" fn user_trap() {
     )
 }
 
-/// A fault of a program: it ends with the exception. Interrupts are still off from the
-/// interrupt gate, so CR2 still holds the faulting address of a page fault.
+/// A fault of a program. A page fault on an untouched page of an area maps the page and
+/// the program goes on; anything else ends it with the exception. Interrupts are still off
+/// from the interrupt gate, so CR2 still holds the faulting address of a page fault.
 extern "C" fn user_fault(frame: *const TrapFrame) -> ! {
     let cr2 = x86_64::registers::control::Cr2::read_raw();
+    if unsafe { (*frame).vector } == PAGE_FAULT && map_on_demand(cr2, unsafe { (*frame).error_code }) {
+        // a killed program goes no further, as after a system call
+        if !scheduler::current_killed() {
+            // the frame is at the top of the thread's kernel stack, where `return_to_user` wants it
+            unsafe { scheduler::return_to_user(frame) }
+        }
+        scheduler::exit_current(Stop::Killed, Some(unsafe { *frame }));
+    }
     let frame = unsafe { *frame };
     scheduler::exit_current(scheduler::fault_of(&frame, cr2), Some(frame))
+}
+
+/// Maps the page a program touched for the first time, see `Mappings::fault`. Only a not
+/// present page of the lower half: a protection fault is the program's.
+fn map_on_demand(address: u64, error_code: u64) -> bool {
+    if error_code & (PF_PRESENT | PF_RESERVED) != 0 || address >= USER_END {
+        return false;
+    }
+    let touch = if error_code & PF_FETCH != 0 {
+        Touch::Execute
+    } else if error_code & PF_WRITE != 0 {
+        Touch::Write
+    } else {
+        Touch::Read
+    };
+    // SAFETY: the faulting thread is the process's only one, and it is here
+    unsafe { scheduler::current_space() }.fault(address, touch)
 }
 
 #[cfg(test)]

@@ -10,7 +10,11 @@ pub const READ: u64 = 0;
 pub const WRITE: u64 = 1;
 pub const CLOSE: u64 = 3;
 pub const FSTAT: u64 = 5;
+pub const MMAP: u64 = 9;
+pub const MPROTECT: u64 = 10;
+pub const MUNMAP: u64 = 11;
 pub const SCHED_YIELD: u64 = 24;
+pub const MADVISE: u64 = 28;
 pub const GETPID: u64 = 39;
 pub const EXIT: u64 = 60;
 pub const FCNTL: u64 = 72;
@@ -24,7 +28,11 @@ pub const SYSCALLS: &[(u64, &str)] = &[
     (WRITE, "write"),
     (CLOSE, "close"),
     (FSTAT, "fstat"),
+    (MMAP, "mmap"),
+    (MPROTECT, "mprotect"),
+    (MUNMAP, "munmap"),
     (SCHED_YIELD, "sched_yield"),
+    (MADVISE, "madvise"),
     (GETPID, "getpid"),
     (EXIT, "exit"),
     (FCNTL, "fcntl"),

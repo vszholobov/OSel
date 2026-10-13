@@ -232,8 +232,15 @@ fn map_zeroed_page(
     let bytes = (mapper.phys_offset() + frame.start_address().as_u64()).as_mut_ptr::<u8>();
     unsafe { bytes.write_bytes(0, PAGE_SIZE as usize) };
     // `map_to` refuses pages that are already mapped, and the CPU never caches
-    // not present translations, so there is nothing stale to flush
-    match unsafe { mapper.map_to(page, frame, flags, frames) } {
+    // not present translations, so there is nothing stale to flush. Tables of the lower
+    // half allow everything, the rights of a page are in its own entry only: `mprotect`
+    // changes the leaves, and a table made for a read-only page must not stay read-only.
+    let result = if page.start_address().as_u64() < USER_END {
+        unsafe { mapper.map_to_with_table_flags(page, frame, flags, USER_TABLE_FLAGS, frames) }
+    } else {
+        unsafe { mapper.map_to(page, frame, flags, frames) }
+    };
+    match result {
         Ok(flush) => {
             flush.ignore();
             Ok(())
@@ -245,6 +252,45 @@ fn map_zeroed_page(
             Err(error.into())
         }
     }
+}
+
+/// Flags of every page table of the lower half
+pub const USER_TABLE_FLAGS: PageTableFlags =
+    PageTableFlags::PRESENT.union(PageTableFlags::WRITABLE).union(PageTableFlags::USER_ACCESSIBLE);
+
+/// Gives every page of `size` bytes at `start` that has a frame the leaf flags `flags`,
+/// keeping its frame, also when `flags` has no `PRESENT` (`PROT_NONE`). Pages without a
+/// frame are skipped. Returns the number of changed pages; flushing is up to the caller.
+pub fn protect_range(mapper: &mut OffsetPageTable, start: VirtAddr, size: u64, flags: PageTableFlags) -> Result<usize, MapRangeError> {
+    let Some((first, last)) = check_range(start, size)? else {
+        return Ok(0);
+    };
+    let span = Span { first: linear(first.start_address()), last: linear(last.start_address()) };
+    let phys_offset = mapper.phys_offset();
+    Ok(protect_level(mapper.level_4_table_mut(), 4, 0, span, phys_offset, flags))
+}
+
+fn protect_level(table: &mut PageTable, level: u8, base: u64, span: Span, phys_offset: VirtAddr, flags: PageTableFlags) -> usize {
+    let size = entry_size(level);
+    let mut changed = 0;
+    for (index, entry) in table.iter_mut().enumerate() {
+        let start = base + index as u64 * size;
+        if start + size - 1 < span.first || start > span.last {
+            continue;
+        }
+        if entry.is_unused() || entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+            continue;
+        }
+        if level == 1 {
+            let address = entry.addr();
+            entry.set_addr(address, flags);
+            changed += 1;
+        } else {
+            let child = unsafe { table_at(phys_offset, entry.addr()) };
+            changed += protect_level(child, level - 1, start, span, phys_offset, flags);
+        }
+    }
+    changed
 }
 
 /// Pages `first..=last`. `Page::range_inclusive` steps past the last page of the lower
@@ -684,20 +730,52 @@ mod tests {
     }
 
     /// Nikka 2-mm-4 `check_map_intermediate`: a second mapping under the same parents
-    /// reuses the tables and widens their flags
+    /// reuses the tables. Tables of the lower half allow everything from the start: the
+    /// rights of a page are in its leaf, so `mprotect` can widen them.
     #[test]
-    fn intermediate_entries_are_reused_and_widened() {
+    fn intermediate_entries_are_reused_and_allow_everything() {
         let mut mapper = host_mapper();
         let mut frames = HostFrames::new(100);
-        let read_only = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
+        let read_only = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::NO_EXECUTE;
         let start = VirtAddr::new(0x40_0000);
         map_range(&mut mapper, &mut frames, start, PAGE_SIZE, read_only).unwrap();
-        assert_eq!(mapper.level_4_table()[start.p4_index()].flags(), read_only);
+        assert_eq!(mapper.level_4_table()[start.p4_index()].flags(), USER_TABLE_FLAGS);
         let tables_and_frame = frames.handed_out;
         map_range(&mut mapper, &mut frames, start + PAGE_SIZE, PAGE_SIZE, read_only | PageTableFlags::WRITABLE)
             .unwrap();
         assert_eq!(frames.handed_out, tables_and_frame + 1, "only a data frame, the tables are shared");
-        assert_eq!(mapper.level_4_table()[start.p4_index()].flags(), read_only | PageTableFlags::WRITABLE);
+        let level_3 = unsafe { table_at(mapper.phys_offset(), mapper.level_4_table()[start.p4_index()].addr()) };
+        let level_2 = unsafe { table_at(mapper.phys_offset(), level_3[start.p3_index()].addr()) };
+        let level_1 = unsafe { table_at(mapper.phys_offset(), level_2[start.p2_index()].addr()) };
+        assert_eq!(level_3[start.p3_index()].flags(), USER_TABLE_FLAGS);
+        assert_eq!(level_2[start.p2_index()].flags(), USER_TABLE_FLAGS);
+        assert_eq!(level_1[start.p1_index()].flags(), read_only, "the leaf has the page's own rights");
+    }
+
+    /// `protect_range` changes the leaves of pages with a frame and keeps the frame, also
+    /// without `PRESENT`; `unmap_range` still frees such a frame
+    #[test]
+    fn protect_keeps_frames() {
+        let mut mapper = host_mapper();
+        let mut frames = HostFrames::new(100);
+        let rw = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::WRITABLE;
+        let start = VirtAddr::new(0x40_0000);
+        map_range(&mut mapper, &mut frames, start, 2 * PAGE_SIZE, rw).unwrap();
+        let frame = mapper.translate_addr(start).unwrap();
+        let none = PageTableFlags::BIT_9;
+        assert_eq!(protect_range(&mut mapper, start, 8 * PAGE_SIZE, none).unwrap(), 2, "pages without a frame are skipped");
+        assert_eq!(mapper.translate_addr(start), Some(frame), "the frame is still there");
+        match mapper.translate(start) {
+            x86_64::structures::paging::mapper::TranslateResult::Mapped { flags, .. } => assert_eq!(flags, none),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(protect_range(&mut mapper, start, PAGE_SIZE, rw).unwrap(), 1);
+        assert_eq!(mapper.translate_addr(start), Some(frame));
+        // a huge range walks only the tables there are
+        assert_eq!(protect_range(&mut mapper, VirtAddr::new(0), USER_END, rw).unwrap(), 2);
+        let before = frames.freed;
+        assert_eq!(unmap_range(&mut mapper, &mut frames, start, 2 * PAGE_SIZE).unwrap(), 2);
+        assert_eq!(frames.freed, before + 2 + 3, "both pages, the not present one too, and the tables");
     }
 
     #[test]

@@ -27,7 +27,7 @@ description: Проектирование этапа 2 — пользовате�
 | `FileLike` | открытый файл: `read`, `write`, `poll`, `ioctl`; по умолчанию ошибка | `InodeFile`, `NullFile`, `Tty`; потом eventfd, epoll | pipe, сокеты (`as_socket`) | сделано, `poll` и `ioctl` — с шагами 10 и этапом 3 |
 | `FdTable` | дескрипторы процесса: наименьший свободный, `dup`, `O_CLOEXEC` | `FdTable` в `osel-core` | — | сделано |
 | `FrameSource` | выдать и вернуть физическую страницу | `FramePool`: список свободных страниц | счётчики ссылок для копирования при записи | сделано |
-| `VmaSet` | области памяти программы: разрез, слияние, поиск места | анонимные области | файлы в памяти (`Backing::File`) | шаг 9 |
+| `VmaSet` | области памяти программы: разрез, слияние, поиск места | анонимные области, `Mappings` | файлы в памяти (`Backing::File`) | сделано |
 | `UserMem` | копирование из памяти программы и в неё с проверкой | `user_mem::check`, `UserSpace::copy_from_user` и `copy_to_user` | — | сделано |
 | `ClockSource` | монотонное время | счётчик PIT | TSC, HPET, RTC | шаг 10 |
 | `SchedPolicy` | кого запускать следующим | `RoundRobin` | приоритеты, несколько процессоров | сделано |
@@ -49,13 +49,13 @@ description: Проектирование этапа 2 — пользовате�
 6. **SSE.** Сделано: [x87 и SSE](../architecture/core/user-mode.md#fpu), [решение 0013](../decisions/0013-fpu-state.md). Область — у каждого потока, см. [решение 0015](../decisions/0015-threads.md).
 7. **Файлы для программ.** Сделано: [открытые файлы](../architecture/core/fs.md#open-files), [устройства](../architecture/core/fs.md#devices), [решение 0014](../decisions/0014-file-descriptors.md). Сверх плана — `newfstatat` и `fcntl`: Go вызывает их при старте и в `os.Stat`.
 8. **Потоки и вытеснение.** Сделано: [потоки и планировщик](../architecture/core/threads.md), [решение 0015](../decisions/0015-threads.md). Стек умершего потока освобождает следующий поток сразу после переключения, а не отложенно.
-9. **Память для Go.** `VmaSet`, `mmap` с подсказкой адреса без `MAP_FIXED`, `MAP_FIXED` поверх резерва `PROT_NONE`, `munmap`, `mprotect`, `madvise` как пустая операция; отложенное выделение страниц в обработчике page fault.
+9. **Память для Go.** Сделано: [области и страницы при первом обращении](../architecture/core/memory.md#areas), [решение 0016](../decisions/0016-lazy-anonymous-memory.md). `madvise` вышел не пустой операцией: `MADV_DONTNEED` снимает страницы.
 10. **Время и ожидание.** `clone`, `futex`, `nanosleep`, `clock_gettime`, `epoll` и `eventfd2`. `time.Sleep` требует их с первого таймера: Go вызывает `epoll_create1`, `eventfd2` и `epoll_ctl`, а запись в eventfd должна будить `epoll_pwait`.
 11. **Go.** Остальные вызовы из [таблицы](#syscalls). **Проверка:** «hello world», затем горутины и `time.Sleep`.
 
 ## Состояние работы {#status}
 
-Сделаны шаги 1–8, дальше — шаги 9–11 по порядку выше. Что отложено по ходу работы — в [техдолге](../debt.md).
+Сделаны шаги 1–9, дальше — шаги 10 и 11 по порядку выше. Что отложено по ходу работы — в [техдолге](../debt.md).
 
 ## Вход в ядро {#entry}
 

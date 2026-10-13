@@ -81,6 +81,7 @@ items:
       - href: decisions/0013-fpu-state.md
       - href: decisions/0014-file-descriptors.md
       - href: decisions/0015-threads.md
+      - href: decisions/0016-lazy-anonymous-memory.md
   - name: Планы
     items:
       - href: roadmap.md

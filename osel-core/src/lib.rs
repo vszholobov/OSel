@@ -29,3 +29,5 @@ pub mod cpio;
 pub mod devices;
 pub mod file;
 pub mod sched;
+pub mod vma;
+pub mod mmap;

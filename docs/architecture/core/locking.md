@@ -42,7 +42,7 @@ description: Блокировки OSel — IrqSpinlock, отчёт о взаим
 | `DECODER` | `src/keyboard.rs` | состояние декодера скан-кодов | обработчик клавиатуры |
 | `BUFFER` | `src/keyboard.rs` | буфер введённых символов | обработчик клавиатуры, `pop_char`, `dropped_chars` |
 | `ALLOCATOR` | `src/allocator.rs` | куча | глобальный аллокатор, `with_allocator` |
-| `MEMORY` | `src/memory.rs` | таблица страниц и аллокатор страниц | `with_memory` |
+| `MEMORY` | `src/memory.rs` | таблица страниц и аллокатор страниц | `with_memory`; page fault программы на нетронутой странице (`UserSpace::fault`), когда ядро не держит ни одной блокировки |
 | `TTY_TEXT` | `src/tty.rs` | недособранный символ UTF-8 вывода терминала между вызовами `write` | `Tty::write`; печать — после того, как блокировка отпущена |
 | `TTY_PENDING` | `src/tty.rs` | байты набранного символа, не поместившиеся в прошлое чтение | `Tty::read` |
 | `OFFSET` | `osel-core/src/file.rs` | смещение описания открытого файла (`Spinlock`, без выключения прерываний) | `OpenDescription::read`, `write` для файлов со смещением |
@@ -85,4 +85,4 @@ description: Блокировки OSel — IrqSpinlock, отчёт о взаим
 
 - [0003 — IrqSpinlock](../../decisions/0003-irq-spinlock.md)
 
-_Сверено с кодом: 2026-10-12, коммит 8a4d3e2._
+_Сверено с кодом: 2026-10-13, коммит 2c68d3f._

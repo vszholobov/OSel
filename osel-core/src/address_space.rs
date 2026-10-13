@@ -85,6 +85,14 @@ impl AddressSpace {
         memory::unmap_range(&mut self.mapper(), frames, start, size)
     }
 
+    /// `memory::protect_range` restricted to the lower half
+    pub fn protect(&mut self, start: VirtAddr, size: u64, flags: PageTableFlags) -> Result<usize, MapRangeError> {
+        if start.as_u64() >= USER_END {
+            return Err(MapRangeError::PermissionDenied);
+        }
+        memory::protect_range(&mut self.mapper(), start, size, flags)
+    }
+
     /// Frees every frame of the lower half, its page tables and the level 4 table.
     /// Children are freed before their table: a freed frame gets overwritten.
     ///

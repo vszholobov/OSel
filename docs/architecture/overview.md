@@ -51,8 +51,10 @@ description: Обзор OSel — из каких крейтов и модуле�
 | `console` | `osel-core/src/console.rs` | отрисовка текста в любой байтовый буфер | [Консоль](drivers/console.md) |
 | `keyboard` | `osel-core/src/keyboard.rs` | `RingBuffer`, `ScancodeDecoder` | [Клавиатура](drivers/keyboard.md) |
 | `pit` | `osel-core/src/pit.rs` | делитель таймера, маски PIC, распознавание ложных IRQ | [Прерывания](core/interrupts.md#pic-pit) |
-| `memory` | `osel-core/src/memory.rs` | раскладка адресов, `RegionFrameAllocator`, `map_range`, `unmap_range`, `prune_empty_tables` | [Память](core/memory.md) |
+| `memory` | `osel-core/src/memory.rs` | раскладка адресов, `RegionFrameAllocator`, `map_range`, `unmap_range`, `protect_range`, `prune_empty_tables` | [Память](core/memory.md) |
 | `address_space` | `osel-core/src/address_space.rs` | `AddressSpace` — таблица уровня 4 программы с общей верхней половиной | [Память](core/memory.md#address-spaces) |
+| `vma` | `osel-core/src/vma.rs` | `VmaSet` — области адресного пространства программы с правами | [Память](core/memory.md#areas) |
+| `mmap` | `osel-core/src/mmap.rs` | `Mappings` — `mmap`, `munmap`, `mprotect`, `madvise` и страница при первом обращении | [Память](core/memory.md#areas) |
 | `frames` | `osel-core/src/frames.rs` | интерфейс `FrameSource`, `FramePool` с освобождением страниц | [Память](core/memory.md#frames) |
 | `heap` | `osel-core/src/heap.rs` | `FixedSizeBlockAllocator` | [Память](core/memory.md#heap) |
 | `exception` | `osel-core/src/exception.rs` | текст отчёта об исключении, `FixedBuf` | [Прерывания](core/interrupts.md#exceptions) |
@@ -118,4 +120,4 @@ description: Обзор OSel — из каких крейтов и модуле�
 - [0014 — дескрипторы и устройства](../decisions/0014-file-descriptors.md)
 - [0015 — потоки и вытеснение](../decisions/0015-threads.md)
 
-_Сверено с кодом: 2026-10-13, коммит 45069e9._
+_Сверено с кодом: 2026-10-13, коммит 2c68d3f._

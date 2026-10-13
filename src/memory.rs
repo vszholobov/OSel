@@ -6,6 +6,7 @@ use alloc::vec;
 use bootloader_api::info::MemoryRegion;
 use crate::sync::IrqSpinlock;
 use osel_core::errno::{Errno, KResult};
+use osel_core::mmap::{Mappings, PageTables, Touch};
 use osel_core::user_mem::{self, Access};
 use x86_64::VirtAddr;
 use x86_64::registers::control::Cr3;
@@ -70,18 +71,20 @@ pub fn used_frames() -> usize {
 /// Dropping it frees all of its frames; it must not be active then.
 pub struct UserSpace {
     space: Option<AddressSpace>,
+    /// What the program may touch; pages are mapped on the first touch
+    mappings: Mappings,
 }
 
 impl UserSpace {
     /// An empty address space, `None` if there is no frame for its table
     pub fn new() -> Option<UserSpace> {
         let space = with_memory(|m| AddressSpace::new(m.mapper.level_4_table(), &mut m.frame_allocator, m.mapper.phys_offset()))?;
-        Some(UserSpace { space: Some(space) })
+        Some(UserSpace { space: Some(space), mappings: Mappings::new() })
     }
 
     /// Moves the address space out, leaving an empty `UserSpace` that owns nothing
     pub fn take(&mut self) -> UserSpace {
-        UserSpace { space: self.space.take() }
+        UserSpace { space: self.space.take(), mappings: core::mem::take(&mut self.mappings) }
     }
 
     /// The level 4 table to load into CR3
@@ -93,7 +96,8 @@ impl UserSpace {
         self.space.as_mut().expect("address space is destroyed")
     }
 
-    /// Maps zeroed user pages, see `map_range`
+    /// Maps zeroed user pages right away, see `map_range`. They become an area the program
+    /// may `munmap` or `mprotect`.
     pub fn map(&mut self, start: VirtAddr, size: u64, flags: PageTableFlags) -> Result<(), MapRangeError> {
         let active = self.is_active();
         let space = self.space();
@@ -101,6 +105,10 @@ impl UserSpace {
         // the CPU may have cached the rolled back pages speculatively
         if result.is_err() && active {
             x86_64::instructions::tlb::flush_all();
+        }
+        if result.is_ok() && size > 0 {
+            let (first, end) = page_span(start.as_u64(), size);
+            self.mappings.record(first, end, flags);
         }
         result
     }
@@ -113,7 +121,51 @@ impl UserSpace {
         if active {
             x86_64::instructions::tlb::flush_all();
         }
+        if result.is_ok() && size > 0 {
+            let (first, end) = page_span(start.as_u64(), size);
+            self.mappings.forget(first, end);
+        }
         result
+    }
+
+    /// The areas and the page tables they change
+    fn parts(&mut self) -> (&mut Mappings, Tables<'_>) {
+        let active = self.is_active();
+        let space = self.space.as_mut().expect("address space is destroyed");
+        (&mut self.mappings, Tables { space, active })
+    }
+
+    /// The areas of the program
+    pub fn mappings(&self) -> &Mappings {
+        &self.mappings
+    }
+
+    /// `mmap` of anonymous memory, see `Mappings::mmap`
+    pub fn mmap(&mut self, addr: u64, len: u64, prot: u32, flags: u64) -> KResult<u64> {
+        let (mappings, mut tables) = self.parts();
+        mappings.mmap(&mut tables, addr, len, prot, flags)
+    }
+
+    pub fn munmap(&mut self, addr: u64, len: u64) -> KResult<()> {
+        let (mappings, mut tables) = self.parts();
+        mappings.munmap(&mut tables, addr, len)
+    }
+
+    pub fn mprotect(&mut self, addr: u64, len: u64, prot: u32) -> KResult<()> {
+        let (mappings, mut tables) = self.parts();
+        mappings.mprotect(&mut tables, addr, len, prot)
+    }
+
+    pub fn madvise(&mut self, addr: u64, len: u64, advice: u64) -> KResult<()> {
+        let (mappings, mut tables) = self.parts();
+        mappings.madvise(&mut tables, addr, len, advice)
+    }
+
+    /// A page fault of the program at `address`: `true` if a page was mapped and the
+    /// program goes on. Takes `MEMORY` and allocates nothing on the heap.
+    pub fn fault(&mut self, address: u64, touch: Touch) -> bool {
+        let (mappings, mut tables) = self.parts();
+        mappings.fault(&mut tables, address, touch)
     }
 
     /// Reads memory a program handed to the kernel: every page must be the program's,
@@ -150,10 +202,17 @@ impl UserSpace {
         Err(Errno::ENAMETOOLONG)
     }
 
-    /// Checks that `len` bytes at `address` are the program's memory, see `user_mem::check`
+    /// Checks that `len` bytes at `address` are the program's memory, see `user_mem::check`.
+    /// Untouched pages of the program's areas are mapped first, as its own touch would.
     pub fn check_user(&mut self, address: u64, len: usize, access: Access) -> KResult<()> {
-        // the leaf flags are enough: the kernel gives every lower half table entry all
-        // the access flags its pages need
+        let touch = match access {
+            Access::Read => Touch::Read,
+            Access::Write => Touch::Write,
+        };
+        let (mappings, mut tables) = self.parts();
+        mappings.fault_in(&mut tables, address, len as u64, touch);
+        // the leaf flags are enough: every table of the lower half allows everything
+        // (`USER_TABLE_FLAGS`)
         user_mem::check(address, len as u64, access, |page| self.page_flags(VirtAddr::new(page)))
     }
 
@@ -225,6 +284,49 @@ impl Drop for UserSpace {
         assert!(!self.is_active(), "dropping the active address space");
         if let Some(space) = self.space.take() {
             with_memory(|m| unsafe { space.destroy(&mut m.frame_allocator) });
+        }
+    }
+}
+
+/// First page and end of the pages `size > 0` bytes at `start` touch
+fn page_span(start: u64, size: u64) -> (u64, u64) {
+    let first = start & !(PAGE_SIZE - 1);
+    let end = start.saturating_add(size).saturating_add(PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+    (first, end)
+}
+
+/// The page tables of a `UserSpace` for `Mappings`. Every change takes `MEMORY` by itself:
+/// the areas allocate on the heap, which must not happen inside `with_memory`.
+struct Tables<'a> {
+    space: &'a mut AddressSpace,
+    /// Whether the space is in CR3: then changes flush the TLB
+    active: bool,
+}
+
+impl PageTables for Tables<'_> {
+    fn has_frame(&mut self, page: u64) -> bool {
+        use x86_64::structures::paging::mapper::{Translate, TranslateResult};
+        // a not present entry with a frame (`PROT_NONE`) translates too
+        matches!(self.space.mapper().translate(VirtAddr::new(page)), TranslateResult::Mapped { .. })
+    }
+
+    fn map_zeroed(&mut self, page: u64, flags: PageTableFlags) -> bool {
+        // not present translations are never cached: nothing to flush
+        with_memory(|m| self.space.map(&mut m.frame_allocator, VirtAddr::new(page), PAGE_SIZE, flags)).is_ok()
+    }
+
+    fn unmap(&mut self, start: u64, end: u64) {
+        with_memory(|m| self.space.unmap(&mut m.frame_allocator, VirtAddr::new(start), end - start)).expect("an area is in the lower half");
+        if self.active {
+            x86_64::instructions::tlb::flush_all();
+        }
+    }
+
+    fn protect(&mut self, start: u64, end: u64, flags: PageTableFlags) {
+        with_memory(|_| self.space.protect(VirtAddr::new(start), end - start, flags)).expect("an area is in the lower half");
+        // also when the rights grow: a stale read-only entry would fault for good
+        if self.active {
+            x86_64::instructions::tlb::flush_all();
         }
     }
 }

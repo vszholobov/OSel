@@ -15,8 +15,17 @@ pub const RFLAGS_RESERVED: u64 = 1 << 1;
 /// NT, RF and VM stay clear, IF stays set.
 pub const RFLAGS_USER: u64 = 0b1 | 0b100 | 0b1_0000 | 0b100_0000 | 0b1000_0000 | (1 << 8) | (1 << 10) | (1 << 11) | (1 << 18) | (1 << 21);
 
+pub const INVALID_OPCODE: u64 = 6;
 pub const PAGE_FAULT: u64 = 14;
 pub const GENERAL_PROTECTION: u64 = 13;
+
+/// Page fault error code: the page was present, a write, from ring 3, a reserved bit set,
+/// an instruction fetch
+pub const PF_PRESENT: u64 = 1 << 0;
+pub const PF_WRITE: u64 = 1 << 1;
+pub const PF_USER: u64 = 1 << 2;
+pub const PF_RESERVED: u64 = 1 << 3;
+pub const PF_FETCH: u64 = 1 << 4;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

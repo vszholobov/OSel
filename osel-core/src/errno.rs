@@ -31,6 +31,8 @@ pub enum Errno {
     EFAULT = 14,
     /// File exists
     EEXIST = 17,
+    /// No such device: the file can't be mapped
+    ENODEV = 19,
     /// Not a directory
     ENOTDIR = 20,
     /// Is a directory
@@ -72,6 +74,7 @@ impl Errno {
             Errno::ENOMEM => "ENOMEM",
             Errno::EFAULT => "EFAULT",
             Errno::EEXIST => "EEXIST",
+            Errno::ENODEV => "ENODEV",
             Errno::ENOTDIR => "ENOTDIR",
             Errno::EISDIR => "EISDIR",
             Errno::EINVAL => "EINVAL",
@@ -114,6 +117,7 @@ mod tests {
             (Errno::ENOMEM, 12),
             (Errno::EFAULT, 14),
             (Errno::EEXIST, 17),
+            (Errno::ENODEV, 19),
             (Errno::ENOTDIR, 20),
             (Errno::EISDIR, 21),
             (Errno::EINVAL, 22),
