@@ -50,12 +50,12 @@ description: Проектирование этапа 2 — пользовате�
 7. **Файлы для программ.** Сделано: [открытые файлы](../architecture/core/fs.md#open-files), [устройства](../architecture/core/fs.md#devices), [решение 0014](../decisions/0014-file-descriptors.md). Сверх плана — `newfstatat` и `fcntl`: Go вызывает их при старте и в `os.Stat`.
 8. **Потоки и вытеснение.** Сделано: [потоки и планировщик](../architecture/core/threads.md), [решение 0015](../decisions/0015-threads.md). Стек умершего потока освобождает следующий поток сразу после переключения, а не отложенно.
 9. **Память для Go.** Сделано: [области и страницы при первом обращении](../architecture/core/memory.md#areas), [решение 0016](../decisions/0016-lazy-anonymous-memory.md). `madvise` вышел не пустой операцией: `MADV_DONTNEED` снимает страницы.
-10. **Время и ожидание.** `clone`, `futex`, `nanosleep`, `clock_gettime`, `epoll` и `eventfd2`. `time.Sleep` требует их с первого таймера: Go вызывает `epoll_create1`, `eventfd2` и `epoll_ctl`, а запись в eventfd должна будить `epoll_pwait`.
-11. **Go.** Остальные вызовы из [таблицы](#syscalls). **Проверка:** «hello world», затем горутины и `time.Sleep`.
+10. **Время и ожидание.** Сделано: `clone` (поток того же процесса), `futex`, `nanosleep`, `clock_gettime`, `epoll_create1`/`epoll_ctl`/`epoll_pwait`, `eventfd2`; разделяемое адресное пространство и дескрипторы под блокировками `MM` и `FILES`. См. [потоки](../architecture/core/threads.md#futex), [открытые файлы](../architecture/core/fs.md#epoll).
+11. **Go.** Сделано: `arch_prctl`, `gettid`, `sched_getaffinity`, `getrandom`, `prlimit64` и заглушки сигналов; `clone` принимает `CLONE_SETTLS`. Статический бинарник Go печатает «hello from go», крутит горутины с `time.Sleep` и выходит с кодом, равным их сумме. **Проверка:** `tests/go_hello.rs` (пропускается без `go`).
 
 ## Состояние работы {#status}
 
-Сделаны шаги 1–9, дальше — шаги 10 и 11 по порядку выше. Что отложено по ходу работы — в [техдолге](../debt.md).
+Сделаны все шаги 1–11: этап 2 завершён, статическая программа на Go запускается через системные вызовы Linux. Что отложено по ходу работы — в [техдолге](../debt.md).
 
 ## Вход в ядро {#entry}
 
@@ -114,7 +114,7 @@ description: Проектирование этапа 2 — пользовате�
 
 ## Открытые вопросы {#questions}
 
-- Нужен ли `pipe2` при наличии `eventfd2` (Go 1.21+ использует eventfd).
+- `pipe2` не понадобился: Go 1.21+ будит сетевой опрос через `eventfd2`.
 
 ## Где смотреть {#links}
 

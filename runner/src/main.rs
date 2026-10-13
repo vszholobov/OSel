@@ -36,6 +36,8 @@ const DEFAULT_RAMDISK_DIR: &str = "ramdisk";
 const RAMDISK_FILE_NAME: &str = "ramdisk";
 /// Programs in user/ of the repository, each a crate of its own, added as /bin/<name>
 const USER_PROGRAMS: &[&str] = &["hello"];
+/// Go programs built with the host `go`, added as `/bin/<name>` when it is present
+const GO_PROGRAMS: &[&str] = &["gohello"];
 /// Their target: `ET_EXEC` at a fixed address, the kernel loads no position independent code
 const USER_TARGET: &str = "x86_64-unknown-none";
 /// Files the host leaves behind that must not make the ramdisk differ between machines
@@ -65,7 +67,8 @@ fn main() -> ExitCode {
     let config = parse_boot(env::var("OSEL_BOOT").ok().as_deref()).and_then(|boot| {
         let timeout = parse_timeout(env::var("OSEL_TIMEOUT").ok().as_deref())?;
         let ramdisk_dir = ramdisk_dir(env::var_os("OSEL_RAMDISK").as_deref(), &repository());
-        let programs = build_user_programs(&repository())?;
+        let mut programs = build_user_programs(&repository())?;
+        programs.extend(build_go_programs(&repository())?);
         let ramdisk = pack_ramdisk(&ramdisk_dir, &programs)?;
         Ok((boot, timeout, ramdisk))
     });
@@ -254,6 +257,39 @@ fn build_user_programs(repository: &Path) -> Result<Vec<(String, Vec<u8>)>, Stri
         }
         let binary = target_dir.join(USER_TARGET).join("release").join(name);
         let data = std::fs::read(&binary).map_err(|e| format!("cannot read {}: {e}", binary.display()))?;
+        programs.push((name.to_string(), data));
+    }
+    Ok(programs)
+}
+
+/// Builds every Go program of `GO_PROGRAMS` into `/bin/<name>`, if the `go` tool is on the
+/// machine. Without it the programs are simply left out and tests that need them skip; a
+/// real build failure (not a missing `go`) is an error. Built static for linux/amd64 with
+/// the base instruction set, the way OSel can load and run it.
+fn build_go_programs(repository: &Path) -> Result<Vec<(String, Vec<u8>)>, String> {
+    let mut programs = Vec::new();
+    for name in GO_PROGRAMS {
+        let source_dir = repository.join("user-go").join(name);
+        let output = repository.join("user-go/target").join(name);
+        let result = Command::new("go")
+            .args(["build", "-trimpath", "-o"])
+            .arg(&output)
+            .arg(".")
+            .current_dir(&source_dir)
+            .env("CGO_ENABLED", "0")
+            .env("GOOS", "linux")
+            .env("GOARCH", "amd64")
+            .env("GOAMD64", "v1")
+            // use the installed toolchain, never download one
+            .env("GOTOOLCHAIN", "local")
+            .status();
+        match result {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(programs),
+            Err(error) => return Err(format!("cannot start go to build user-go/{name}: {error}")),
+            Ok(status) if !status.success() => return Err(format!("building user-go/{name} failed")),
+            Ok(_) => {}
+        }
+        let data = std::fs::read(&output).map_err(|e| format!("cannot read {}: {e}", output.display()))?;
         programs.push((name.to_string(), data));
     }
     Ok(programs)

@@ -59,6 +59,11 @@ jobs:
       - name: Install QEMU
         run: sudo apt-get update && sudo apt-get install -y qemu-system-x86
 
+      # the runner builds user-go/gohello with this Go; the end-to-end test skips without it
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+
       - name: Install Rust toolchain from rust-toolchain.toml
         run: rustup toolchain install && rustc -V
 
@@ -99,6 +104,10 @@ jobs:
 
       - name: Install QEMU
         run: sudo apt-get update && sudo apt-get install -y qemu-system-x86
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
 
       - name: Install the latest nightly
         run: |

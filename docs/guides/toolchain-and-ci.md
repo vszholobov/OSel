@@ -30,7 +30,7 @@ CI описан в двух файлах: тесты — в `.github/workflows/t
 | Файл | Задача | Когда | Что делает |
 |---|---|---|---|
 | `test.yml` | `host unit tests` | каждый PR и push в `master` | `cargo test-core`, `cargo test-runner` и `cargo docs-check`: тесты без QEMU и сверка документации с кодом, быстро |
-| `test.yml` | `cargo test (uefi)`, `cargo test (bios)` | после `host unit tests` | `cargo test --no-fail-fast` в QEMU и загрузка настоящего ядра: `OSEL_EXPECT="OSel ready to go!" cargo run` |
+| `test.yml` | `cargo test (uefi)`, `cargo test (bios)` | после `host unit tests` | `cargo test --no-fail-fast` в QEMU и загрузка настоящего ядра: `OSEL_EXPECT="OSel ready to go!" cargo run`. Ставит Go (`actions/setup-go`), чтобы runner собрал `user-go/gohello` и сквозной тест Go прошёл |
 | `test.yml` | `latest nightly (uefi)`, `latest nightly (bios)` | по понедельникам и при ручном запуске | на самом свежем nightly: `cargo test-core`, `cargo test-runner` и `cargo test --no-fail-fast`; без сверки документации и без загрузки настоящего ядра, не ждёт `host unit tests` |
 | `docs.yml` | `build the site` | каждый PR и push в `master` | собирает сайт документации на Diplodoc; линтер роняет сборку на ссылках на несуществующие страницы; битые якоря ловит `cargo docs-check` |
 | `docs.yml` | `publish to GitHub Pages` | push в `master` и ручной запуск | публикует собранный сайт на GitHub Pages |

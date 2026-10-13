@@ -22,11 +22,15 @@ description: Справочник runner — переменные окружен
 | `OSEL_OVMF_DIR` | путь к папке | папка .ovmf внутри runner | куда скачать и где хранить прошивку UEFI для QEMU |
 | `OSEL_RAMDISK` | путь к папке | `ramdisk` в корне репозитория | какую папку упаковать в ramdisk (архив cpio). Относительный путь считается от корня репозитория, а не от текущей папки. Пустое значение — то же, что не задано |
 
-Неверное значение `OSEL_BOOT` или `OSEL_TIMEOUT` — ошибка до запуска QEMU: runner печатает `unknown OSEL_BOOT value …` или `OSEL_TIMEOUT must be a positive number of seconds, got …` и завершается с провалом. Так же runner останавливается, если не собралась программа из `user/`, если папки ramdisk нет (`ramdisk directory … does not exist, see OSEL_RAMDISK`) или в ней есть что-то кроме каталогов и обычных файлов (`…: only files and directories can go to the ramdisk`).
+Неверное значение `OSEL_BOOT` или `OSEL_TIMEOUT` — ошибка до запуска QEMU: runner печатает `unknown OSEL_BOOT value …` или `OSEL_TIMEOUT must be a positive number of seconds, got …` и завершается с провалом. Так же runner останавливается, если не собралась программа из `user/` или `user-go/`, если папки ramdisk нет (`ramdisk directory … does not exist, see OSEL_RAMDISK`) или в ней есть что-то кроме каталогов и обычных файлов (`…: only files and directories can go to the ramdisk`).
 
 ## Программы из user/ {#user-programs}
 
-Перед упаковкой ramdisk runner собирает каждую программу из `USER_PROGRAMS` (`runner/src/main.rs`): `cargo build --release --target x86_64-unknown-none` для `user/<имя>/Cargo.toml` в отдельную папку `user/target`, с `-Crelocation-model=static`, потому что ядро загружает только `ET_EXEC`. `RUSTFLAGS`, `CARGO_TARGET_DIR` и `CARGO_BUILD_TARGET` внешнего cargo программе не передаются. Результат добавляется в архив как `/bin/<имя>` с правами `0755`, после файлов из папки ramdisk. Если в этой папке уже есть `bin/<имя>`, runner останавливается с ошибкой `bin/<имя> is in the ramdisk directory and also a program of user/`. Ошибка сборки программы — тоже остановка до запуска QEMU (`building user/<имя> failed`).
+Перед упаковкой ramdisk runner собирает каждую программу из `USER_PROGRAMS` и `GO_PROGRAMS` (ниже). Сначала программы из `USER_PROGRAMS` (`runner/src/main.rs`): `cargo build --release --target x86_64-unknown-none` для `user/<имя>/Cargo.toml` в отдельную папку `user/target`, с `-Crelocation-model=static`, потому что ядро загружает только `ET_EXEC`. `RUSTFLAGS`, `CARGO_TARGET_DIR` и `CARGO_BUILD_TARGET` внешнего cargo программе не передаются. Результат добавляется в архив как `/bin/<имя>` с правами `0755`, после файлов из папки ramdisk. Если в этой папке уже есть `bin/<имя>`, runner останавливается с ошибкой `bin/<имя> is in the ramdisk directory and also a program of user/`. Ошибка сборки программы — тоже остановка до запуска QEMU (`building user/<имя> failed`).
+
+## Программы из user-go/ {#go-programs}
+
+Так же runner собирает каждую программу из `GO_PROGRAMS` хостовым `go`: `go build -trimpath` в `user-go/<имя>/` с `CGO_ENABLED=0`, `GOOS=linux`, `GOARCH=amd64`, `GOAMD64=v1` и `GOTOOLCHAIN=local` (ядро загружает статический `linux/amd64` с базовым набором инструкций и не скачивает тулчейн). Результат добавляется как `/bin/<имя>`. Если `go` на машине нет, программа просто не попадает в ramdisk, и тесты, которым она нужна, пропускаются; настоящая ошибка сборки (`building user-go/<имя> failed`) останавливает запуск. CI ставит Go, поэтому там сборка идёт всегда.
 
 ## Режимы {#modes}
 
