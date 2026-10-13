@@ -104,6 +104,9 @@ fn main() -> ExitCode {
     create_disk_image(&kernel, &image, boot, &ramdisk);
 
     let mut qemu = Command::new("qemu-system-x86_64");
+    // An 80x25 terminal with the large font needs 1280x800 pixels. Advertise a usable
+    // preferred mode instead of letting UEFI choose a huge desktop mode.
+    qemu.args(["-vga", "std", "-global", "VGA.xres=1280", "-global", "VGA.yres=1024"]);
     qemu.arg("-drive").arg(format!("format=raw,file={}", image.display()));
     if boot == Boot::Uefi {
         let ovmf = ovmf_firmware();
@@ -148,7 +151,7 @@ fn main() -> ExitCode {
         Mode::Run => {
             // Interactive terminals need the game's cursor and clear sequences intact.
             let output = thread::spawn(move || {
-                std::io::copy(&mut BufReader::new(stdout), &mut std::io::stdout())
+                forward_interactive(stdout, std::io::stdout())
             });
             let status = child.wait().expect("failed to wait for qemu");
             let _ = output.join();
@@ -203,6 +206,22 @@ fn report(outcome: Result<(), String>) -> ExitCode {
     }
 }
 
+/// Interactive updates often contain no newline. Flush each received chunk so
+/// stdout's line buffering cannot hold an entire game until GAME OVER.
+fn forward_interactive(mut reader: impl std::io::Read, mut out: impl Write) -> std::io::Result<()> {
+    let mut bytes = [0; 4096];
+    loop {
+        let count = match reader.read(&mut bytes) {
+            Ok(0) => return Ok(()),
+            Ok(count) => count,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        out.write_all(&bytes[..count])?;
+        out.flush()?;
+    }
+}
+
 fn parse_boot(value: Option<&str>) -> Result<Boot, String> {
     match value {
         None | Some("") | Some("uefi") => Ok(Boot::Uefi),
@@ -242,6 +261,12 @@ fn image_path(kernel: &Path, boot: Boot) -> PathBuf {
 
 fn create_disk_image(kernel: &Path, image: &Path, boot: Boot, ramdisk: &[u8]) {
     let mut boot_config = BootConfig::default();
+    // UEFI keeps the monitor's preferred mode; a minimum would make the
+    // bootloader pick the last (largest) advertised GOP mode instead.
+    if boot == Boot::Bios {
+        boot_config.frame_buffer.minimum_framebuffer_width = Some(1280);
+        boot_config.frame_buffer.minimum_framebuffer_height = Some(800);
+    }
     // the bootloader traces every boot step by default, keep only problems
     boot_config.log_level = LevelFilter::Warn;
 
@@ -689,6 +714,14 @@ mod tests {
     }
 
     const TIMEOUT: Duration = Duration::from_secs(60);
+
+    #[test]
+    fn interactive_updates_flush_without_newlines() {
+        let frame = b"\x1b[2;3H##";
+        let mut output = std::io::LineWriter::new(Vec::new());
+        forward_interactive(Cursor::new(frame), &mut output).unwrap();
+        assert_eq!(output.get_ref(), frame, "frame must not wait for a newline or drop");
+    }
 
     #[test]
     fn tetris_input_waits_for_gravity_and_acknowledges_each_key() {

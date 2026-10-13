@@ -2,8 +2,10 @@
 
 use crate::sync::IrqSpinlock;
 use crate::{keyboard, scheduler};
-use alloc::{string::String, vec::Vec};
+use alloc::vec::Vec;
+use core::fmt::Write;
 use osel_core::errno::{Errno, KResult};
+use osel_core::exception::FixedBuf;
 use osel_core::file::{FileLike, Ready};
 use osel_core::keyboard::RingBuffer;
 use osel_core::sched::ThreadId;
@@ -17,13 +19,75 @@ static INPUT: IrqSpinlock<Input> = IrqSpinlock::new("TTY_INPUT", Input::new());
 static SERIAL_INPUT: IrqSpinlock<RingBuffer<u8, 1024>> =
     IrqSpinlock::new("TTY_SERIAL_INPUT", RingBuffer::new(0));
 static WAITERS: IrqSpinlock<Vec<ThreadId>> = IrqSpinlock::new("TTY_WAITERS", Vec::new());
+static OUTPUT: IrqSpinlock<Output> = IrqSpinlock::new(
+    "TTY_OUTPUT",
+    Output {
+        busy: false,
+        waiters: Vec::new(),
+    },
+);
+
+struct Output {
+    busy: bool,
+    waiters: Vec<ThreadId>,
+}
+
+/// Serializes user writes without masking IRQs while drawing or waiting for COM1.
+/// Contending writers sleep; no spinlock is carried across a context switch.
+struct OutputGuard;
+
+impl OutputGuard {
+    fn acquire() -> KResult<Self> {
+        let enabled = irq::are_enabled();
+        loop {
+            irq::disable();
+            if scheduler::current_killed() {
+                if enabled {
+                    irq::enable();
+                }
+                return Err(Errno::EINTR);
+            }
+            let mut output = OUTPUT.lock();
+            if !output.busy {
+                output.busy = true;
+                drop(output);
+                if enabled {
+                    irq::enable();
+                }
+                return Ok(Self);
+            }
+            let id = scheduler::current_id();
+            output.waiters.push(id);
+            drop(output);
+            scheduler::block_current();
+            OUTPUT.lock().waiters.retain(|&waiter| waiter != id);
+            if enabled {
+                irq::enable();
+            }
+        }
+    }
+}
+
+impl Drop for OutputGuard {
+    fn drop(&mut self) {
+        irq::without_interrupts(|| {
+            let mut output = OUTPUT.lock();
+            output.busy = false;
+            for id in output.waiters.drain(..) {
+                scheduler::wake(id);
+            }
+        });
+    }
+}
 
 pub fn init(max_waiters: usize) {
     WAITERS.lock().reserve(max_waiters);
+    OUTPUT.lock().waiters.reserve(max_waiters);
 }
 
 pub fn forget(thread: ThreadId) {
     WAITERS.lock().retain(|&id| id != thread);
+    OUTPUT.lock().waiters.retain(|&id| id != thread);
 }
 
 /// Called by IRQ handlers, without allocation and with interrupts disabled.
@@ -95,14 +159,28 @@ impl Tty {
     }
 }
 
-fn output(buf: &[u8]) {
-    let mut text = String::new();
-    // Keep each decoded write together; on a single CPU this also preserves its order.
-    irq::without_interrupts(|| {
-        TEXT.lock().decode(buf, |piece| text.push_str(piece));
-        crate::print!("{}", text);
-        crate::serial_print!("{}", text);
-    });
+fn output(buf: &[u8]) -> KResult<()> {
+    output_with(buf, |text| {
+        for c in text.chars() {
+            crate::avganec::with_console(|console| console.write_char(c));
+        }
+        crate::cereal::write_terminal(text.as_bytes())
+    })
+}
+
+fn output_with(buf: &[u8], mut emit: impl FnMut(&str) -> KResult<()>) -> KResult<()> {
+    let _writer = OutputGuard::acquire()?;
+    for chunk in buf.chunks(64) {
+        // Invalid UTF-8 can expand to three bytes per input byte, plus a pending
+        // replacement from the previous chunk. Never allocate with IRQs masked.
+        let mut text = FixedBuf::<196>::new();
+        TEXT.lock().decode(chunk, |piece| {
+            let _ = text.write_str(piece);
+        });
+        debug_assert!(!text.truncated());
+        emit(text.as_str())?;
+    }
+    Ok(())
 }
 
 /// Decode and echo in process context, never from an interrupt handler.
@@ -110,7 +188,7 @@ fn collect_input() {
     let receive = |byte| {
         let (echo, count) = INPUT.lock().receive(byte);
         if count != 0 {
-            output(&echo[..count]);
+            let _ = output(&echo[..count]);
         }
     };
     loop {
@@ -164,7 +242,7 @@ impl FileLike for Tty {
     }
 
     fn write(&self, _offset: u64, buf: &[u8]) -> KResult<usize> {
-        output(buf);
+        output(buf)?;
         Ok(buf.len())
     }
 
@@ -190,6 +268,58 @@ mod tests {
     use core::sync::atomic::{AtomicU8, Ordering};
 
     static READ_BYTE: AtomicU8 = AtomicU8::new(0);
+
+    fn competing_writer() {
+        let _guard = OutputGuard::acquire().unwrap();
+        assert!(irq::are_enabled());
+        READ_BYTE.store(1, Ordering::SeqCst);
+    }
+
+    #[test_case]
+    fn test_terminal_writers_sleep_without_masking_timer() {
+        READ_BYTE.store(0, Ordering::SeqCst);
+        let guard = OutputGuard::acquire().unwrap();
+        assert!(irq::are_enabled());
+        let id = scheduler::spawn_kernel(competing_writer).unwrap();
+        wait_for(|| OUTPUT.lock().waiters.contains(&id));
+        let runs = scheduler::runs(id);
+        let tick = crate::interrupts::ticks();
+        wait_for(|| crate::interrupts::ticks() >= tick + 3);
+        assert_eq!(scheduler::runs(id), runs, "writer must sleep, not spin");
+        assert_eq!(READ_BYTE.load(Ordering::SeqCst), 0);
+        drop(guard);
+        wait_for(|| scheduler::runs(id).is_none());
+        assert_eq!(READ_BYTE.load(Ordering::SeqCst), 1);
+        assert!(!OUTPUT.lock().busy);
+        assert!(OUTPUT.lock().waiters.is_empty());
+    }
+
+    #[test_case]
+    fn test_terminal_output_is_bounded_preemptible_and_preserves_utf8() {
+        let mut output = alloc::string::String::new();
+        let mut collect = |text: &str| {
+            assert!(
+                irq::are_enabled(),
+                "drawing must not mask IRQs for the whole write"
+            );
+            assert!(text.len() <= 196);
+            output.push_str(text);
+            Ok(())
+        };
+        output_with(&[0xff; 130], &mut collect).unwrap();
+        output_with(&[0xd0], &mut collect).unwrap();
+        output_with(&[0x96], &mut collect).unwrap();
+        assert_eq!(output, "�".repeat(130) + "Ж");
+        assert!(!output_pending());
+        assert!(!OUTPUT.lock().busy);
+    }
+
+    #[test_case]
+    fn test_terminal_output_error_releases_writer() {
+        assert_eq!(output_with(b"x", |_| Err(Errno::EINTR)), Err(Errno::EINTR));
+        assert!(!OUTPUT.lock().busy);
+        output_with(b"y", |_| Ok(())).unwrap();
+    }
 
     fn reader() {
         let tty = Tty::new(Stat::default());

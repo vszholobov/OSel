@@ -47,6 +47,7 @@ description: Блокировки OSel — IrqSpinlock, отчёт о взаим
 | `TTY_INPUT` | `src/tty.rs` | режимы termios и буфер терминального ввода | `Tty::read`, `get_termios`, `set_termios` |
 | `TTY_SERIAL_INPUT` | `src/tty.rs` | байты COM1 до обработки читающим потоком | таймер через `poll_serial`, `Tty::read` |
 | `TTY_WAITERS` | `src/tty.rs` | потоки, ожидающие терминальный ввод | `Tty::read`, `notify_input`, `forget`; ёмкость выделяется при загрузке |
+| `TTY_OUTPUT` | `src/tty.rs` | занятость терминального вывода и очередь писателей | `OutputGuard`, `forget`; ожидающие спят без спинлока, вывод идёт с разрешёнными прерываниями |
 | `OFFSET` | `osel-core/src/file.rs` | смещение описания открытого файла (`Spinlock`, без выключения прерываний) | `OpenDescription::read`, `write` для файлов со смещением |
 | `SCHEDULER` | `src/scheduler.rs` | потоки, очередь готовых, текущий поток | `schedule`, `spawn_*`, `wake`, `block_current`, `exit_current`, `finish_switch`; из обработчика таймера через `tick`. Через `switch_to` не переносится |
 | `STACK_SLOTS` | `src/scheduler.rs` | места стеков ядра | создание и освобождение стека потока |

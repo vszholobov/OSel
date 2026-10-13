@@ -17,6 +17,7 @@ pub mod elf;
 pub mod errno;
 pub mod exception;
 pub mod file;
+pub mod font;
 pub mod fpu;
 pub mod frames;
 pub mod futex;

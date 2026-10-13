@@ -67,6 +67,28 @@ pub fn receive(bytes: &mut [u8]) -> usize {
         .map_or(0, |port| port.inner_mut().receive_bytes(bytes))
 }
 
+/// Raw terminal output in FIFO-sized batches. Unlike the diagnostic formatter,
+/// this preserves UTF-8/CR/LF and never waits for the UART under SERIAL1.
+pub fn write_terminal(mut bytes: &[u8]) -> osel_core::errno::KResult<()> {
+    while !bytes.is_empty() {
+        if crate::scheduler::current_killed() {
+            return Err(osel_core::errno::Errno::EINTR);
+        }
+        let sent = {
+            let mut guard = port();
+            let Some(port) = guard.as_mut() else {
+                return Ok(());
+            };
+            port.inner_mut().send_bytes(bytes)
+        };
+        bytes = &bytes[sent..];
+        if sent == 0 {
+            core::hint::spin_loop();
+        }
+    }
+    Ok(())
+}
+
 /// Locks COM1 (and disables interrupts), probing it on the first call
 #[track_caller]
 pub fn port() -> IrqSpinlockGuard<'static, Option<Uart16550Tty<PioBackend>>> {

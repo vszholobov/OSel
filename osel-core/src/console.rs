@@ -1,18 +1,16 @@
 //! Text console drawn into a linear framebuffer
 //!
-//! Glyphs come from the Noto Sans Mono bitmap font. Text goes from the top down,
+//! Glyphs come from the OSel Console bitmap font. Text goes from the top down,
 //! once the cursor reaches the bottom row the screen scrolls up on every new line.
 
 use bootloader_api::info::{FrameBufferInfo, PixelFormat};
 use core::fmt;
-use noto_sans_mono_bitmap::{FontWeight, RasterHeight, RasterizedChar, get_raster, get_raster_width};
+use crate::font::Font;
 
-const FONT_WEIGHT: FontWeight = FontWeight::Regular;
-const CHAR_RASTER_HEIGHT: RasterHeight = RasterHeight::Size16;
-/// Width of a text cell in pixels
-pub const CHAR_WIDTH: usize = get_raster_width(FONT_WEIGHT, CHAR_RASTER_HEIGHT);
-/// Height of a text cell in pixels: the glyph plus line spacing
-pub const LINE_HEIGHT: usize = CHAR_RASTER_HEIGHT.val() + 2;
+/// Width of the small font's text cell in pixels.
+pub const CHAR_WIDTH: usize = Font::Small.width();
+/// Height of the small font's cell, including the font's own line spacing.
+pub const LINE_HEIGHT: usize = Font::Small.height();
 /// Tab stops are every `TAB_WIDTH` columns
 pub const TAB_WIDTH: usize = 8;
 /// Drawn for characters missing in the font
@@ -47,6 +45,8 @@ impl Color {
 /// Why a framebuffer can't be used as a console
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConsoleError {
+    /// Integer pixel scaling supports 1x, 2x and 3x.
+    UnsupportedScale,
     /// Only RGB, BGR and grayscale framebuffers are supported
     UnsupportedPixelFormat(PixelFormat),
     /// Too few bytes per pixel for the pixel format, or more than 4
@@ -70,6 +70,8 @@ pub struct Console<'a> {
     background: Color,
     escape: Escape,
     cursor_visible: bool,
+    scale: usize,
+    font: Font,
 }
 
 #[derive(Clone, Copy)]
@@ -94,6 +96,23 @@ impl fmt::Write for Console<'_> {
 impl<'a> Console<'a> {
     /// Checks the framebuffer geometry and clears the screen
     pub fn new(buffer: &'a mut [u8], info: FrameBufferInfo) -> Result<Self, ConsoleError> {
+        Self::new_scaled(buffer, info, 1)
+    }
+
+    /// Enlarges each font pixel to a `scale` by `scale` block without allocation.
+    pub fn new_scaled(buffer: &'a mut [u8], info: FrameBufferInfo, scale: usize) -> Result<Self, ConsoleError> {
+        Self::with_font_and_scale(buffer, info, Font::Small, scale)
+    }
+
+    /// Uses a native raster instead of enlarging the small font.
+    pub fn new_with_font(buffer: &'a mut [u8], info: FrameBufferInfo, font: Font) -> Result<Self, ConsoleError> {
+        Self::with_font_and_scale(buffer, info, font, 1)
+    }
+
+    fn with_font_and_scale(buffer: &'a mut [u8], info: FrameBufferInfo, font: Font, scale: usize) -> Result<Self, ConsoleError> {
+        if !(1..=3).contains(&scale) {
+            return Err(ConsoleError::UnsupportedScale);
+        }
         let min_bytes_per_pixel = match info.pixel_format {
             PixelFormat::Rgb | PixelFormat::Bgr => 3,
             PixelFormat::U8 => 1,
@@ -105,7 +124,7 @@ impl<'a> Console<'a> {
         if info.stride < info.width {
             return Err(ConsoleError::InvalidStride);
         }
-        let (columns, rows) = (info.width / CHAR_WIDTH, info.height / LINE_HEIGHT);
+        let (columns, rows) = (info.width / (font.width() * scale), info.height / (font.height() * scale));
         if columns == 0 || rows == 0 {
             return Err(ConsoleError::ScreenTooSmall);
         }
@@ -125,6 +144,8 @@ impl<'a> Console<'a> {
             background: Color::BLACK,
             escape: Escape::Text,
             cursor_visible: true,
+            scale,
+            font,
         };
         console.clear();
         Ok(console)
@@ -132,6 +153,18 @@ impl<'a> Console<'a> {
 
     pub fn columns(&self) -> usize {
         self.columns
+    }
+
+    pub fn scale(&self) -> usize {
+        self.scale
+    }
+
+    pub fn cell_width(&self) -> usize {
+        self.font.width() * self.scale
+    }
+
+    pub fn line_height(&self) -> usize {
+        self.font.height() * self.scale
     }
 
     pub fn rows(&self) -> usize {
@@ -192,8 +225,11 @@ impl<'a> Console<'a> {
                 if self.column >= self.columns {
                     self.new_line();
                 }
-                self.clear_cell(self.row, self.column);
-                self.draw_glyph(self.row, self.column, c);
+                if c == ' ' {
+                    self.clear_cell(self.row, self.column);
+                } else {
+                    self.draw_glyph(self.row, self.column, c);
+                }
                 self.column += 1;
             }
         }
@@ -299,8 +335,16 @@ impl<'a> Console<'a> {
                     2 => start..end,
                     _ => return,
                 };
-                for cell in range {
-                    self.clear_cell(cell / self.columns, cell % self.columns);
+                // Clear whole row spans, not one small rectangle per character.
+                let mut cell = range.start;
+                while cell < range.end {
+                    let row = cell / self.columns;
+                    let end = range.end.min((row + 1) * self.columns);
+                    self.fill_rect(
+                        (cell % self.columns) * self.cell_width(), row * self.line_height(),
+                        (end - cell) * self.cell_width(), self.line_height(), self.background,
+                    );
+                    cell = end;
                 }
             }
             'm' => {
@@ -342,12 +386,13 @@ impl<'a> Console<'a> {
         if row >= self.rows || col >= self.columns {
             return false;
         }
-        let (x0, y0) = (col * CHAR_WIDTH, row * LINE_HEIGHT);
-        (0..CHAR_RASTER_HEIGHT.val()).all(|dy| {
-            (0..CHAR_WIDTH).all(|dx| {
-                let intensity = glyph_pixel(c, dx, dy);
+        let (x0, y0) = (col * self.cell_width(), row * self.line_height());
+        let glyph = self.font.glyph(c);
+        (0..self.line_height()).all(|dy| {
+            (0..self.cell_width()).all(|dx| {
                 let offset = self.pixel_offset(x0 + dx, y0 + dy);
-                let (expected, len) = self.encode(background.blend(foreground, intensity));
+                let color = if self.font.pixel(glyph[dy / self.scale], dx / self.scale) { foreground } else { background };
+                let (expected, len) = self.encode(color);
                 self.buffer[offset..offset + len] == expected[..len]
             })
         })
@@ -359,35 +404,46 @@ impl<'a> Console<'a> {
             self.row += 1;
             return;
         }
-        let line_bytes = LINE_HEIGHT * self.info.stride * self.info.bytes_per_pixel;
+        let line_bytes = self.line_height() * self.info.stride * self.info.bytes_per_pixel;
         let text_bytes = self.rows * line_bytes;
         self.buffer.copy_within(line_bytes..text_bytes, 0);
-        self.fill_rect(0, (self.rows - 1) * LINE_HEIGHT, self.info.width, LINE_HEIGHT, self.background);
+        self.fill_rect(0, (self.rows - 1) * self.line_height(), self.info.width, self.line_height(), self.background);
     }
 
     fn clear_cell(&mut self, row: usize, col: usize) {
-        self.fill_rect(col * CHAR_WIDTH, row * LINE_HEIGHT, CHAR_WIDTH, LINE_HEIGHT, self.background);
+        self.fill_rect(col * self.cell_width(), row * self.line_height(), self.cell_width(), self.line_height(), self.background);
     }
 
     fn fill_rect(&mut self, x: usize, y: usize, width: usize, height: usize, color: Color) {
         let (bytes, len) = self.encode(color);
         let bytes_per_pixel = self.info.bytes_per_pixel;
+        let uniform = bytes[..len].iter().all(|&byte| byte == bytes[0]);
         for y in y..(y + height).min(self.info.height) {
             let start = self.pixel_offset(x, y);
             let end = self.pixel_offset((x + width).min(self.info.width), y);
-            for pixel in self.buffer[start..end].chunks_exact_mut(bytes_per_pixel) {
-                pixel[..len].copy_from_slice(&bytes[..len]);
+            let line = &mut self.buffer[start..end];
+            if uniform {
+                line.fill(bytes[0]);
+            } else {
+                for pixel in line.chunks_exact_mut(bytes_per_pixel) {
+                    pixel[..len].copy_from_slice(&bytes[..len]);
+                }
             }
         }
     }
 
     fn draw_glyph(&mut self, row: usize, col: usize, c: char) {
-        let (x0, y0) = (col * CHAR_WIDTH, row * LINE_HEIGHT);
-        for dy in 0..CHAR_RASTER_HEIGHT.val() {
-            for dx in 0..CHAR_WIDTH {
-                let intensity = glyph_pixel(c, dx, dy);
-                let color = self.background.blend(self.foreground, intensity);
-                self.write_pixel(x0 + dx, y0 + dy, color);
+        let (x0, y0) = (col * self.cell_width(), row * self.line_height());
+        // Look up the font once per character, not once per pixel.
+        let raster = self.font.glyph(c);
+        for (dy, &bits) in raster.iter().enumerate() {
+            for dx in 0..self.font.width() {
+                let color = if self.font.pixel(bits, dx) { self.foreground } else { self.background };
+                for sy in 0..self.scale {
+                    for sx in 0..self.scale {
+                        self.write_pixel(x0 + dx * self.scale + sx, y0 + dy * self.scale + sy, color);
+                    }
+                }
             }
         }
     }
@@ -430,11 +486,6 @@ fn gray(color: Color) -> u8 {
     ((color.r as u16 + color.g as u16 + color.b as u16) / 3) as u8
 }
 
-fn glyph(c: char) -> RasterizedChar {
-    get_raster(c, FONT_WEIGHT, CHAR_RASTER_HEIGHT)
-        .unwrap_or_else(|| get_raster(UNKNOWN_CHAR, FONT_WEIGHT, CHAR_RASTER_HEIGHT).unwrap())
-}
-
 fn ansi_color(index: u16, bright: bool) -> Color {
     let low = if bright { 85 } else { 0 };
     let high = if bright { 255 } else { 170 };
@@ -443,27 +494,6 @@ fn ansi_color(index: u16, bright: bool) -> Color {
         if index & 2 != 0 { high } else { low },
         if index & 4 != 0 { high } else { low },
     )
-}
-
-/// Original 7x9 bitmap for the game's Ж, centered in the existing cell.
-fn glyph_pixel(c: char, x: usize, y: usize) -> u8 {
-    if c == 'Ж' {
-        const ZHE: [u8; 9] = [
-            0b1001001, 0b1001001, 0b0101010, 0b0011100, 0b0001000, 0b0011100, 0b0101010, 0b1001001,
-            0b1001001,
-        ];
-        let left = CHAR_WIDTH.saturating_sub(7) / 2;
-        if (3..12).contains(&y)
-            && (left..left + 7).contains(&x)
-            && ZHE[y - 3] & (1 << (6 - (x - left))) != 0
-        {
-            255
-        } else {
-            0
-        }
-    } else {
-        glyph(c).raster()[y][x]
-    }
 }
 
 #[cfg(test)]
@@ -507,6 +537,86 @@ mod tests {
 
     fn row_text_is(console: &Console, row: usize, text: &str) -> bool {
         text.chars().enumerate().all(|(col, c)| console.cell_shows(row, col, c))
+    }
+
+    #[test]
+    fn native_fonts_render_clear_scroll_and_preserve_padding() {
+        for font in [Font::Small, Font::Large] {
+            for (format, bpp) in [(PixelFormat::Rgb, 3), (PixelFormat::Bgr, 4), (PixelFormat::U8, 1)] {
+                let info = info(format, bpp, font.width() * 4 + 3, font.height() * 2 + 5, font.width() * 4 + 8);
+                let mut bytes = buffer(&info);
+                let mut console = Console::new_with_font(&mut bytes, info, font).unwrap();
+                assert_eq!((console.columns(), console.rows()), (4, 2));
+                console.set_colors(Color::WHITE, Color::RED);
+                console.clear();
+                console.write_string("WЖg?");
+                assert!(row_text_is(&console, 0, "WЖg?"));
+                console.write_string("\r \x1b[K");
+                assert!(row_text_is(&console, 0, "    "));
+                console.write_string("\x1b[2;1HЖ😀A\n");
+                assert!(row_text_is(&console, 0, "Ж\u{fffd}A "));
+                assert!(row_text_is(&console, 1, "    "));
+                console.write_string("\x1b[0m\x1b[2J\x1b[H#");
+                let raster = font.glyph('#');
+                for y in 0..font.height() {
+                    for x in 0..font.width() {
+                        let on = font.pixel(raster[y], x);
+                        let expected = if on { Color::GREEN } else { Color::BLACK };
+                        let encoded = encode(format, expected);
+                        assert_eq!(console.read_pixel(x, y), Some(decode(format, &encoded[..bpp])));
+                    }
+                }
+                assert_guard_untouched(&bytes, &info);
+                for y in 0..info.height {
+                    let padding = (y * info.stride + info.width) * bpp..(y + 1) * info.stride * bpp;
+                    assert!(bytes[padding].iter().all(|&byte| byte == SENTINEL));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn scaled_console_matches_every_unscaled_pixel() {
+        for (format, bpp) in [(PixelFormat::Rgb, 3), (PixelFormat::Bgr, 4), (PixelFormat::U8, 1)] {
+            for scale in [2, 3] {
+                let small = info(format, bpp, CHAR_WIDTH * 10 + 3, LINE_HEIGHT * 4 + 5, CHAR_WIDTH * 10 + 8);
+                let large = info(format, bpp, small.width * scale, small.height * scale, small.stride * scale);
+                let mut a = buffer(&small);
+                let mut b = buffer(&large);
+                let mut original = Console::new(&mut a, small).unwrap();
+                let mut scaled = Console::new_scaled(&mut b, large, scale).unwrap();
+                assert_eq!((scaled.columns(), scaled.rows()), (original.columns(), original.rows()));
+                assert_eq!(scaled.scale(), scale);
+                for text in ["Ж# W?", "\rA\tZ\x08", "\x1b[2;3H\x1b[31;47m#Ж ", "\x1b[1K", "\x1b[0m\n1\n2\n3\n4\n", "\x1b[2;2H\x1b[J", "\x1b[2J"] {
+                    original.write_string(text);
+                    scaled.write_string(text);
+                    assert_eq!(scaled.cursor(), original.cursor());
+                    for y in 0..large.height {
+                        for x in 0..large.width {
+                            assert_eq!(scaled.read_pixel(x, y), original.read_pixel(x / scale, y / scale),
+                                "scale {scale}, pixel {x},{y}, after {text:?}");
+                        }
+                    }
+                }
+                assert_guard_untouched(&b, &large);
+                for y in 0..large.height {
+                    let padding = (y * large.stride + large.width) * bpp..(y + 1) * large.stride * bpp;
+                    assert!(b[padding].iter().all(|&byte| byte == SENTINEL));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn scaled_console_rejects_bad_scale_and_too_small_screen() {
+        let info = screen_info();
+        let mut bytes = buffer(&info);
+        for scale in [0, 4, usize::MAX] {
+            assert!(matches!(Console::new_scaled(&mut bytes, info, scale), Err(ConsoleError::UnsupportedScale)));
+        }
+        let tiny = self::info(PixelFormat::Bgr, 4, CHAR_WIDTH, LINE_HEIGHT, CHAR_WIDTH);
+        let mut bytes = buffer(&tiny);
+        assert!(matches!(Console::new_scaled(&mut bytes, tiny, 2), Err(ConsoleError::ScreenTooSmall)));
     }
 
     #[test]
@@ -923,6 +1033,31 @@ mod tests {
         assert!(console.cursor_visible());
         write!(console, "\x1b[2J").unwrap();
         assert_eq!(console.cursor(), (0, 3));
+    }
+
+    #[test]
+    fn optimized_drawing_overwrites_glyphs_and_spacing_in_all_formats() {
+        for (format, bpp) in [(PixelFormat::Rgb, 3), (PixelFormat::Bgr, 4), (PixelFormat::U8, 1)] {
+            let info = info(format, bpp, CHAR_WIDTH * 4, LINE_HEIGHT * 2, CHAR_WIDTH * 4 + 5);
+            let mut buffer = buffer(&info);
+            let mut console = console(&mut buffer, info);
+            console.set_colors(Color::WHITE, Color::RED);
+            console.write_string("ЖW#X");
+            console.set_colors(Color::GREEN, Color::BLACK);
+            console.write_string("\r #Ж ");
+            assert!(row_text_is(&console, 0, " #Ж "));
+            for x in 0..info.width {
+                assert_eq!(console.read_pixel(x, LINE_HEIGHT - 1), Some(Color::BLACK));
+            }
+            console.write_string("\x1b[1;2H\x1b[J");
+            assert!(row_text_is(&console, 0, "    "));
+            assert!(row_text_is(&console, 1, "    "));
+            assert_guard_untouched(&buffer, &info);
+            for row in 0..info.height {
+                let padding = (row * info.stride + info.width) * bpp..(row + 1) * info.stride * bpp;
+                assert!(buffer[padding].iter().all(|&b| b == SENTINEL));
+            }
+        }
     }
 
     #[test]

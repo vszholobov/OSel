@@ -81,7 +81,6 @@ version = "0.1.0"
 dependencies = [
  "bootloader_api",
  "linked_list_allocator",
- "noto-sans-mono-bitmap",
  "pc-keyboard",
  "x86_64",
 ]

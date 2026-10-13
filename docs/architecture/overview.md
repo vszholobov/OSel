@@ -55,6 +55,7 @@ description: Обзор OSel — из каких крейтов и модуле�
 | Модуль | Где | Что делает | Страница |
 |---|---|---|---|
 | `console` | `osel-core/src/console.rs` | отрисовка текста в любой байтовый буфер | [Консоль](drivers/console.md) |
+| `font` | `osel-core/src/font.rs` | встроенные растры шрифта 8×16 и 16×32, выбор размера и глифа | [Консоль](drivers/console.md#font) |
 | `keyboard` | `osel-core/src/keyboard.rs` | `RingBuffer`, `ScancodeDecoder` | [Клавиатура](drivers/keyboard.md) |
 | `pit` | `osel-core/src/pit.rs` | делитель таймера, маски PIC, распознавание ложных IRQ | [Прерывания](core/interrupts.md#pic-pit) |
 | `memory` | `osel-core/src/memory.rs` | раскладка адресов, `RegionFrameAllocator`, `map_range`, `unmap_range`, `protect_range`, `prune_empty_tables` | [Память](core/memory.md) |
