@@ -53,6 +53,8 @@ jobs:
         boot: [uefi, bios]
     env:
       OSEL_BOOT: ${{ matrix.boot }}
+      # the test kernels run slower on CI without KVM; give them more room than the 60 s default
+      OSEL_TIMEOUT: 180
     steps:
       - uses: actions/checkout@v4
 
@@ -97,6 +99,7 @@ jobs:
         boot: [uefi, bios]
     env:
       OSEL_BOOT: ${{ matrix.boot }}
+      OSEL_TIMEOUT: 180
       # overrides the pinned toolchain from rust-toolchain.toml
       RUSTUP_TOOLCHAIN: nightly
     steps:

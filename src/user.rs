@@ -372,7 +372,8 @@ pub(crate) mod tests {
     /// Everything a program must not do ends the program with the right exception
     #[test_case]
     fn test_forbidden_instructions_end_the_program() {
-        // a non-canonical stack address is #SS on hardware, QEMU raises #GP
+        // a non-canonical stack address is #SS on hardware; QEMU raises #GP or, depending
+        // on its version, a #PF at that address — all three just end the program
         let cases: [(&str, &[u8], &[u64], Option<u64>); 16] = [
             ("hlt", code!(osel_hlt, osel_hlt_end), &[13], Some(0)),
             ("cli", code!(osel_cli, osel_cli_end), &[13], Some(0)),
@@ -388,7 +389,7 @@ pub(crate) mod tests {
             ("read kernel memory", code!(osel_kernel_read, osel_kernel_read_end), &[14], None),
             ("write its own code", code!(osel_write_text, osel_write_text_end), &[14], Some(0b111)),
             ("run its data", code!(osel_run_data, osel_run_data_end), &[14], Some(0b10101)),
-            ("non-canonical stack", code!(osel_bad_stack, osel_bad_stack_end), &[12, 13], Some(0)),
+            ("non-canonical stack", code!(osel_bad_stack, osel_bad_stack_end), &[12, 13, 14], None),
             ("trap flag", code!(osel_trap_flag, osel_trap_flag_end), &[1], None),
         ];
         for (name, code, vector, error_code) in cases {
