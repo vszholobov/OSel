@@ -680,8 +680,18 @@ fn reap_other_threads(process: &Arc<Process>, keep: ThreadId) {
             .collect()
     };
     for id in doomed {
-        // removed and dropped outside the lock: freeing a stack takes MEMORY and STACK_SLOTS
-        let gone = SCHEDULER.lock().as_mut().unwrap().threads.remove(&id);
+        // a reaped thread never runs its own cleanup, so drop its waits here, and take it
+        // out of the run queue so `schedule` and `wake` never meet a stale id
+        crate::futex::forget(id);
+        crate::poll::forget(id);
+        crate::time::forget(id);
+        let gone = {
+            let mut guard = SCHEDULER.lock();
+            let scheduler = guard.as_mut().unwrap();
+            scheduler.policy.remove(id);
+            scheduler.threads.remove(&id)
+        };
+        // dropped outside the lock: freeing a stack takes MEMORY and STACK_SLOTS
         drop(gone);
     }
 }

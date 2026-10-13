@@ -29,6 +29,11 @@ pub fn init(max_waiters: usize) {
     POLL_WAITERS.lock().reserve(max_waiters);
 }
 
+/// Drops an `epoll_pwait` wait of a thread being torn down
+pub fn forget(thread: ThreadId) {
+    POLL_WAITERS.lock().retain(|&id| id != thread);
+}
+
 /// Wakes every thread in `epoll_pwait`; called after an `eventfd` (any epollable file) is
 /// written, so a poller notices the new readiness
 pub fn notify() {
@@ -74,10 +79,14 @@ pub fn epoll_pwait(
         if timeout_ms == 0 || deadline.is_some_and(|deadline| time::monotonic_ns() >= deadline) {
             return Ok(0);
         }
-        // block until an eventfd write wakes us or the deadline passes; re-poll on wake
+        // register, then scan once more with interrupts off: an eventfd write (and its
+        // `notify`) between the scan above and here would otherwise be missed, hanging an
+        // untimed wait forever
         irq::disable();
         POLL_WAITERS.lock().push(id);
-        time::wait_until(deadline, id);
+        if scan(maxevents).is_empty() {
+            time::wait_until(deadline, id);
+        }
         POLL_WAITERS.lock().retain(|&waiter| waiter != id);
         irq::enable();
     }

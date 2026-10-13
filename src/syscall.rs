@@ -377,17 +377,25 @@ fn getrandom(buf: u64, len: u64) -> KResult<u64> {
     let len = len as usize;
     space().check_user(buf, len, MemAccess::Write)?;
     let mut state = unsafe { core::arch::x86_64::_rdtsc() };
-    let mut bytes = alloc::vec![0u8; len];
-    for chunk in bytes.chunks_mut(8) {
+    let mut next = || {
         state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
         let mut z = state;
         z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
         z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        z ^= z >> 31;
-        let n = chunk.len();
-        chunk.copy_from_slice(&z.to_ne_bytes()[..n]);
+        (z ^ (z >> 31)).to_ne_bytes()
+    };
+    // a page at a time, so a huge request doesn't allocate a matching kernel buffer
+    let mut done = 0;
+    let mut page = [0u8; PAGE_SIZE as usize];
+    while done < len {
+        let chunk = (len - done).min(page.len());
+        for slot in page[..chunk].chunks_mut(8) {
+            let n = slot.len();
+            slot.copy_from_slice(&next()[..n]);
+        }
+        space().copy_to_user(buf + done as u64, &page[..chunk])?;
+        done += chunk;
     }
-    space().copy_to_user(buf, &bytes)?;
     Ok(len as u64)
 }
 

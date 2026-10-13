@@ -18,6 +18,11 @@ pub fn init(max_waiters: usize) {
     FUTEXES.lock().reserve(max_waiters);
 }
 
+/// Drops every futex wait of a thread being torn down
+pub fn forget(thread: osel_core::sched::ThreadId) {
+    FUTEXES.lock().forget_thread(thread);
+}
+
 const FUTEX_WAIT: u64 = 0;
 const FUTEX_WAKE: u64 = 1;
 /// Flags on top of the operation: private to the process, and a realtime timeout clock

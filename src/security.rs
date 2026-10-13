@@ -173,6 +173,44 @@ mod tests {
         "mov eax, 60",
         "syscall",
         ".global osel_read_page_end", "osel_read_page_end:",
+        // cross-thread TOCTOU: map a buffer, clone a child that unmaps it and sets a flag,
+        // the parent waits for the flag then writes from the gone buffer -> EFAULT. The
+        // flag at 0x600200, the buffer at 0x40000000.
+        ".global osel_toctou", "osel_toctou:",
+        "mov rdi, 0x40000000",
+        "mov esi, 0x1000",
+        "mov edx, 3",
+        "mov r10d, 0x32",
+        "mov r8, -1", "xor r9d, r9d",
+        "mov eax, 9",               // mmap the buffer
+        "syscall",
+        "mov byte ptr [0x40000000], 1",   // touch it so it is really mapped
+        "mov eax, 56",              // clone
+        "mov edi, 0xd0f00",
+        "mov esi, 0x600f00",
+        "xor edx, edx", "xor r10d, r10d", "xor r8d, r8d", "xor r9d, r9d",
+        "syscall",
+        "test rax, rax",
+        "jz 7f",
+        // parent: wait for the child to unmap, then write(1, buffer, 1) -> EFAULT
+        "8:",
+        "cmp byte ptr [0x600200], 0",
+        "je 8b",
+        "mov edi, 1",
+        "mov esi, 0x40000000",
+        "mov edx, 1",
+        "mov eax, 1",
+        "syscall",
+        "neg rax", "mov rdi, rax", "mov eax, 231", "syscall",
+        "7:",
+        // child: unmap the buffer, raise the flag (its own page), spin until reaped
+        "mov rdi, 0x40000000",
+        "mov esi, 0x1000",
+        "mov eax, 11",              // munmap
+        "syscall",
+        "mov byte ptr [0x600200], 1",
+        "9:", "jmp 9b",
+        ".global osel_toctou_end", "osel_toctou_end:",
         ".popsection",
     );
 
@@ -241,6 +279,20 @@ mod tests {
     fn test_processes_do_not_share_memory() {
         assert_eq!(attack(code!(osel_mark_page, osel_mark_page_end)).exit_code(), 0xaa, "the first wrote and read its own byte");
         assert_eq!(attack(code!(osel_read_page, osel_read_page_end)).exit_code(), 0, "the second sees a fresh zero page");
+    }
+
+    /// A sibling thread unmapping a buffer mid-syscall is caught: the kernel re-checks the
+    /// pages and returns `EFAULT`, it never faults itself (cross-thread TOCTOU)
+    #[test_case]
+    fn test_sibling_unmap_during_a_syscall_is_efault() {
+        let frames = used_frames();
+        let mut loaded = load(code!(osel_toctou, osel_toctou_end));
+        let frame = initial_frame(loaded.entry, loaded.rsp);
+        let process = crate::user::start(loaded.space.take(), crate::user::standard_files(), frame, osel_core::fpu::FpuState::initial(), 0).unwrap();
+        assert_eq!(process.wait().stop.exit_code(), Errno::EFAULT.code() as u8);
+        drop(alloc::sync::Arc::into_inner(process));
+        crate::user::tests::kernel_is_fine();
+        assert_eq!(used_frames(), frames, "the child's stack and the buffer are freed");
     }
 
     /// The kernel address constant is in the kernel half, so these attacks really aim there

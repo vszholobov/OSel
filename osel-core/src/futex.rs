@@ -46,6 +46,12 @@ impl Futexes {
         }
     }
 
+    /// Removes every entry of `thread`, whatever the key: for a thread that is being torn
+    /// down while parked
+    pub fn forget_thread(&mut self, thread: ThreadId) {
+        self.waiters.retain(|&(_, id)| id != thread);
+    }
+
     /// Removes and returns up to `count` waiters on `key`, oldest first
     pub fn wake(&mut self, key: FutexKey, count: usize) -> Vec<ThreadId> {
         let mut woken = Vec::new();

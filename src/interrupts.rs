@@ -236,6 +236,18 @@ fn cmos(register: u8) -> u8 {
 /// The real-time clock as nanoseconds since the Unix epoch, read once at boot. Handles the
 /// BCD and 12-hour encodings the CMOS status register reports (QEMU uses BCD, 24-hour).
 pub fn wall_clock_unix_nanos() -> u64 {
+    // read twice and accept once two reads agree: an update may start mid-read
+    let mut last = read_cmos_datetime();
+    loop {
+        let again = read_cmos_datetime();
+        if again == last {
+            return osel_core::clock::unix_nanos(again);
+        }
+        last = again;
+    }
+}
+
+fn read_cmos_datetime() -> osel_core::clock::DateTime {
     // wait out an update so the fields are consistent
     while cmos(0x0a) & 0x80 != 0 {}
     let status_b = cmos(0x0b);
@@ -254,7 +266,7 @@ pub fn wall_clock_unix_nanos() -> u64 {
     let day = decode(cmos(0x07));
     let month = decode(cmos(0x08));
     let year = 2000 + decode(cmos(0x09)) as u16;
-    osel_core::clock::unix_nanos(osel_core::clock::DateTime { year, month, day, hour, minute, second })
+    osel_core::clock::DateTime { year, month, day, hour, minute, second }
 }
 
 static BREAKPOINTS: AtomicU64 = AtomicU64::new(0);

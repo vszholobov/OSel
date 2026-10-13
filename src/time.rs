@@ -83,6 +83,11 @@ pub fn wait_until(deadline_ns: Option<u64>, thread: ThreadId) {
     SLEEPERS.lock().remove(thread);
 }
 
+/// Drops a sleep of a thread being torn down
+pub fn forget(thread: ThreadId) {
+    SLEEPERS.lock().remove(thread);
+}
+
 /// Wakes every thread whose sleep deadline has passed. Called by the timer with interrupts
 /// off, so a thread that just queued itself is not missed.
 pub fn wake_due() {
