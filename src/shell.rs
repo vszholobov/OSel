@@ -29,6 +29,15 @@ pub fn run() -> ! {
     let columns = crate::avganec::with_console(|c| c.columns()).unwrap_or(80);
     // Keep the editable line on one row; framebuffer backspace cannot cross rows.
     let mut line = LineEditor::new(columns.saturating_sub(PROMPT.len() + 1).min(MAX_LINE));
+    let _ = crate::keyboard::write_diagnostics(&mut out);
+    let _ = writeln!(
+        out,
+        "KBD watch updates each second until input. If stuck, photograph it."
+    );
+    let watch_row = crate::avganec::with_console(|c| c.cursor().0);
+    let _ = crate::keyboard::write_counters(&mut out);
+    let mut watching = true;
+    let mut watch_tick = crate::interrupts::ticks();
     let _ = writeln!(
         out,
         "OSel shell. Type help. Ctrl+C cancels the current line."
@@ -36,9 +45,38 @@ pub fn run() -> ! {
     let _ = write!(out, "{PROMPT}");
     loop {
         let mut byte = [0];
-        if terminal.read(0, &mut byte, false) != Ok(1) {
+        if terminal.read(0, &mut byte, watching) != Ok(1) {
+            if watching {
+                let tick = crate::interrupts::ticks();
+                if tick.saturating_sub(watch_tick) >= u64::from(crate::interrupts::TICK_HZ) {
+                    watch_tick = tick;
+                    let mut text = osel_core::exception::FixedBuf::<160>::new();
+                    let _ = crate::keyboard::write_counters(&mut text);
+                    // No other writer runs before the first input. Preserve the prompt
+                    // cursor and replace only the diagnostic row, without scrolling.
+                    if let Some(row) = watch_row {
+                        crate::avganec::with_console(|c| {
+                            let (old_row, old_column) = c.cursor();
+                            let _ = write!(c, "\x1b[{};1H\x1b[2K", row + 1);
+                            for ch in text
+                                .as_str()
+                                .trim_end()
+                                .chars()
+                                .take(c.columns().saturating_sub(1))
+                            {
+                                c.write_char(ch);
+                            }
+                            let _ = write!(c, "\x1b[{};{}H", old_row + 1, old_column + 1);
+                        });
+                    }
+                    crate::serial_print!("{}", text.as_str());
+                }
+                // No busy loop. A frozen watch is evidence that PIT/IRQ delivery stopped.
+                let _ = crate::time::sleep_until(crate::time::monotonic_ns() + 10_000_000);
+            }
             continue;
         }
+        watching = false;
         match line.receive(byte[0]) {
             Event::None => {}
             Event::Echo(b) => {
@@ -81,12 +119,16 @@ pub fn execute(line: &str, out: &mut impl Write) -> u8 {
     };
     let result = match command {
         "help" if args.len() == 1 => {
-            let _ = out.write_str("help             commands and limitations\nls [path]        list a directory (default /)\ncat path         print a file (up to 64 KiB)\ntetris           play; x returns to the shell\nclear            run /bin/clear\nhello, gohello   example programs\n/bin/name args   run an executable; bare names use /bin\nPaths are relative to /. No quotes, pipes, redirects or background jobs.\n");
+            let _ = out.write_str("help             commands and limitations\nls [path]        list a directory (default /)\ncat path         print a file (up to 64 KiB)\nkbd              keyboard initialization and IRQ counters\ntetris           play; x returns to the shell\nclear            run /bin/clear\nhello, gohello   example programs\n/bin/name args   run an executable; bare names use /bin\nPaths are relative to /. No quotes, pipes, redirects or background jobs.\n");
             Ok(0)
         }
         "ls" if args.len() <= 2 => list(args.get(1).copied().unwrap_or("/"), out),
         "cat" if args.len() == 2 => cat(args[1], out),
-        "help" | "ls" | "cat" => Err(Errno::EINVAL),
+        "kbd" if args.len() == 1 => {
+            let _ = crate::keyboard::write_diagnostics(out);
+            Ok(0)
+        }
+        "help" | "ls" | "cat" | "kbd" => Err(Errno::EINVAL),
         _ => external(&args, out),
     };
     match result {

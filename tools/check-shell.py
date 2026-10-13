@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import pathlib
+import re
 import selectors
 import signal
 import socket
@@ -16,6 +17,7 @@ import time
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--screenshot", help="optional QEMU PNG screenshot path")
+    parser.add_argument("--boot-screenshot", help="optional automatic keyboard diagnostics screenshot")
     args = parser.parse_args()
     root = pathlib.Path(__file__).resolve().parents[1]
     env = os.environ.copy()
@@ -76,6 +78,17 @@ def main():
             stream = monitor.makefile("rwb", buffering=0)
             stream.readline()
             qmp("qmp_capabilities")
+            assert b"PS/2 init: Ready, error=None" in transcript
+            # The watch must update without a working keyboard or any serial input.
+            start = len(transcript)
+            wait(b"KBD t=", start)
+            line_start = transcript.index(b"KBD t=", start)
+            wait(b"\n", line_start)
+            samples = re.findall(rb"KBD t=(\d+)", transcript)
+            assert int(samples[-1]) > int(samples[0]), samples
+            if args.boot_screenshot:
+                qmp("screendump", {"filename": str(pathlib.Path(args.boot_screenshot).resolve()), "format": "png"})
+            command(b"kbd", b"PS/2 init: Ready, error=None")
             command(b"help", b"No quotes")
             listing = command(b"ls /bin", b"clear\n")
             command(b"cat /etc/motd", b"Welcome to OSel!")
@@ -111,6 +124,9 @@ def main():
                 time.sleep(0.04)
             result = wait(b"osel> ", start)
             assert b"No quotes" in result
+            result = command(b"kbd", b"PS/2 init: Ready, error=None")
+            counters = re.search(rb"irq=(\d+) bytes=(\d+) poll=(\d+) chars=(\d+)", result)
+            assert counters and int(counters[1]) > 0 and int(counters[4]) >= 5, result
             if args.screenshot:
                 qmp("screendump", {"filename": str(pathlib.Path(args.screenshot).resolve()), "format": "png"})
             qmp("quit")

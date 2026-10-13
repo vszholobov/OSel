@@ -41,6 +41,7 @@ description: Блокировки OSel — IrqSpinlock, отчёт о взаим
 | `PICS` | `src/interrupts.rs` | два контроллера PIC | `init_pics`, `with_pics`; обработчики таймера, клавиатуры и ложных IRQ |
 | `DECODER` | `src/keyboard.rs` | состояние декодера скан-кодов | обработчик клавиатуры |
 | `BUFFER` | `src/keyboard.rs` | буфер введённых символов | обработчик клавиатуры, `pop_char`, `dropped_chars` |
+| `KEYBOARD_DIAGNOSTICS` | `src/keyboard.rs` | отчёт настройки PS/2 и счётчики IRQ/байтов/символов | инициализация, IRQ 1, резервный опрос, снимок для оболочки |
 | `ALLOCATOR` | `src/allocator.rs` | куча | глобальный аллокатор, `with_allocator` |
 | `MEMORY` | `src/memory.rs` | таблица страниц и аллокатор страниц | `with_memory`; page fault программы на нетронутой странице (`UserSpace::fault`), когда ядро не держит ни одной блокировки |
 | `TTY_TEXT` | `src/tty.rs` | недособранный символ UTF-8 вывода терминала между вызовами `write` | `Tty::write`; печать — после того, как блокировка отпущена |
@@ -67,9 +68,11 @@ description: Блокировки OSel — IrqSpinlock, отчёт о взаим
 | `EVENTFD`, `EPOLL` | `osel-core/src/poll.rs` | счётчик eventfd и список наблюдения epoll (`Spinlock`) | `EventFd`, `Epoll` |
 | `ROOT_FS` | `src/fs.rs` | корневая файловая система | `fs::init`, `fs::root`; держится только на время копирования `Arc` |
 
-Порядок вложения, который уже есть в коде: `DECODER`, затем `BUFFER` (в обработчике клавиатуры); `SCHEDULER`, затем `ALLOCATOR` (таблица потоков растёт и сжимается под блокировкой планировщика). `MM`, затем `MEMORY` (отображение страницы под `MM` берёт `MEMORY`); так же их берёт обработчик page fault. Другие блокировки друг в друга не вкладываются.
+Порядок вложения, который уже есть в коде: `DECODER`, затем `BUFFER` или `KEYBOARD_DIAGNOSTICS` (при декодировании клавиатуры); `SCHEDULER`, затем `ALLOCATOR` (таблица потоков растёт и сжимается под блокировкой планировщика). `MM`, затем `MEMORY` (отображение страницы под `MM` берёт `MEMORY`); так же их берёт обработчик page fault. Другие блокировки друг в друга не вкладываются.
 
 ## Где в коде {#code}
+
+Диагностика клавиатуры хранится под `KEYBOARD_DIAGNOSTICS` (`src/keyboard.rs`): отчёт инициализации и счётчики IRQ/байтов/символов. При приёме байта блокировка отпускается до декодирования и пробуждения читателей; при подсчёте символа возможен порядок `DECODER` → `KEYBOARD_DIAGNOSTICS`, обратного порядка нет. Снимок для печати берётся до блокировки консоли.
 
 - `osel-core/src/sync.rs` — `Spinlock`, `SpinlockGuard`, `DEFAULT_MAX_SPINS`.
 - `src/sync.rs` — `IrqSpinlock`, `IrqSpinlockGuard`.
@@ -100,4 +103,4 @@ description: Блокировки OSel — IrqSpinlock, отчёт о взаим
 
 - [0003 — IrqSpinlock](../../decisions/0003-irq-spinlock.md)
 
-_Сверено с кодом: 2026-10-13, коммит 2c68d3f._
+_Сверено с кодом: 2026-10-13, ветка fix-ps2-keyboard._

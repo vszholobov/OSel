@@ -405,6 +405,7 @@ extern "x86-interrupt" fn timer_interrupt_handler(stack_frame: InterruptStackFra
     crate::time::wake_due();
     // after the end of interrupt and with no lock held: the next thread may run for a while
     crate::tty::poll_serial();
+    crate::keyboard::poll();
     crate::scheduler::tick(stack_frame.code_segment.rpl() == x86_64::PrivilegeLevel::Ring3);
 }
 
@@ -437,9 +438,7 @@ extern "x86-interrupt" fn spurious_slave_handler(_stack_frame: InterruptStackFra
 }
 
 extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    let mut port = Port::new(0x60);
-    let scancode: u8 = unsafe { port.read() };
-    keyboard::handle_scancode(scancode);
+    keyboard::interrupt();
     unsafe {
         PICS.lock().notify_end_of_interrupt(InterruptIndex::Keyboard.as_u8());
     }

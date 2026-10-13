@@ -28,6 +28,11 @@ fn builtins_and_errors_use_the_real_vfs() {
     assert_eq!(osel::shell::execute("help", &mut out), 0);
     assert!(out.contains("tetris"));
     out.clear();
+    assert_eq!(osel::shell::execute("kbd", &mut out), 0);
+    assert!(out.contains("PS/2 init: Ready, error=None"));
+    assert!(out.contains("KBD t=") && out.contains("irq="));
+    assert_ne!(osel::shell::execute("kbd extra", &mut out), 0);
+    out.clear();
     assert_eq!(osel::shell::execute("ls /bin", &mut out), 0);
     assert!(out.contains("hello\n") && out.contains("clear\n"));
     out.clear();
