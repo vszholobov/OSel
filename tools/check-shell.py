@@ -18,14 +18,41 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--screenshot", help="optional QEMU PNG screenshot path")
     parser.add_argument("--boot-screenshot", help="optional automatic keyboard diagnostics screenshot")
+    parser.add_argument("--image", type=pathlib.Path, help="test an existing disk image without rebuilding")
+    parser.add_argument("--boot", choices=("uefi", "bios"), default=os.environ.get("OSEL_BOOT", "uefi"))
+    parser.add_argument("--ovmf-code", type=pathlib.Path, help="UEFI firmware code for --image")
+    parser.add_argument("--ovmf-vars", type=pathlib.Path, help="UEFI firmware variables for --image")
+    parser.add_argument("--require-tetris", action="store_true", help="fail if Tetris is absent")
+    parser.add_argument("--expected-version", help="require this version in the boot banner")
+    parser.add_argument("--expected-commit", help="require this short commit in the boot banner")
     args = parser.parse_args()
+    if args.image and args.boot == "uefi" and not (args.ovmf_code and args.ovmf_vars):
+        parser.error("UEFI --image requires --ovmf-code and --ovmf-vars")
+    if bool(args.expected_version) != bool(args.expected_commit):
+        parser.error("--expected-version and --expected-commit must be used together")
     root = pathlib.Path(__file__).resolve().parents[1]
     env = os.environ.copy()
     env.pop("OSEL_EXPECT", None)
+    env["OSEL_BOOT"] = args.boot
     with tempfile.TemporaryDirectory(prefix="osel-shell-", dir="/tmp") as directory:
         address = directory + "/qmp.sock"
+        qemu_args = ["-display", "none", "-qmp", f"unix:{address},server,nowait"]
+        if args.image:
+            launch = [
+                "qemu-system-x86_64", "-vga", "std", "-global", "VGA.xres=1280",
+                "-global", "VGA.yres=1024", "-drive",
+                f"format=raw,snapshot=on,file={args.image.resolve()}",
+                "-serial", "stdio", "-no-reboot",
+            ]
+            if args.boot == "uefi":
+                launch += [
+                    "-drive", f"if=pflash,format=raw,readonly=on,file={args.ovmf_code.resolve()}",
+                    "-drive", f"if=pflash,format=raw,snapshot=on,file={args.ovmf_vars.resolve()}",
+                ]
+        else:
+            launch = ["cargo", "run", "--locked", "--"]
         process = subprocess.Popen(
-            ["cargo", "run", "--", "-display", "none", "-qmp", f"unix:{address},server,nowait"],
+            launch + qemu_args,
             cwd=root, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, start_new_session=True,
         )
@@ -72,6 +99,10 @@ def main():
 
         try:
             wait(b"osel> ", timeout=180)
+            assert b"OSel ready to go!" in transcript
+            if args.expected_version:
+                banner = f"OSel {args.expected_version} (commit {args.expected_commit}) woke up!"
+                assert banner.encode() in transcript, (banner, bytes(transcript))
             monitor = socket.socket(socket.AF_UNIX)
             monitor.settimeout(5)
             monitor.connect(address)
@@ -91,6 +122,9 @@ def main():
             command(b"kbd", b"PS/2 init: Ready, error=None")
             command(b"help", b"No quotes")
             listing = command(b"ls /bin", b"clear\n")
+            if args.require_tetris:
+                assert b"tetris\n" in listing, "required Tetris binary is missing from the image"
+                command(b"cat /etc/font-license.txt", b"SIL OPEN FONT LICENSE")
             command(b"cat /etc/motd", b"Welcome to OSel!")
             command(b"missing-command", b"missing-command:")
             command(b"hellp\x08o", b"Hello from ring 3!")
@@ -110,6 +144,8 @@ def main():
                     send(f"tetris --seed {seed} --trace\n".encode())
                     wait(b"TETRIS READY", start)
                     wait(b"TETRIS TICK", start)
+                    send(b"a")
+                    wait(b"TETRIS INPUT key=a changed=true", start)
                     send(b"x")
                     result = wait(b"osel> ", start)
                     assert b"TETRIS EXIT" in result

@@ -303,7 +303,7 @@ fn build_user_programs(repository: &Path) -> Result<Vec<(String, Vec<u8>)>, Stri
     for name in USER_PROGRAMS {
         let manifest = repository.join("user").join(name).join("Cargo.toml");
         let status = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
-            .args(["build", "--quiet", "--release", "--target", USER_TARGET])
+            .args(["build", "--locked", "--quiet", "--release", "--target", USER_TARGET])
             .arg("--manifest-path")
             .arg(&manifest)
             .arg("--target-dir")
@@ -335,7 +335,7 @@ fn build_go_programs(repository: &Path) -> Result<Vec<(String, Vec<u8>)>, String
         let source_dir = repository.join("user-go").join(name);
         let output = repository.join("user-go/target").join(name);
         let result = Command::new("go")
-            .args(["build", "-trimpath", "-o"])
+            .args(["build", "-mod=readonly", "-trimpath", "-o"])
             .arg(&output)
             .arg(".")
             .current_dir(&source_dir)
@@ -376,7 +376,7 @@ fn build_tetris(repository: &Path) -> Result<Vec<(String, Vec<u8>)>, String> {
     }
     let output = repository.join("user-go/target/tetris");
     let status = Command::new("go")
-        .args(["build", "-trimpath", "-o"])
+        .args(["build", "-mod=readonly", "-trimpath", "-o"])
         .arg(&output)
         .arg(".")
         .current_dir(source)

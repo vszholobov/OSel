@@ -1,0 +1,116 @@
+name: release images
+
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: build and verify release images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      OSEL_TIMEOUT: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Test release metadata validation
+        run: python3 tools/test-release.py
+
+      - name: Validate the release tag, version and changelog
+        if: github.event_name == 'push'
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python3 tools/release.py --tag "$RELEASE_TAG" --output release-notes.md
+
+      - name: Install QEMU
+        run: sudo apt-get update && sudo apt-get install -y qemu-system-x86
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+
+      - name: Install Rust toolchain from rust-toolchain.toml
+        run: rustup toolchain install && rustc -V && go version
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            runner -> target
+
+      - uses: actions/cache@v4
+        with:
+          path: runner/.ovmf
+          key: ovmf-${{ hashFiles('runner/Cargo.lock') }}
+
+      # Both images use the same kernel ELF, lockfiles and pinned Tetris gitlink.
+      # Test the copied artifacts directly; QEMU snapshots keep their bytes intact.
+      - name: Build and boot both images, exercise their shell and Tetris
+        run: |
+          mkdir dist
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')
+          commit=$(git rev-parse --short HEAD)
+          for boot in uefi bios; do
+            OSEL_BOOT="$boot" OSEL_EXPECT="OSel ready to go!" cargo run --release --locked
+            cp "target/x86_64-unknown-none/release/OSel.$boot.img" dist/
+          done
+          (cd dist && sha256sum OSel.uefi.img OSel.bios.img > SHA256SUMS)
+          for boot in uefi bios; do
+            python3 tools/check-shell.py --image "dist/OSel.$boot.img" --boot "$boot" \
+              --ovmf-code runner/.ovmf/x64/code.fd --ovmf-vars runner/.ovmf/x64/vars.fd \
+              --require-tetris --expected-version "$version" --expected-commit "$commit"
+          done
+          (cd dist && sha256sum --check SHA256SUMS)
+          git diff --exit-code -- Cargo.lock runner/Cargo.lock user user-go apps/tetris
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-images
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: publish the verified images
+    if: github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-images
+          path: dist
+
+      - name: Verify downloaded artifacts and prepare release notes
+        run: |
+          (cd dist && sha256sum --check SHA256SUMS)
+          python3 tools/release.py --tag "$RELEASE_TAG" --output release-notes.md
+
+      # Upload to a draft first: upload failures must not expose an incomplete release.
+      # An existing release is never overwritten; a failed draft needs manual removal.
+      - name: Create a draft with all assets, then publish it
+        run: |
+          gh release create "$RELEASE_TAG" --verify-tag --draft \
+            --title "OSel $RELEASE_TAG" --notes-file release-notes.md \
+            dist/OSel.uefi.img dist/OSel.bios.img dist/SHA256SUMS
+          gh release edit "$RELEASE_TAG" --draft=false
