@@ -37,6 +37,7 @@ description: Обзор OSel — из каких крейтов и модуле�
 | `user` | `src/user.rs` | запуск программы в кольце 3, возврат при исключении | [Пользовательский режим](core/user-mode.md) |
 | `time` | `src/time.rs` | монотонные и реальные часы, сон до срока (`SLEEPERS`) | [потоки](core/threads.md#time) |
 | `futex` | `src/futex.rs` | `futex`: ожидание и пробуждение потоков по адресу (`FUTEXES`) | [потоки](core/threads.md#futex) |
+| `poll` | `src/poll.rs` | блокирующий `epoll_pwait` и пробуждение при записи в eventfd (`POLL_WAITERS`) | [открытые файлы](core/fs.md#epoll) |
 | `memory` | `src/memory.rs` | таблица страниц, пул физических страниц, `with_memory`, `UserSpace` | [Память](core/memory.md) |
 | `program` | `src/program.rs` | загрузка программы из файловой системы в `UserSpace`, стек главного потока | [Программы](core/programs.md) |
 | `fs` | `src/fs.rs` | монтирует ramdisk как корень с `/dev`, `lookup`, `file_for`, `read_file` | [Файлы и ramdisk](core/fs.md) |
@@ -60,6 +61,7 @@ description: Обзор OSel — из каких крейтов и модуле�
 | `clock` | `osel-core/src/clock.rs` | тики таймера в наносекунды, `timespec`, дата CMOS в эпоху Unix | [потоки](core/threads.md#time) |
 | `sleeper` | `osel-core/src/sleeper.rs` | очередь потоков, ждущих до срока | [потоки](core/threads.md#time) |
 | `futex` | `osel-core/src/futex.rs` | очереди ожидания `futex` по адресу | [потоки](core/threads.md#futex) |
+| `poll` | `osel-core/src/poll.rs` | `eventfd` и `epoll`: счётчик и список наблюдения | [открытые файлы](core/fs.md#epoll) |
 | `frames` | `osel-core/src/frames.rs` | интерфейс `FrameSource`, `FramePool` с освобождением страниц | [Память](core/memory.md#frames) |
 | `heap` | `osel-core/src/heap.rs` | `FixedSizeBlockAllocator` | [Память](core/memory.md#heap) |
 | `exception` | `osel-core/src/exception.rs` | текст отчёта об исключении, `FixedBuf` | [Прерывания](core/interrupts.md#exceptions) |

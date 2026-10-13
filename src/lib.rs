@@ -38,6 +38,7 @@ pub mod tty;
 pub mod scheduler;
 pub mod time;
 pub mod futex;
+pub mod poll;
 pub mod sync;
 
 /// Version of the kernel from Cargo.toml
@@ -84,6 +85,7 @@ pub fn init(boot_info: &'static BootInfo) {
     interrupts::init_pics();
     time::init(scheduler::MAX_THREADS);
     futex::init(scheduler::MAX_THREADS);
+    poll::init(scheduler::MAX_THREADS);
     x86_64::instructions::interrupts::enable();
 }
 

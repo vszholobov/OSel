@@ -19,6 +19,10 @@ pub const NANOSLEEP: u64 = 35;
 pub const CLONE: u64 = 56;
 pub const GETTID: u64 = 186;
 pub const FUTEX: u64 = 202;
+pub const EPOLL_CTL: u64 = 233;
+pub const EPOLL_PWAIT: u64 = 281;
+pub const EVENTFD2: u64 = 290;
+pub const EPOLL_CREATE1: u64 = 291;
 pub const CLOCK_GETTIME: u64 = 228;
 pub const GETPID: u64 = 39;
 pub const EXIT: u64 = 60;
@@ -42,6 +46,10 @@ pub const SYSCALLS: &[(u64, &str)] = &[
     (CLONE, "clone"),
     (GETTID, "gettid"),
     (FUTEX, "futex"),
+    (EPOLL_CTL, "epoll_ctl"),
+    (EPOLL_PWAIT, "epoll_pwait"),
+    (EVENTFD2, "eventfd2"),
+    (EPOLL_CREATE1, "epoll_create1"),
     (CLOCK_GETTIME, "clock_gettime"),
     (GETPID, "getpid"),
     (EXIT, "exit"),

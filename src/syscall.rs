@@ -14,10 +14,11 @@ use crate::fs;
 use crate::memory::UserSpace;
 use alloc::sync::Arc;
 use alloc::vec;
-use osel_core::file::{FdTable, O_CLOEXEC, O_CREAT, OpenDescription, encode_stat, open_access};
+use osel_core::file::{Access, FdTable, O_CLOEXEC, O_CREAT, O_NONBLOCK, OpenDescription, encode_stat, open_access};
 use osel_core::syscall::{
-    self, CLOCK_GETTIME, CLONE, CLOSE, EXIT, EXIT_GROUP, FCNTL, FSTAT, FUTEX, GETPID, GETTID, MADVISE, MMAP, MPROTECT,
-    MUNMAP, NANOSLEEP, NEWFSTATAT, OPENAT, READ, Return, SCHED_YIELD, SYSCALL_VECTOR, WRITE, fd_arg,
+    self, CLOCK_GETTIME, CLONE, CLOSE, EPOLL_CREATE1, EPOLL_CTL, EPOLL_PWAIT, EVENTFD2, EXIT, EXIT_GROUP, FCNTL, FSTAT,
+    FUTEX, GETPID, GETTID, MADVISE, MMAP, MPROTECT, MUNMAP, NANOSLEEP, NEWFSTATAT, OPENAT, READ, Return, SCHED_YIELD,
+    SYSCALL_VECTOR, WRITE, fd_arg,
 };
 use osel_core::mmap::MAP_ANONYMOUS;
 use osel_core::user_mem::Access as MemAccess;
@@ -166,6 +167,10 @@ extern "C" fn dispatch(frame: &mut TrapFrame) -> u64 {
         Some(NANOSLEEP) => nanosleep(a0, a1),
         Some(CLOCK_GETTIME) => clock_gettime(a0, a1),
         Some(FUTEX) => futex(a0, a1, a2 as u32, a3),
+        Some(EVENTFD2) => eventfd2(a0, a1 as u32),
+        Some(EPOLL_CREATE1) => epoll_create1(a0 as u32),
+        Some(EPOLL_CTL) => epoll_ctl(fd_arg(a0), a1, fd_arg(a2), a3),
+        Some(EPOLL_PWAIT) => epoll_pwait(fd_arg(a0), a1, a2 as i32 as usize, a3 as i32 as i64),
         Some(GETTID) => Ok(scheduler::current_id()),
         Some(EXIT) => scheduler::exit_thread(Stop::Exit(a0 as u8), Some(*frame)),
         Some(EXIT_GROUP) => scheduler::exit_current(Stop::Exit(a0 as u8), Some(*frame)),
@@ -259,6 +264,83 @@ fn nanosleep(req: u64, rem: u64) -> KResult<u64> {
     }
 }
 
+/// `eventfd2(initval, flags)`: a counter descriptor Go's poller wakes itself with
+fn eventfd2(initval: u64, flags: u32) -> KResult<u64> {
+    use osel_core::poll::{EFD_CLOEXEC, EFD_NONBLOCK, EFD_SEMAPHORE};
+    if flags & !(EFD_CLOEXEC | EFD_NONBLOCK | EFD_SEMAPHORE) != 0 {
+        return Err(Errno::EINVAL);
+    }
+    let eventfd = Arc::new(osel_core::poll::EventFd::new(initval, flags));
+    let status = if flags & EFD_NONBLOCK != 0 { O_NONBLOCK } else { 0 };
+    let description = Arc::new(OpenDescription::new(eventfd, Access { read: true, write: true }, status));
+    Ok(files().insert(description, flags & EFD_CLOEXEC != 0)? as u64)
+}
+
+/// `epoll_create1(flags)`: an epoll instance
+fn epoll_create1(flags: u32) -> KResult<u64> {
+    const EPOLL_CLOEXEC: u32 = 0o2000000;
+    if flags & !EPOLL_CLOEXEC != 0 {
+        return Err(Errno::EINVAL);
+    }
+    let epoll = Arc::new(osel_core::poll::Epoll::new());
+    let description = Arc::new(OpenDescription::new(epoll, Access { read: true, write: true }, 0));
+    Ok(files().insert(description, flags & EPOLL_CLOEXEC != 0)? as u64)
+}
+
+/// `epoll_ctl(epfd, op, fd, event)`: watch, change or drop a descriptor. A descriptor that
+/// can't become ready (a regular file, the terminal) is `EPERM`, as Go expects.
+fn epoll_ctl(epfd: i32, op: u64, fd: i32, event: u64) -> KResult<u64> {
+    let (events, data) = if op == osel_core::poll::EPOLL_CTL_DEL {
+        (0, 0)
+    } else {
+        let mut bytes = [0u8; crate::poll::EPOLL_EVENT_SIZE];
+        space().copy_from_user(event, &mut bytes)?;
+        (u32::from_ne_bytes(bytes[..4].try_into().unwrap()), u64::from_ne_bytes(bytes[4..12].try_into().unwrap()))
+    };
+    let target = files().get(fd)?;
+    if !target.file().epollable() {
+        return Err(Errno::EPERM);
+    }
+    let epoll = files().get(epfd)?;
+    let epoll = epoll.file().as_epoll().ok_or(Errno::EINVAL)?;
+    epoll.ctl(op, fd, events, data).map(|()| 0)
+}
+
+/// `epoll_pwait(epfd, events, maxevents, timeout)`
+fn epoll_pwait(epfd: i32, events: u64, maxevents: usize, timeout_ms: i64) -> KResult<u64> {
+    if maxevents == 0 {
+        return Err(Errno::EINVAL);
+    }
+    let epoll_description = files().get(epfd)?;
+    // a fresh reference to the epoll file, so no descriptor lock is held while blocking
+    let epoll = epoll_description.file().clone();
+    let epoll = epoll.as_epoll().ok_or(Errno::EINVAL)?;
+    let scan = |max: usize| {
+        let mut ready = alloc::vec::Vec::new();
+        for entry in epoll.watched() {
+            if ready.len() >= max {
+                break;
+            }
+            if let Ok(target) = files().get(entry.fd) {
+                let revents = crate::poll::revents(target.file().poll(), entry.events);
+                if revents != 0 {
+                    ready.push((entry.data, revents));
+                }
+            }
+        }
+        ready
+    };
+    let write_events = |ready: &[(u64, u32)]| {
+        let mut bytes = alloc::vec![0u8; ready.len() * crate::poll::EPOLL_EVENT_SIZE];
+        for (slot, &(data, revents)) in bytes.chunks_mut(crate::poll::EPOLL_EVENT_SIZE).zip(ready) {
+            slot[..4].copy_from_slice(&revents.to_ne_bytes());
+            slot[4..12].copy_from_slice(&data.to_ne_bytes());
+        }
+        space().copy_to_user(events, &bytes)
+    };
+    crate::poll::epoll_pwait(maxevents, timeout_ms, scan, write_events)
+}
+
 /// `futex(uaddr, op, val, timeout)`: `timeout`, when `FUTEX_WAIT`, is a relative `timespec`
 fn futex(uaddr: u64, op: u64, val: u32, timeout: u64) -> KResult<u64> {
     let relative = if timeout == 0 {
@@ -334,6 +416,10 @@ fn write(fd: i32, buf: u64, count: u64) -> KResult<u64> {
         if written < len {
             break;
         }
+    }
+    // writing an eventfd makes it readable: wake any epoll waiting on it
+    if done > 0 && description.file().epollable() {
+        crate::poll::notify();
     }
     Ok(done as u64)
 }
@@ -1465,5 +1551,111 @@ mod time_tests {
         assert_eq!(run_on(&mut loaded, |_| {}).exit_code(), 0);
         let elapsed = crate::interrupts::ticks() - before;
         assert!(elapsed >= 5, "slept fewer than 5 ticks: {elapsed}");
+    }
+}
+
+/// `eventfd2`, `epoll_create1`, `epoll_ctl` and `epoll_pwait`
+#[cfg(test)]
+mod poll_tests {
+    use super::*;
+    use crate::program::Loaded;
+    use crate::user::tests::{code, load};
+    use crate::user::{Stop, initial_frame, run};
+    use core::arch::global_asm;
+
+    const DATA: u64 = 0x60_0000;
+
+    global_asm!(
+        ".pushsection .rodata.osel_poll_programs, \"a\"",
+        // Builds an epoll watching an eventfd and exercises epoll_pwait:
+        //  1. epoll_create1 -> r12 (epfd)
+        //  2. eventfd2(0) -> r13 (evfd)
+        //  3. epoll_ctl ADD evfd with EPOLLIN, data = 0xdead
+        //  4. epoll_pwait timeout 20 ms: expect 0 (nothing ready) -> must be 0
+        //  5. write 1 to evfd
+        //  6. epoll_pwait timeout 1000 ms: expect 1, data at DATA+16..+24 == 0xdead
+        // exit 0 on success, else exit with a step number
+        ".global osel_epoll", "osel_epoll:",
+        "xor edi, edi",
+        "mov eax, 291",             // epoll_create1
+        "syscall",
+        "test rax, rax", "js 90f",
+        "mov r12, rax",
+        "xor edi, edi", "xor esi, esi",
+        "mov eax, 290",             // eventfd2(0, 0)
+        "syscall",
+        "test rax, rax", "js 91f",
+        "mov r13, rax",
+        // epoll_event at DATA: events=EPOLLIN(1), data=0xdead
+        "mov dword ptr [0x600000], 1",
+        "mov qword ptr [0x600004], 0xdead",
+        "mov rdi, r12", "mov esi, 1", "mov rdx, r13", "mov r10d, 0x600000",
+        "mov eax, 233",             // epoll_ctl ADD
+        "syscall",
+        "test rax, rax", "js 92f",
+        // epoll_pwait, 20 ms, into DATA+16, maxevents 4 -> expect 0
+        "mov rdi, r12", "mov esi, 0x600010", "mov edx, 4", "mov r10d, 20", "xor r8d, r8d",
+        "mov eax, 281",
+        "syscall",
+        "test rax, rax", "jnz 93f",
+        // write 1 to the eventfd
+        "mov qword ptr [0x600040], 1",
+        "mov rdi, r13", "mov esi, 0x600040", "mov edx, 8", "mov eax, 1",
+        "syscall",
+        "cmp rax, 8", "jne 94f",
+        // epoll_pwait, 1000 ms -> expect 1 event, data 0xdead
+        "mov rdi, r12", "mov esi, 0x600010", "mov edx, 4", "mov r10d, 1000", "xor r8d, r8d",
+        "mov eax, 281",
+        "syscall",
+        "cmp rax, 1", "jne 95f",
+        "cmp qword ptr [0x600014], 0xdead", "jne 96f",
+        "xor edi, edi", "jmp 99f",
+        "90:", "mov edi, 90", "jmp 99f",
+        "91:", "mov edi, 91", "jmp 99f",
+        "92:", "mov edi, 92", "jmp 99f",
+        "93:", "mov edi, 93", "jmp 99f",
+        "94:", "mov edi, 94", "jmp 99f",
+        "95:", "mov edi, 95", "jmp 99f",
+        "96:", "mov edi, 96",
+        "99:",
+        "mov eax, 60",
+        "syscall",
+        ".global osel_epoll_end", "osel_epoll_end:",
+        // epoll_ctl ADD on a regular-file fd (the data segment's... use stdin tty fd 0): EPERM
+        ".global osel_epoll_perm", "osel_epoll_perm:",
+        "xor edi, edi",
+        "mov eax, 291",
+        "syscall",
+        "mov r12, rax",
+        "mov dword ptr [0x600000], 1",
+        "mov qword ptr [0x600004], 0",
+        "mov rdi, r12", "mov esi, 1", "xor edx, edx", "mov r10d, 0x600000",  // fd 0 = tty
+        "mov eax, 233",
+        "syscall",
+        "neg rax",
+        "mov rdi, rax",
+        "mov eax, 60",
+        "syscall",
+        ".global osel_epoll_perm_end", "osel_epoll_perm_end:",
+        ".popsection",
+    );
+
+    fn run_prog(code: &[u8]) -> Stop {
+        let mut loaded: Loaded = load(code);
+        let mut frame = initial_frame(loaded.entry, loaded.rsp);
+        run(&mut loaded.space, &mut frame)
+    }
+
+    /// epoll_pwait times out with nothing ready, then returns the eventfd once it is written
+    #[test_case]
+    fn test_epoll_waits_and_wakes_on_eventfd() {
+        assert_eq!(run_prog(code!(osel_epoll, osel_epoll_end)).exit_code(), 0);
+    }
+
+    /// epoll_ctl on a descriptor that can't become ready (the terminal) is EPERM
+    #[test_case]
+    fn test_epoll_ctl_rejects_a_plain_file() {
+        let code = run_prog(code!(osel_epoll_perm, osel_epoll_perm_end)).exit_code();
+        assert_eq!(code, Errno::EPERM.code() as u8);
     }
 }

@@ -36,6 +36,31 @@ pub trait FileLike: Send + Sync {
     fn seekable(&self) -> bool {
         false
     }
+
+    /// Whether reading and writing would not block right now. A regular file is always
+    /// ready; `epoll` asks this of the descriptors it watches.
+    fn poll(&self) -> Ready {
+        Ready { readable: true, writable: true }
+    }
+
+    /// Whether `epoll` may watch it. Only files that can become ready later (an `eventfd`,
+    /// a pipe) say yes; `epoll_ctl` of anything else is `EPERM`, which Go relies on to
+    /// treat regular files as always ready.
+    fn epollable(&self) -> bool {
+        false
+    }
+
+    /// The `epoll` instance behind this file, for `epoll_ctl` and `epoll_pwait`
+    fn as_epoll(&self) -> Option<&crate::poll::Epoll> {
+        None
+    }
+}
+
+/// Whether a file can be read or written now, the answer to `poll`
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ready {
+    pub readable: bool,
+    pub writable: bool,
 }
 
 /// A file or directory of a file system

@@ -55,6 +55,8 @@ description: Блокировки OSel — IrqSpinlock, отчёт о взаим
 | `SLEEPERS` | `src/time.rs` | потоки, ждущие до срока (`nanosleep`, тайм-ауты) | `time::sleep_until`, `wait_until`, `wake_due` из таймера |
 | `REALTIME_BASE` | `src/time.rs` | реальное время в момент нуля монотонных часов | `time::init`, `realtime_ns` |
 | `FUTEXES` | `src/futex.rs` | потоки, ждущие на `futex` по адресу | `futex::futex`, `wake` |
+| `POLL_WAITERS` | `src/poll.rs` | потоки, ждущие в `epoll_pwait` | `poll::epoll_pwait`, `notify` |
+| `EVENTFD`, `EPOLL` | `osel-core/src/poll.rs` | счётчик eventfd и список наблюдения epoll (`Spinlock`) | `EventFd`, `Epoll` |
 | `ROOT_FS` | `src/fs.rs` | корневая файловая система | `fs::init`, `fs::root`; держится только на время копирования `Arc` |
 
 Порядок вложения, который уже есть в коде: `DECODER`, затем `BUFFER` (в обработчике клавиатуры); `SCHEDULER`, затем `ALLOCATOR` (таблица потоков растёт и сжимается под блокировкой планировщика). `MM`, затем `MEMORY` (отображение страницы под `MM` берёт `MEMORY`); так же их берёт обработчик page fault. Другие блокировки друг в друга не вкладываются.
