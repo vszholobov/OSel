@@ -29,6 +29,7 @@ pub mod mmap;
 pub mod pipe;
 pub mod pit;
 pub mod poll;
+pub mod ps2;
 pub mod sched;
 pub mod shell;
 pub mod sleeper;

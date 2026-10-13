@@ -98,6 +98,7 @@ pub fn init(boot_info: &'static BootInfo) {
     fs::init(boot_info);
     scheduler::init();
 
+    keyboard::init();
     interrupts::init_pics();
     time::init(scheduler::MAX_THREADS);
     futex::init(scheduler::MAX_THREADS);

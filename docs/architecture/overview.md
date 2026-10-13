@@ -29,7 +29,7 @@ description: Обзор OSel — из каких крейтов и модуле�
 |---|---|---|---|
 | `avganec` | `src/avganec.rs` | консоль на framebuffer: `print!`, `println!`, экран паники | [Консоль](drivers/console.md) |
 | `cereal` | `src/cereal.rs` | последовательный порт COM1: `serial_print!`, аварийный вывод | [Последовательный порт](drivers/serial.md) |
-| `keyboard` | `src/keyboard.rs` | PS/2: скан-коды из прерывания в буфер символов | [Клавиатура](drivers/keyboard.md) |
+| `keyboard` | `src/keyboard.rs` | инициализация PS/2, IRQ, резервный опрос, буфер и диагностика | [Клавиатура](drivers/keyboard.md) |
 | `interrupts` | `src/interrupts.rs` | IDT, обработчики исключений, PIC, таймер, ложные IRQ | [Прерывания](core/interrupts.md) |
 | `gdt` | `src/gdt.rs` | GDT с сегментами кольца 3, TSS, стеки IST для double fault, NMI и machine check | [Прерывания](core/interrupts.md) |
 | `fpu` | `src/fpu.rs` | включение SSE и x87 (CR0, CR4), `fxsave64` и `fxrstor64` | [Пользовательский режим](core/user-mode.md#fpu) |
@@ -59,6 +59,7 @@ description: Обзор OSel — из каких крейтов и модуле�
 | `shell` | `osel-core/src/shell.rs` | ограниченный редактор строки, разбор аргументов и имён программ | [Оболочка](shell.md) |
 | `font` | `osel-core/src/font.rs` | встроенные растры шрифта 8×16 и 16×32, выбор размера и глифа | [Консоль](drivers/console.md#font) |
 | `keyboard` | `osel-core/src/keyboard.rs` | `RingBuffer`, `ScancodeDecoder` | [Клавиатура](drivers/keyboard.md) |
+| `ps2` | `osel-core/src/ps2.rs` | протокол инициализации i8042/клавиатуры, ограниченные ожидания, ACK/RESEND | [Клавиатура](drivers/keyboard.md) |
 | `pit` | `osel-core/src/pit.rs` | делитель таймера, маски PIC, распознавание ложных IRQ | [Прерывания](core/interrupts.md#pic-pit) |
 | `memory` | `osel-core/src/memory.rs` | раскладка адресов, `RegionFrameAllocator`, `map_range`, `unmap_range`, `protect_range`, `prune_empty_tables` | [Память](core/memory.md) |
 | `address_space` | `osel-core/src/address_space.rs` | `AddressSpace` — таблица уровня 4 программы с общей верхней половиной | [Память](core/memory.md#address-spaces) |
@@ -103,7 +104,7 @@ description: Обзор OSel — из каких крейтов и модуле�
    8. `memory::enable_frame_tracking` — битовая карта пула в куче, с этого момента страницы можно освобождать;
    9. `fs::init` — ramdisk монтируется как корень `/` с каталогом устройств `/dev`;
    10. `scheduler::init` — поток 0 для кода загрузки и поток простоя;
-   11. `interrupts::init_pics` — сброс буфера клавиатуры, PIC, таймер на 100 Гц;
+   11. `keyboard::init` — настройка контроллера и PS/2-клавиатуры; `interrupts::init_pics` — сброс оставшихся байтов, PIC, таймер на 100 Гц;
    12. `time::init`, `futex::init`, `poll::init` — часы и очереди ожидания;
    13. включает прерывания.
 4. Ядро печатает `/etc/motd` из ramdisk, запускает `/bin/hello` (он печатает «Hello from ring 3!»), затем «OSel ready to go!» на экран и в последовательный порт. Далее запускается [оболочка](shell.md) с приглашением `osel>`; игра запускается командой `tetris` и после выхода возвращает в оболочку.
@@ -136,4 +137,4 @@ description: Обзор OSel — из каких крейтов и модуле�
 - [0014 — дескрипторы и устройства](../decisions/0014-file-descriptors.md)
 - [0015 — потоки и вытеснение](../decisions/0015-threads.md)
 
-_Сверено с кодом: 2026-10-13, рабочая ветка оболочки._
+_Сверено с кодом: 2026-10-13, ветка fix-ps2-keyboard._
