@@ -223,6 +223,40 @@ pub fn ticks() -> u64 {
     TICKS.load(Ordering::Relaxed)
 }
 
+/// Reads one CMOS register through the index/data ports
+fn cmos(register: u8) -> u8 {
+    let mut index = Port::<u8>::new(0x70);
+    let mut data = Port::<u8>::new(0x71);
+    unsafe {
+        index.write(register);
+        data.read()
+    }
+}
+
+/// The real-time clock as nanoseconds since the Unix epoch, read once at boot. Handles the
+/// BCD and 12-hour encodings the CMOS status register reports (QEMU uses BCD, 24-hour).
+pub fn wall_clock_unix_nanos() -> u64 {
+    // wait out an update so the fields are consistent
+    while cmos(0x0a) & 0x80 != 0 {}
+    let status_b = cmos(0x0b);
+    let binary = status_b & 0x04 != 0;
+    let hour_24 = status_b & 0x02 != 0;
+    let decode = |value: u8| if binary { value } else { (value >> 4) * 10 + (value & 0x0f) };
+    let second = decode(cmos(0x00));
+    let minute = decode(cmos(0x02));
+    let raw_hour = cmos(0x04);
+    let mut hour = decode(raw_hour & 0x7f);
+    if !hour_24 && raw_hour & 0x80 != 0 {
+        hour = (hour % 12) + 12;
+    } else if !hour_24 && hour == 12 {
+        hour = 0;
+    }
+    let day = decode(cmos(0x07));
+    let month = decode(cmos(0x08));
+    let year = 2000 + decode(cmos(0x09)) as u16;
+    osel_core::clock::unix_nanos(osel_core::clock::DateTime { year, month, day, hour, minute, second })
+}
+
 static BREAKPOINTS: AtomicU64 = AtomicU64::new(0);
 static SPURIOUS: AtomicU64 = AtomicU64::new(0);
 
@@ -349,6 +383,8 @@ extern "x86-interrupt" fn timer_interrupt_handler(stack_frame: InterruptStackFra
     unsafe {
         PICS.lock().notify_end_of_interrupt(InterruptIndex::Timer.as_u8());
     }
+    // wake sleepers whose deadline passed, then let the next thread run
+    crate::time::wake_due();
     // after the end of interrupt and with no lock held: the next thread may run for a while
     crate::scheduler::tick(stack_frame.code_segment.rpl() == x86_64::PrivilegeLevel::Ring3);
 }

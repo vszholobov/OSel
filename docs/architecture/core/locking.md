@@ -52,6 +52,8 @@ description: Блокировки OSel — IrqSpinlock, отчёт о взаим
 | `FILES` | `src/scheduler.rs`, поле `Process` | таблица дескрипторов процесса, по одной на процесс | `files()`: найти, добавить, закрыть дескриптор; не держится на чтении и записи |
 | `PROCESS_EXIT` | `src/scheduler.rs`, поле `Process` | итог процесса, по одной на процесс | `exit_current`, `Process::wait` |
 | `PROCESS_WAITER` | `src/scheduler.rs`, поле `Process` | поток, который ждёт процесс | `Process::wait`, `exit_current` |
+| `SLEEPERS` | `src/time.rs` | потоки, ждущие до срока (`nanosleep`, тайм-ауты) | `time::sleep_until`, `wait_until`, `wake_due` из таймера |
+| `REALTIME_BASE` | `src/time.rs` | реальное время в момент нуля монотонных часов | `time::init`, `realtime_ns` |
 | `ROOT_FS` | `src/fs.rs` | корневая файловая система | `fs::init`, `fs::root`; держится только на время копирования `Arc` |
 
 Порядок вложения, который уже есть в коде: `DECODER`, затем `BUFFER` (в обработчике клавиатуры); `SCHEDULER`, затем `ALLOCATOR` (таблица потоков растёт и сжимается под блокировкой планировщика). `MM`, затем `MEMORY` (отображение страницы под `MM` берёт `MEMORY`); так же их берёт обработчик page fault. Другие блокировки друг в друга не вкладываются.

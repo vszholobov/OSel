@@ -36,7 +36,9 @@ pub use osel_core::sched::ThreadId;
 pub const STACKS_START: u64 = 0xffff_c100_0000_0000;
 /// Kernel stack of a thread; Go's threads spend little time in the kernel
 pub const STACK_SIZE: u64 = 64 * 1024;
-const STACK_COUNT: usize = 1024;
+/// The most threads at once: one kernel stack slot each
+pub const MAX_THREADS: usize = 1024;
+const STACK_COUNT: usize = MAX_THREADS;
 /// Bytes of the `TrapFrame` at the top of a kernel stack
 const FRAME_SIZE: u64 = (TRAP_FRAME_WORDS * 8) as u64;
 const _: () = assert!(FRAME_SIZE % 16 == 0, "the frame keeps the stack 16 byte aligned");

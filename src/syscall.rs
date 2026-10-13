@@ -16,8 +16,8 @@ use alloc::sync::Arc;
 use alloc::vec;
 use osel_core::file::{FdTable, O_CLOEXEC, O_CREAT, OpenDescription, encode_stat, open_access};
 use osel_core::syscall::{
-    self, CLONE, CLOSE, EXIT, EXIT_GROUP, FCNTL, FSTAT, GETPID, GETTID, MADVISE, MMAP, MPROTECT, MUNMAP, NEWFSTATAT,
-    OPENAT, READ, Return, SCHED_YIELD, SYSCALL_VECTOR, WRITE, fd_arg,
+    self, CLOCK_GETTIME, CLONE, CLOSE, EXIT, EXIT_GROUP, FCNTL, FSTAT, GETPID, GETTID, MADVISE, MMAP, MPROTECT, MUNMAP,
+    NANOSLEEP, NEWFSTATAT, OPENAT, READ, Return, SCHED_YIELD, SYSCALL_VECTOR, WRITE, fd_arg,
 };
 use osel_core::mmap::MAP_ANONYMOUS;
 use osel_core::user_mem::Access as MemAccess;
@@ -163,6 +163,8 @@ extern "C" fn dispatch(frame: &mut TrapFrame) -> u64 {
             Ok(0)
         }
         Some(CLONE) => clone(frame, a0, a1),
+        Some(NANOSLEEP) => nanosleep(a0, a1),
+        Some(CLOCK_GETTIME) => clock_gettime(a0, a1),
         Some(GETTID) => Ok(scheduler::current_id()),
         Some(EXIT) => scheduler::exit_thread(Stop::Exit(a0 as u8), Some(*frame)),
         Some(EXIT_GROUP) => scheduler::exit_current(Stop::Exit(a0 as u8), Some(*frame)),
@@ -234,6 +236,33 @@ fn clone(frame: &TrapFrame, flags: u64, child_stack: u64) -> KResult<u64> {
     // SAFETY: called on a thread of the process, which stays alive across the call
     let process = unsafe { scheduler::current_process_arc() };
     scheduler::spawn_in(process, child, fpu, fs_base)
+}
+
+/// `nanosleep(req, rem)`: sleeps for the `timespec` at `req`. On a kill it reports the
+/// time left at `rem` (if given) and `EINTR`.
+fn nanosleep(req: u64, rem: u64) -> KResult<u64> {
+    let mut bytes = [0u8; 16];
+    space().copy_from_user(req, &mut bytes)?;
+    let duration = osel_core::clock::decode_timespec(bytes).ok_or(Errno::EINVAL)?;
+    let deadline = crate::time::monotonic_ns().saturating_add(duration);
+    match crate::time::sleep_until(deadline) {
+        Ok(()) => Ok(0),
+        Err(error) => {
+            if rem != 0 {
+                let now = crate::time::monotonic_ns();
+                let left = deadline.saturating_sub(now);
+                space().copy_to_user(rem, &osel_core::clock::encode_timespec(left))?;
+            }
+            Err(error)
+        }
+    }
+}
+
+/// `clock_gettime(clock_id, timespec)`
+fn clock_gettime(clock_id: u64, timespec: u64) -> KResult<u64> {
+    let now = crate::time::clock_ns(clock_id).ok_or(Errno::EINVAL)?;
+    space().copy_to_user(timespec, &osel_core::clock::encode_timespec(now))?;
+    Ok(0)
 }
 
 /// `PROT_*` bits; bits beyond 32 make it `EINVAL` like unknown ones
@@ -1317,5 +1346,105 @@ mod memory_tests {
         }
         assert_eq!(used_frames(), frames);
         assert_eq!(crate::allocator::with_allocator(|allocator| allocator.in_use()), heap);
+    }
+}
+
+/// `clock_gettime` and `nanosleep`
+#[cfg(test)]
+mod time_tests {
+    use super::*;
+    use crate::program::Loaded;
+    use crate::user::tests::{code, load};
+    use crate::user::{Stop, initial_frame, run};
+    use core::arch::global_asm;
+    use osel_core::clock::{self, NANOS_PER_SEC};
+
+    const DATA: u64 = 0x60_0000;
+
+    global_asm!(
+        ".pushsection .rodata.osel_time_programs, \"a\"",
+        // clock_gettime(rdi, DATA) twice with a busy wait between, exit 0; the test reads
+        // both timespecs from DATA (first) and DATA+16 (second)
+        ".global osel_two_clocks", "osel_two_clocks:",
+        "mov esi, 0x600000",
+        "mov eax, 228",
+        "syscall",
+        "test rax, rax",
+        "js 3f",
+        "mov r12d, 0x4000000",
+        "2:", "dec r12d", "jnz 2b",
+        "mov edi, 1",
+        "mov esi, 0x600010",
+        "mov eax, 228",
+        "syscall",
+        "3:",
+        "mov rdi, rax",
+        "mov eax, 60",
+        "syscall",
+        ".global osel_two_clocks_end", "osel_two_clocks_end:",
+        // nanosleep(DATA, 0), exit with the result
+        ".global osel_sleep", "osel_sleep:",
+        "mov edi, 0x600000",
+        "xor esi, esi",
+        "mov eax, 35",
+        "syscall",
+        "mov rdi, rax",
+        "mov eax, 60",
+        "syscall",
+        ".global osel_sleep_end", "osel_sleep_end:",
+        ".popsection",
+    );
+
+    fn run_on(loaded: &mut Loaded, setup: impl FnOnce(&mut TrapFrame)) -> Stop {
+        let mut frame = initial_frame(loaded.entry, loaded.rsp);
+        setup(&mut frame);
+        run(&mut loaded.space, &mut frame)
+    }
+
+    fn read_nanos(loaded: &mut Loaded, at: u64) -> u64 {
+        let mut bytes = [0u8; 16];
+        loaded.space.read_bytes(at, &mut bytes).unwrap();
+        clock::decode_timespec(bytes).unwrap()
+    }
+
+    /// `clock_gettime` gives a monotonic time that does not go backwards
+    #[test_case]
+    fn test_clock_gettime_moves_forward() {
+        let mut loaded = load(code!(osel_two_clocks, osel_two_clocks_end));
+        assert_eq!(run_on(&mut loaded, |frame| frame.rdi = 1).exit_code(), 0);
+        let (first, second) = (read_nanos(&mut loaded, DATA), read_nanos(&mut loaded, DATA + 16));
+        assert!(second >= first, "monotonic time went backwards: {first} then {second}");
+        assert!(second < first + 10 * NANOS_PER_SEC, "the busy wait did not take ten seconds");
+    }
+
+    /// `CLOCK_REALTIME` is a plausible wall-clock time, well past 2020
+    #[test_case]
+    fn test_realtime_is_a_real_date() {
+        let mut loaded = load(code!(osel_two_clocks, osel_two_clocks_end));
+        assert_eq!(run_on(&mut loaded, |frame| frame.rdi = 0).exit_code(), 0);
+        let realtime = read_nanos(&mut loaded, DATA) / NANOS_PER_SEC;
+        assert!(realtime > 1_577_836_800, "CLOCK_REALTIME is before 2020: {realtime}");
+    }
+
+    /// An unknown clock is `EINVAL`
+    #[test_case]
+    fn test_unknown_clock_is_einval() {
+        let mut loaded = load(code!(osel_two_clocks, osel_two_clocks_end));
+        let code = run_on(&mut loaded, |frame| frame.rdi = 99).exit_code();
+        assert_eq!(code, (-(Errno::EINVAL.code())) as u8);
+    }
+
+    /// `nanosleep` blocks until the deadline: the timer advances by at least the requested
+    /// ticks while the thread sleeps, and other threads run meanwhile
+    #[test_case]
+    fn test_nanosleep_waits_for_the_clock() {
+        let mut loaded = load(code!(osel_sleep, osel_sleep_end));
+        // sleep 50 ms (5 ticks at 100 Hz)
+        loaded.space.check_user(DATA, 16, MemAccess::Write).unwrap();
+        loaded.space.write_bytes(DATA, &clock::encode_timespec(50_000_000)).unwrap();
+        let before = crate::interrupts::ticks();
+        assert_eq!(run_on(&mut loaded, |_| {}).exit_code(), 0);
+        let elapsed = crate::interrupts::ticks() - before;
+        assert!(elapsed >= 5, "slept fewer than 5 ticks: {elapsed}");
     }
 }

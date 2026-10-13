@@ -57,11 +57,19 @@ description: Потоки и планировщик OSel — стек ядра �
 - `Process::wait` ждёт итог: с выключенными прерываниями проверяет его, записывает себя ждущим и блокируется; `exit_current` его будит.
 - `user::start` приводит кадр к кольцу 3 (неканонический `rip` — `EFAULT`), запускает программу и не ждёт; `user::run` и `run_with` запускают и ждут, а потом отдают адресное пространство и дескрипторы обратно вызывающему.
 
+## Время и сон {#time}
+
+Часы — счётчик тиков таймера (`interrupts::ticks`, `TICK_HZ` = 100 в секунду), переведённый в наносекунды в `osel_core::clock`. `time::monotonic_ns` — время с загрузки, `time::realtime_ns` — с эпохи Unix: базу `time::init` читает из CMOS при загрузке (`interrupts::wall_clock_unix_nanos`, формат BCD/двоичный и 12/24 часа по регистру состояния). `clock_gettime` отдаёт эти часы, `CLOCK_*_COARSE`, `_RAW` и `BOOTTIME` — те же.
+
+`nanosleep` и будущие тайм-ауты `futex` и `epoll` блокируют поток до срока в наносекундах. Поток записывает себя в очередь `SLEEPERS` (`osel_core::sleeper`) и блокируется; таймер после каждого тика будит тех, чей срок прошёл (`time::wake_due`). Проверка срока и запись в очередь идут с выключенными прерываниями, поэтому таймер не разбудит поток между проверкой и сном. Самый короткий реальный сон — один тик (10 мс): этого Go хватает, `time.Sleep` опирается на таймер и `futex`, а не на точность `nanosleep`.
+
 ## Где в коде {#code}
 
 - `src/scheduler.rs` — `Thread`, `Process`, `Exit`, `init`, `spawn_user`, `spawn_kernel`, `schedule`, `prepare_switch`, `switch_to`, `finish_switch`, `thread_start`, `return_to_user`, `tick`, `block_current`, `wake`, `yield_now`, `exit_current`, `switches`, `runs`.
 - `osel-core/src/sched.rs` — `SchedPolicy`, `RoundRobin`, `StackSlots`.
 - `src/user.rs` — `start`, `run`, `run_with`, `user_trap`, `user_fault`.
+- `src/time.rs` — `monotonic_ns`, `realtime_ns`, `clock_ns`, `sleep_until`, `wait_until`, `wake_due`.
+- `osel-core/src/clock.rs`, `osel-core/src/sleeper.rs` — перевод тиков и очередь сроков.
 - `src/syscall.rs` — вход через стек потока, `sched_yield`, проверка `kill` перед возвратом.
 - `src/interrupts.rs` — `timer_interrupt_handler` вызывает `tick`.
 
