@@ -37,6 +37,16 @@ description: Справочник системных вызовов OSel — н�
 | 257 | `openat` | `dirfd`, `path`, `flags`, `mode` | открывает файл, каталог или устройство `/dev`; относительный путь — от `dirfd` или, при `AT_FDCWD`, от `/`. Флаги — в порядке Linux, см. [открытые файлы](../architecture/core/fs.md#open-files) | `ENOENT`, `ENOTDIR`, `EISDIR`, `EROFS`, `EEXIST`, `EMFILE`, `EBADF` для `dirfd`, `EFAULT`, `ENAMETOOLONG` |
 | 262 | `newfstatat` | `dirfd`, `path`, `statbuf`, `flags` | `stat` по пути, с `AT_EMPTY_PATH` и пустым путём — сам `dirfd`; символьных ссылок нет, `AT_SYMLINK_NOFOLLOW` ничего не меняет | как у `openat` и `fstat` |
 
+| 13 | `rt_sigaction` | `sig`, … | сигналы на этом этапе не доставляются, поэтому возвращает 0; собственные сигналы рантайма 32, 33 и 64 — `EINVAL` |
+| 14 | `rt_sigprocmask` | `how`, `set`, `oldset` | маска пустая: пишет нули в `oldset` и возвращает 0 | `EFAULT` |
+| 131 | `sigaltstack` | `ss`, `old_ss` | альтернативного стека сигналов нет: `old_ss` получает `SS_DISABLE` | `EFAULT` |
+| 157 | `prctl` | — | `PR_SET_VMA` и прочее — `EINVAL`, Go результат игнорирует | `EINVAL` |
+| 158 | `arch_prctl` | `code`, `addr` | `ARCH_SET_FS` ставит базу FS (`addr` ниже конца нижней половины), `ARCH_GET_FS` её читает | `EINVAL` для других кодов; `EFAULT` для неканонического адреса |
+| 204 | `sched_getaffinity` | `pid`, `cpusetsize`, `mask` | один процессор: маска с битом 0, возвращает 8 (отсюда `GOMAXPROCS = 1`) | `EINVAL` при размере меньше 8; `EFAULT` |
+| 234 | `tgkill` | — | пустая операция: сигналов нет, асинхронное вытеснение Go выключено через `GODEBUG` | — |
+| 302 | `prlimit64` | `pid`, `resource`, `new`, `old` | сообщает предел (`RLIMIT_NOFILE` 1024, `RLIMIT_STACK` 8 МБ, прочее без предела), новый игнорирует | `EFAULT` |
+| 318 | `getrandom` | `buf`, `len`, `flags` | заполняет буфер псевдослучайными байтами (не криптографическими) | `EFAULT` |
+
 Дескрипторы (`fd`, `dirfd`) и совет `madvise` — младшие 32 бита регистра как знаковое число, как `int` в Linux. Права `prot` с битами выше 32 — `EINVAL`.
 
 Новый вызов — номер и имя в `SYSCALLS`, ветка в `dispatch` (`src/syscall.rs`) и строка в этой таблице. Адреса от программы — только через `copy_from_user` и `copy_to_user`, см. [пользовательский режим](../architecture/core/user-mode.md#user-mem).

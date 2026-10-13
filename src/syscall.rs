@@ -16,9 +16,10 @@ use alloc::sync::Arc;
 use alloc::vec;
 use osel_core::file::{Access, FdTable, O_CLOEXEC, O_CREAT, O_NONBLOCK, OpenDescription, encode_stat, open_access};
 use osel_core::syscall::{
-    self, CLOCK_GETTIME, CLONE, CLOSE, EPOLL_CREATE1, EPOLL_CTL, EPOLL_PWAIT, EVENTFD2, EXIT, EXIT_GROUP, FCNTL, FSTAT,
-    FUTEX, GETPID, GETTID, MADVISE, MMAP, MPROTECT, MUNMAP, NANOSLEEP, NEWFSTATAT, OPENAT, READ, Return, SCHED_YIELD,
-    SYSCALL_VECTOR, WRITE, fd_arg,
+    self, ARCH_PRCTL, CLOCK_GETTIME, CLONE, CLOSE, EPOLL_CREATE1, EPOLL_CTL, EPOLL_PWAIT, EVENTFD2, EXIT, EXIT_GROUP,
+    FCNTL, FSTAT, FUTEX, GETPID, GETRANDOM, GETTID, MADVISE, MMAP, MPROTECT, MUNMAP, NANOSLEEP, NEWFSTATAT, OPENAT,
+    PRCTL, PRLIMIT64, READ, RT_SIGACTION, RT_SIGPROCMASK, Return, SCHED_GETAFFINITY, SCHED_YIELD, SIGALTSTACK,
+    SYSCALL_VECTOR, TGKILL, WRITE, fd_arg,
 };
 use osel_core::mmap::MAP_ANONYMOUS;
 use osel_core::user_mem::Access as MemAccess;
@@ -163,7 +164,16 @@ extern "C" fn dispatch(frame: &mut TrapFrame) -> u64 {
             scheduler::yield_now();
             Ok(0)
         }
-        Some(CLONE) => clone(frame, a0, a1),
+        Some(CLONE) => clone(frame, a0, a1, a4),
+        Some(ARCH_PRCTL) => arch_prctl(a0, a1),
+        Some(PRCTL) => Err(Errno::EINVAL),
+        Some(RT_SIGACTION) => rt_sigaction(a0),
+        Some(RT_SIGPROCMASK) => rt_sigprocmask(a2),
+        Some(SIGALTSTACK) => sigaltstack(a1),
+        Some(TGKILL) => Ok(0),
+        Some(SCHED_GETAFFINITY) => sched_getaffinity(a1, a2),
+        Some(PRLIMIT64) => prlimit64(a1, a3),
+        Some(GETRANDOM) => getrandom(a0, a1),
         Some(NANOSLEEP) => nanosleep(a0, a1),
         Some(CLOCK_GETTIME) => clock_gettime(a0, a1),
         Some(FUTEX) => futex(a0, a1, a2 as u32, a3),
@@ -216,18 +226,21 @@ const F_DUPFD_CLOEXEC: u32 = 1030;
 const FD_CLOEXEC: u64 = 1;
 
 /// The `clone` flags Go's `newosproc` uses: a new thread of the same process. OSel shares
-/// the whole process (space and descriptors), so only this exact set is accepted.
+/// the whole process (space and descriptors), so only this set is accepted; `CLONE_SETTLS`
+/// is optional and gives the child's FS base.
 const CLONE_THREAD_FLAGS: u64 = 0x100 | 0x200 | 0x400 | 0x800 | 0x10000 | 0x40000;
+const CLONE_SETTLS: u64 = 0x80000;
 
-/// `clone(flags, child_stack, ...)`: starts another thread of the running process. The
-/// child returns 0 with its own stack, the parent gets the child's thread id. Only the
-/// thread flavour Go uses; other flags are `EINVAL`.
-fn clone(frame: &TrapFrame, flags: u64, child_stack: u64) -> KResult<u64> {
+/// `clone(flags, child_stack, ptid, ctid, tls)`: starts another thread of the running
+/// process. The child returns 0 with its own stack and, with `CLONE_SETTLS`, the FS base
+/// in `tls`; the parent gets the child's thread id. Only the thread flavour Go uses; other
+/// flags are `EINVAL`.
+fn clone(frame: &TrapFrame, flags: u64, child_stack: u64, tls: u64) -> KResult<u64> {
     if flags & 0xff != 0 {
         // the low byte is the signal sent on exit; Go passes 0
         return Err(Errno::EINVAL);
     }
-    if flags & !0xff != CLONE_THREAD_FLAGS {
+    if flags & !(0xff | CLONE_SETTLS) != CLONE_THREAD_FLAGS {
         return Err(Errno::EINVAL);
     }
     if child_stack == 0 || child_stack > USER_END {
@@ -236,7 +249,15 @@ fn clone(frame: &TrapFrame, flags: u64, child_stack: u64) -> KResult<u64> {
     let mut child = *frame;
     child.rax = 0;
     child.rsp = child_stack;
-    let fs_base = x86_64::registers::model_specific::FsBase::read().as_u64();
+    // the child's FS base: the TLS argument, or the parent's base if no CLONE_SETTLS
+    let fs_base = if flags & CLONE_SETTLS != 0 {
+        if tls >= USER_END {
+            return Err(Errno::EFAULT);
+        }
+        tls
+    } else {
+        x86_64::registers::model_specific::FsBase::read().as_u64()
+    };
     let mut fpu = osel_core::fpu::FpuState::initial();
     crate::fpu::save(&mut fpu);
     // SAFETY: called on a thread of the process, which stays alive across the call
@@ -262,6 +283,112 @@ fn nanosleep(req: u64, rem: u64) -> KResult<u64> {
             Err(error)
         }
     }
+}
+
+/// `arch_prctl(code, addr)`: Go sets each thread's FS base here after `clone`
+fn arch_prctl(code: u64, addr: u64) -> KResult<u64> {
+    const ARCH_SET_FS: u64 = 0x1002;
+    const ARCH_GET_FS: u64 = 0x1003;
+    use x86_64::registers::model_specific::FsBase;
+    match code {
+        ARCH_SET_FS => {
+            // a non-canonical base would #GP the kernel on the next write; keep it in the
+            // program's own half
+            if addr >= USER_END {
+                return Err(Errno::EFAULT);
+            }
+            FsBase::write(VirtAddr::new(addr));
+            Ok(0)
+        }
+        ARCH_GET_FS => {
+            space().copy_to_user(addr, &FsBase::read().as_u64().to_ne_bytes())?;
+            Ok(0)
+        }
+        _ => Err(Errno::EINVAL),
+    }
+}
+
+/// `rt_sigaction(sig, ...)`: signals aren't delivered this stage, so this only reports
+/// success. The runtime's own signals 32, 33 and 64 must look unavailable (`EINVAL`).
+fn rt_sigaction(sig: u64) -> KResult<u64> {
+    if matches!(sig, 32 | 33 | 64) {
+        return Err(Errno::EINVAL);
+    }
+    Ok(0)
+}
+
+/// `rt_sigprocmask(how, set, oldset, ...)`: no signals, so the mask is empty
+fn rt_sigprocmask(oldset: u64) -> KResult<u64> {
+    if oldset != 0 {
+        space().copy_to_user(oldset, &[0u8; 8])?;
+    }
+    Ok(0)
+}
+
+/// `sigaltstack(ss, old_ss)`: there is no alternate signal stack, so it reports disabled
+fn sigaltstack(old_ss: u64) -> KResult<u64> {
+    const SS_DISABLE: u32 = 2;
+    if old_ss != 0 {
+        // stack_t: ss_sp (8), ss_flags (4), padding (4), ss_size (8)
+        let mut bytes = [0u8; 24];
+        bytes[8..12].copy_from_slice(&SS_DISABLE.to_ne_bytes());
+        space().copy_to_user(old_ss, &bytes)?;
+    }
+    Ok(0)
+}
+
+/// `sched_getaffinity(pid, cpusetsize, mask)`: one CPU, so a mask with bit 0 set, which
+/// makes Go choose `GOMAXPROCS = 1`. Returns the bytes written.
+fn sched_getaffinity(cpusetsize: u64, mask: u64) -> KResult<u64> {
+    let len = (cpusetsize as usize).min(8);
+    if len < 8 {
+        return Err(Errno::EINVAL);
+    }
+    let mut bytes = [0u8; 8];
+    bytes[0] = 1;
+    space().copy_to_user(mask, &bytes)?;
+    Ok(8)
+}
+
+/// `prlimit64(pid, resource, new_limit, old_limit)`: reports a plausible limit, ignores a
+/// new one. `rlim64` is `{ cur, max }`, both `u64`.
+fn prlimit64(resource: u64, old_limit: u64) -> KResult<u64> {
+    const RLIMIT_STACK: u64 = 3;
+    const RLIMIT_NOFILE: u64 = 7;
+    const RLIM_INFINITY: u64 = u64::MAX;
+    if old_limit != 0 {
+        let limit = match resource {
+            RLIMIT_STACK => 8 * 1024 * 1024,
+            RLIMIT_NOFILE => osel_core::file::MAX_FDS as u64,
+            _ => RLIM_INFINITY,
+        };
+        let mut bytes = [0u8; 16];
+        bytes[..8].copy_from_slice(&limit.to_ne_bytes());
+        bytes[8..].copy_from_slice(&RLIM_INFINITY.to_ne_bytes());
+        space().copy_to_user(old_limit, &bytes)?;
+    }
+    Ok(0)
+}
+
+/// `getrandom(buf, len, flags)`: fills `buf` with pseudo-random bytes. Not cryptographic —
+/// the time stamp counter mixed with splitmix64, like `AT_RANDOM`. Go seeds its maps and
+/// `math/rand` with it and falls back gracefully if it were missing.
+fn getrandom(buf: u64, len: u64) -> KResult<u64> {
+    let len = len as usize;
+    space().check_user(buf, len, MemAccess::Write)?;
+    let mut state = unsafe { core::arch::x86_64::_rdtsc() };
+    let mut bytes = alloc::vec![0u8; len];
+    for chunk in bytes.chunks_mut(8) {
+        state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^= z >> 31;
+        let n = chunk.len();
+        chunk.copy_from_slice(&z.to_ne_bytes()[..n]);
+    }
+    space().copy_to_user(buf, &bytes)?;
+    Ok(len as u64)
 }
 
 /// `eventfd2(initval, flags)`: a counter descriptor Go's poller wakes itself with
@@ -1616,7 +1743,8 @@ mod poll_tests {
         "93:", "mov edi, 93", "jmp 99f",
         "94:", "mov edi, 94", "jmp 99f",
         "95:", "mov edi, 95", "jmp 99f",
-        "96:", "mov edi, 96",
+        "96:", "mov edi, 96", "jmp 99f",
+        "97:", "mov edi, 97",
         "99:",
         "mov eax, 60",
         "syscall",
@@ -1657,5 +1785,81 @@ mod poll_tests {
     fn test_epoll_ctl_rejects_a_plain_file() {
         let code = run_prog(code!(osel_epoll_perm, osel_epoll_perm_end)).exit_code();
         assert_eq!(code, Errno::EPERM.code() as u8);
+    }
+}
+
+/// The startup stubs Go needs: arch_prctl, getrandom, sched_getaffinity and friends
+#[cfg(test)]
+mod stub_tests {
+    use super::*;
+    use crate::program::Loaded;
+    use crate::user::tests::{code, load};
+    use crate::user::{Stop, initial_frame, run};
+    use core::arch::global_asm;
+
+    global_asm!(
+        ".pushsection .rodata.osel_stub_programs, \"a\"",
+        // SET_FS to 0x600800, GET_FS into 0x600000, verify; getrandom 16 bytes into
+        // 0x600100 and check not all zero; sched_getaffinity into 0x600200 and check bit 0.
+        // exit 0 on success, else a step number.
+        ".global osel_stubs", "osel_stubs:",
+        "mov edi, 0x1002",          // ARCH_SET_FS
+        "mov esi, 0x600800",
+        "mov eax, 158",
+        "syscall",
+        "test rax, rax", "jnz 91f",
+        "mov edi, 0x1003",          // ARCH_GET_FS
+        "mov esi, 0x600000",
+        "mov eax, 158",
+        "syscall",
+        "cmp qword ptr [0x600000], 0x600800", "jne 92f",
+        "mov edi, 0x600100",        // getrandom buf
+        "mov esi, 16",
+        "xor edx, edx",
+        "mov eax, 318",
+        "syscall",
+        "cmp rax, 16", "jne 93f",
+        "mov rax, qword ptr [0x600100]",
+        "or rax, qword ptr [0x600108]",
+        "test rax, rax", "jz 94f",  // all zero is suspicious
+        "mov edi, 0",               // sched_getaffinity pid 0
+        "mov esi, 8",
+        "mov edx, 0x600200",
+        "mov eax, 204",
+        "syscall",
+        "cmp rax, 8", "jne 95f",
+        "test byte ptr [0x600200], 1", "jz 96f",
+        // prlimit64(0, RLIMIT_NOFILE, NULL, 0x600300): old limit written, cur = 1024
+        "xor edi, edi",
+        "mov esi, 7",
+        "xor edx, edx",
+        "mov r10d, 0x600300",
+        "mov eax, 302",
+        "syscall",
+        "test rax, rax", "jnz 97f",
+        "cmp qword ptr [0x600300], 1024", "jne 97f",
+        "xor edi, edi", "jmp 99f",
+        "91:", "mov edi, 91", "jmp 99f",
+        "92:", "mov edi, 92", "jmp 99f",
+        "93:", "mov edi, 93", "jmp 99f",
+        "94:", "mov edi, 94", "jmp 99f",
+        "95:", "mov edi, 95", "jmp 99f",
+        "96:", "mov edi, 96", "jmp 99f",
+        "97:", "mov edi, 97",
+        "99:",
+        "mov eax, 60",
+        "syscall",
+        ".global osel_stubs_end", "osel_stubs_end:",
+        ".popsection",
+    );
+
+    /// arch_prctl sets and reads the FS base, getrandom fills bytes, sched_getaffinity
+    /// reports one CPU
+    #[test_case]
+    fn test_startup_stubs() {
+        let mut loaded: Loaded = load(code!(osel_stubs, osel_stubs_end));
+        let mut frame = initial_frame(loaded.entry, loaded.rsp);
+        let stop: Stop = run(&mut loaded.space, &mut frame);
+        assert_eq!(stop.exit_code(), 0);
     }
 }

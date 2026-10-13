@@ -15,9 +15,18 @@ pub const MPROTECT: u64 = 10;
 pub const MUNMAP: u64 = 11;
 pub const SCHED_YIELD: u64 = 24;
 pub const MADVISE: u64 = 28;
+pub const RT_SIGACTION: u64 = 13;
+pub const RT_SIGPROCMASK: u64 = 14;
 pub const NANOSLEEP: u64 = 35;
 pub const CLONE: u64 = 56;
+pub const SIGALTSTACK: u64 = 131;
+pub const ARCH_PRCTL: u64 = 158;
 pub const GETTID: u64 = 186;
+pub const SCHED_GETAFFINITY: u64 = 204;
+pub const TGKILL: u64 = 234;
+pub const PRCTL: u64 = 157;
+pub const PRLIMIT64: u64 = 302;
+pub const GETRANDOM: u64 = 318;
 pub const FUTEX: u64 = 202;
 pub const EPOLL_CTL: u64 = 233;
 pub const EPOLL_PWAIT: u64 = 281;
@@ -42,9 +51,18 @@ pub const SYSCALLS: &[(u64, &str)] = &[
     (MUNMAP, "munmap"),
     (SCHED_YIELD, "sched_yield"),
     (MADVISE, "madvise"),
+    (RT_SIGACTION, "rt_sigaction"),
+    (RT_SIGPROCMASK, "rt_sigprocmask"),
     (NANOSLEEP, "nanosleep"),
     (CLONE, "clone"),
+    (SIGALTSTACK, "sigaltstack"),
+    (PRCTL, "prctl"),
+    (ARCH_PRCTL, "arch_prctl"),
     (GETTID, "gettid"),
+    (SCHED_GETAFFINITY, "sched_getaffinity"),
+    (TGKILL, "tgkill"),
+    (PRLIMIT64, "prlimit64"),
+    (GETRANDOM, "getrandom"),
     (FUTEX, "futex"),
     (EPOLL_CTL, "epoll_ctl"),
     (EPOLL_PWAIT, "epoll_pwait"),
