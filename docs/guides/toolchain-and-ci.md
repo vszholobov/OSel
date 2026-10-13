@@ -25,7 +25,7 @@ description: Закреплённый nightly-тулчейн и порядок �
 
 ## Задачи CI {#jobs}
 
-CI описан в двух файлах: тесты — в `.github/workflows/test.yml`, документация — в `.github/workflows/docs.yml`.
+CI описан в трёх файлах: тесты — в `.github/workflows/test.yml`, документация — в `.github/workflows/docs.yml`, готовые образы — в `.github/workflows/release.yml`.
 
 | Файл | Задача | Когда | Что делает |
 |---|---|---|---|
@@ -34,6 +34,8 @@ CI описан в двух файлах: тесты — в `.github/workflows/t
 | `test.yml` | `latest nightly (uefi)`, `latest nightly (bios)` | по понедельникам и при ручном запуске | на самом свежем nightly: `cargo test-core`, `cargo test-runner` и `cargo test --no-fail-fast`; без сверки документации и без загрузки настоящего ядра, не ждёт `host unit tests` |
 | `docs.yml` | `build the site` | каждый PR и push в `master` | собирает сайт документации на Diplodoc; линтер роняет сборку на ссылках на несуществующие страницы; битые якоря ловит `cargo docs-check` |
 | `docs.yml` | `publish to GitHub Pages` | push в `master` и ручной запуск | публикует собранный сайт на GitHub Pages |
+| `release.yml` | `build and verify release images` | каждый PR и push тега `v*` | собирает образы в профиле `release` и проверяет готовые `.img` в QEMU через UEFI и BIOS, с обязательным тетрисом |
+| `release.yml` | `publish the verified images` | push тега после успешной проверки обоих образов | публикует GitHub Release с двумя образами и SHA-256; порядок и восстановление после ошибки — в [выпуске версии](release.md#images) |
 
 Новый push в PR отменяет устаревший прогон этого PR. Прогоны на `master` не отменяются никогда.
 

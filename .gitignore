@@ -3,3 +3,4 @@ target/
 runner/.ovmf/
 ramdisk/**/.DS_Store
 user-go/target/
+__pycache__/

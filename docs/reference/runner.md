@@ -10,7 +10,7 @@ description: Справочник runner — переменные окружен
 
 ## Как вызывается {#invocation}
 
-`.cargo/config.toml` задаёт для таргета `x86_64-unknown-none` раннер `runner/run.sh`. Скрипт собирает и запускает крейт runner под хост-машину (`cargo run` с `--target host-tuple`) и передаёт ему путь к ELF ядра и аргументы QEMU. Путь к скрипту cargo считает от корня репозитория, поэтому `cargo run` работает из любой подпапки.
+`.cargo/config.toml` задаёт для таргета `x86_64-unknown-none` раннер `runner/run.sh`. Скрипт собирает и запускает крейт runner под хост-машину (`cargo run --locked` с `--target host-tuple`) и передаёт ему путь к ELF ядра и аргументы QEMU. Путь к скрипту cargo считает от корня репозитория, поэтому `cargo run` работает из любой подпапки.
 
 ## Переменные окружения {#env}
 
@@ -26,19 +26,19 @@ description: Справочник runner — переменные окружен
 
 ## Программы из user/ {#user-programs}
 
-Перед упаковкой ramdisk runner собирает каждую программу из `USER_PROGRAMS` и `GO_PROGRAMS` (ниже). Сначала программы из `USER_PROGRAMS` (`runner/src/main.rs`): `cargo build --release --target x86_64-unknown-none` для `user/<имя>/Cargo.toml` в отдельную папку `user/target`, с `-Crelocation-model=static`, потому что ядро загружает только `ET_EXEC`. `RUSTFLAGS`, `CARGO_TARGET_DIR` и `CARGO_BUILD_TARGET` внешнего cargo программе не передаются. Результат добавляется в архив как `/bin/<имя>` с правами `0755`, после файлов из папки ramdisk. Если в этой папке уже есть `bin/<имя>`, runner останавливается с ошибкой `bin/<имя> is in the ramdisk directory and also a program of user/`. Ошибка сборки программы — тоже остановка до запуска QEMU (`building user/<имя> failed`).
+Перед упаковкой ramdisk runner собирает каждую программу из `USER_PROGRAMS` и `GO_PROGRAMS` (ниже). Сначала программы из `USER_PROGRAMS` (`runner/src/main.rs`): `cargo build --locked --release --target x86_64-unknown-none` для `user/<имя>/Cargo.toml` в отдельную папку `user/target`, с `-Crelocation-model=static`, потому что ядро загружает только `ET_EXEC`. `RUSTFLAGS`, `CARGO_TARGET_DIR` и `CARGO_BUILD_TARGET` внешнего cargo программе не передаются. Результат добавляется в архив как `/bin/<имя>` с правами `0755`, после файлов из папки ramdisk. Если в этой папке уже есть `bin/<имя>`, runner останавливается с ошибкой `bin/<имя> is in the ramdisk directory and also a program of user/`. Ошибка сборки программы — тоже остановка до запуска QEMU (`building user/<имя> failed`).
 
 В `USER_PROGRAMS` входят `hello` и `clear`. Программа `user/clear/src/main.rs` — отдельный статический ELF: через `write` отправляет ANSI-команды очистки и возврата курсора, затем завершается. Игра запускает её обычным `exec.Command("clear")`; окружение должно содержать `PATH=/bin`.
 
 ## Программы из user-go/ {#go-programs}
 
-Так же runner собирает каждую программу из `GO_PROGRAMS` хостовым `go`: `go build -trimpath` в `user-go/<имя>/` с `CGO_ENABLED=0`, `GOOS=linux`, `GOARCH=amd64`, `GOAMD64=v1` и `GOTOOLCHAIN=local` (ядро загружает статический `linux/amd64` с базовым набором инструкций и не скачивает тулчейн). Результат добавляется как `/bin/<имя>`. Если `go` на машине нет, программа просто не попадает в ramdisk, и тесты, которым она нужна, пропускаются; настоящая ошибка сборки (`building user-go/<имя> failed`) останавливает запуск. CI ставит Go, поэтому там сборка идёт всегда.
+Так же runner собирает каждую программу из `GO_PROGRAMS` хостовым `go`: `go build -mod=readonly -trimpath` в `user-go/<имя>/` с `CGO_ENABLED=0`, `GOOS=linux`, `GOARCH=amd64`, `GOAMD64=v1` и `GOTOOLCHAIN=local` (ядро загружает статический `linux/amd64` с базовым набором инструкций и не скачивает тулчейн). Результат добавляется как `/bin/<имя>`. Если `go` на машине нет, программа просто не попадает в ramdisk, и тесты, которым она нужна, пропускаются; настоящая ошибка сборки (`building user-go/<имя> failed`) останавливает запуск. CI ставит Go, поэтому там сборка идёт всегда.
 
 `gohello` проверяет горутины и таймеры, `goexec` — запуск дочерних программ и каналы через стандартный пакет `os/exec`. Сквозные тесты — `tests/go_hello.rs` и `tests/go_exec.rs`.
 
 ## Настоящий тетрис {#tetris}
 
-После программ из `user-go/` runner собирает `apps/tetris/client` из закреплённого git-подмодуля и добавляет `/bin/tetris`. Параметры Go совпадают с [программами выше](#go-programs), результат сохраняется в `user-go/target/tetris`. Зависимости клиента скачивает обычный Go module cache; тулчейн автоматически не устанавливается. Отсутствие Go допускает пропуск, а отсутствие подмодуля при установленном Go — ошибка с командой `git submodule update --init --recursive`.
+После программ из `user-go/` runner собирает `apps/tetris/client` из закреплённого git-подмодуля и добавляет `/bin/tetris`. Параметры Go совпадают с [программами выше](#go-programs), результат сохраняется в `user-go/target/tetris`. Зависимости клиента скачивает обычный Go module cache; `-mod=readonly` запрещает автоматически менять зависимости в `go.mod`, тулчейн автоматически не устанавливается. Workflow релиза дополнительно проверяет, что сборка не изменила файлы зависимостей и подмодуль. Отсутствие Go допускает пропуск, а отсутствие подмодуля при установленном Go — ошибка с командой `git submodule update --init --recursive`.
 
 Для тестового ядра `tetris-*` стандартный ввод QEMU подключается к каналу runner. `TetrisInput` ждёт сообщения клиента с `--trace`, отправляет реальные байты клавиш и требует завершения всего сценария дополнительно к обычным критериям теста. Порядок и проверки описаны в [тетрисе](../architecture/tetris.md#tests).
 
@@ -99,4 +99,4 @@ description: Справочник runner — переменные окружен
 - `runner/run.sh` — обёртка для cargo.
 - `runner/src/main.rs` — `parse_boot`, `parse_timeout`, `ramdisk_dir`, `pack_ramdisk`, `is_test_binary`, `image_path`, `create_disk_image`, `ovmf_firmware`, `forward_serial_output`, `test_outcome`, `expect_outcome`, `wait_with_timeout`.
 
-_Сверено с кодом: 2026-10-12, коммит 8f15c54._
+_Сверено с кодом: 2026-10-13, ветка release-images._
