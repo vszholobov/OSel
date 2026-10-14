@@ -16,7 +16,7 @@ use core::{
 };
 use osel_core::{
     errno::{Errno, KResult},
-    wifi::{self, Firmware},
+    wifi::{self, Firmware, boot},
 };
 use x86_64::{
     VirtAddr,
@@ -29,7 +29,8 @@ const CORE: usize = 0x3a000;
 const INDICATOR: usize = CORE + 0x28;
 const CE: usize = 0x34400;
 const ENTRIES: u32 = 16;
-const LOG_CAPACITY: usize = 32;
+const DIAG: usize = CE + 7 * 0x400;
+const LOG_CAPACITY: usize = 64;
 static BUSY: AtomicBool = AtomicBool::new(false);
 static REPORT: IrqSpinlock<Report> = IrqSpinlock::new("WIFI_REPORT", Report::new());
 
@@ -61,6 +62,9 @@ impl Report {
     }
     fn record(&mut self, stage: &'static str, value: u32) {
         self.stage = stage;
+        if self.len == LOG_CAPACITY {
+            self.records.copy_within(1.., 0);
+        }
         self.records[self.len.min(LOG_CAPACITY - 1)] = Record { stage, value };
         self.len = (self.len + 1).min(LOG_CAPACITY);
         crate::println!("WIFI {}: {:08x}", stage, value);
@@ -132,7 +136,7 @@ pub fn command(command: &str, out: &mut impl Write) -> KResult<()> {
         "regs" => {
             let report = *REPORT.lock();
             let _ = writeln!(out, "WiFi last probe (snapshot, no register reads):");
-            for record in &report.records[..report.len] {
+            for record in &report.records[report.len.saturating_sub(22)..report.len] {
                 let _ = writeln!(out, "  {} = {:08x}", record.stage, record.value);
             }
             if report.len == 0 {
@@ -167,9 +171,11 @@ pub fn command(command: &str, out: &mut impl Write) -> KResult<()> {
 struct Controller {
     device: pci::Device,
     base: usize,
-    rings: Option<[Dma; 4]>, // CE0 source, CE1 destination, request, response
+    rings: Option<[Dma; 6]>, // CE0 src, CE1 dst, request, response, CE7 src/dst
     tx: u32,
     rx: u32,
+    diag_tx: u32,
+    diag_rx: u32,
 }
 impl Controller {
     fn new(device: pci::Device) -> KResult<Self> {
@@ -202,6 +208,8 @@ impl Controller {
             rings: None,
             tx: 0,
             rx: 0,
+            diag_tx: 0,
+            diag_rx: 0,
         };
         controller.device.bus_master(false);
         controller.device.disable_interrupts();
@@ -276,35 +284,161 @@ impl Controller {
             }
             Ok(dma)
         };
-        self.rings = Some([low()?, low()?, low()?, low()?]);
+        self.rings = Some([low()?, low()?, low()?, low()?, low()?, low()?]);
         Ok(())
     }
     fn pipes(&mut self) {
         self.mask();
         let rings = self.rings.as_ref().unwrap();
-        unsafe {
-            core::ptr::write_bytes(rings[0].ptr, 0, 4096);
-            core::ptr::write_bytes(rings[1].ptr, 0, 4096);
+        for i in [0, 1, 4, 5] {
+            unsafe { core::ptr::write_bytes(rings[i].ptr, 0, 4096) };
         }
-        let source = rings[0].physical() as u32;
-        let dest = rings[1].physical() as u32;
-        for i in 0..8 {
-            let base = CE + i * 0x400;
-            self.put(base + 4, 0);
-            self.put(base + 0xc, 0);
-            self.put(base + 0x18, 0); // clear halt for the ROM
-            let control = self.get(base + 0x10) & !0x3ffff;
-            self.put(base + 0x10, control | if i == 0 { 256 } else { 2048 });
+        let addresses = [0, 1, 4, 5].map(|i| rings[i].physical() as u32);
+        // Only initialize host-owned halves. The ROM owns CE0 destination and CE1
+        // source; clearing those sizes after target initialization stalls BMI.
+        for (base, source, address, size) in [
+            (CE, true, addresses[0], ENTRIES),
+            (CE + 0x400, false, addresses[1], ENTRIES),
+            (DIAG, true, addresses[2], 2),
+            (DIAG, false, addresses[3], 2),
+        ] {
+            let offset = if source { 0 } else { 8 };
+            self.put(base + offset, address);
+            self.put(base + offset + 4, size);
+            let control = self.get(base + 0x10);
+            let control = if source {
+                (control & !0x1ffff) | if base == CE { 256 } else { 2048 }
+            } else {
+                control & !(1 << 17)
+            };
+            self.put(base + 0x10, control);
+            self.put(base + if source { 0x4c } else { 0x50 }, size);
         }
-        self.put(CE, source);
-        self.put(CE + 4, ENTRIES);
-        self.put(CE + 0x400 + 8, dest);
-        self.put(CE + 0x400 + 0xc, ENTRIES);
-        self.put(CE + 0x4c, ENTRIES);
-        self.put(CE + 0x400 + 0x50, ENTRIES);
         self.tx = self.get(CE + 0x3c) & (ENTRIES - 1);
         self.rx = self.get(CE + 0x400 + 0x40) & (ENTRIES - 1);
+        self.diag_tx = self.get(DIAG + 0x3c) & 1;
+        self.diag_rx = self.get(DIAG + 0x40) & 1;
         fence(Ordering::SeqCst);
+    }
+    fn snapshot(&self, report: &mut Report, base: usize) {
+        // Capture before Drop disables BME/halts rings. Never read registers in wifi regs.
+        for (stage, value) in [
+            ("PCI command/status", self.device.read(4)),
+            ("PCIe core control", self.get(CORE)),
+            ("firmware indicator", self.get(INDICATOR)),
+            ("CE base", base as u32),
+            ("CE source base", self.get(base)),
+            ("CE source size", self.get(base + 4)),
+            ("CE destination base", self.get(base + 8)),
+            ("CE destination size", self.get(base + 0xc)),
+            ("CE control 1", self.get(base + 0x10)),
+            ("CE command", self.get(base + 0x18)),
+            ("CE source write index", self.get(base + 0x3c)),
+            ("CE source read index", self.get(base + 0x44)),
+            ("CE destination write index", self.get(base + 0x40)),
+            ("CE destination read index", self.get(base + 0x48)),
+            ("CE error status", self.get(base + 0x38)),
+        ] {
+            report.record(stage, value);
+        }
+    }
+    fn diag(&mut self, address: u32, data: Option<&[u32]>, report: &mut Report) -> KResult<u32> {
+        let length = data.map_or(4, |words| words.len() * 4);
+        boot::ram_range(address, length)?;
+        if length > 2048 {
+            return Err(Errno::EINVAL);
+        }
+        report.record("CE7 target address", address);
+        let target = boot::ce_address(self.get(CORE), address)?;
+        let rings = self.rings.as_ref().unwrap();
+        let host = rings[2].physical() as u32;
+        if let Some(words) = data {
+            for (i, word) in words.iter().enumerate() {
+                unsafe {
+                    rings[2]
+                        .ptr
+                        .add(i * 4)
+                        .cast::<u32>()
+                        .write_volatile(word.to_le())
+                };
+            }
+        } else {
+            unsafe { rings[2].ptr.cast::<u32>().write_volatile(0) };
+        }
+        let (source, dest) = if data.is_some() {
+            (host, target)
+        } else {
+            (target, host)
+        };
+        unsafe {
+            descriptor(rings[4].ptr, self.diag_tx, source, length as u16);
+            descriptor(rings[5].ptr, self.diag_rx, dest, 0);
+        }
+        let tx_next = self.diag_tx ^ 1;
+        let rx_next = self.diag_rx ^ 1;
+        fence(Ordering::SeqCst);
+        self.put(DIAG + 0x40, rx_next);
+        self.put(DIAG + 0x3c, tx_next);
+        let sent = self.wait(DIAG + 0x44, 1, tx_next, 1000);
+        if let Err(error) = sent {
+            self.snapshot(report, DIAG);
+            report.record("CE7 source timeout", self.get(DIAG + 0x44));
+            return Err(error);
+        }
+        let received = self.wait_descriptor(5, self.diag_rx, 1000);
+        let count = match received {
+            Ok(count) => count,
+            Err(error) => {
+                self.snapshot(report, DIAG);
+                report.record("CE7 destination timeout", self.get(DIAG + 0x48));
+                return Err(error);
+            }
+        };
+        if count as usize != length {
+            report.record("CE7 response length invalid", u32::from(count));
+            return Err(Errno::EIO);
+        }
+        let rings = self.rings.as_ref().unwrap();
+        let returned_address = unsafe {
+            u32::from_le(
+                rings[5]
+                    .ptr
+                    .add(self.diag_rx as usize * 8)
+                    .cast::<u32>()
+                    .read_volatile(),
+            )
+        };
+        if returned_address != dest {
+            report.record("CE7 destination address invalid", returned_address);
+            return Err(Errno::EIO);
+        }
+        let value = unsafe { u32::from_le(rings[2].ptr.cast::<u32>().read_volatile()) };
+        self.diag_tx = tx_next;
+        self.diag_rx = rx_next;
+        Ok(value)
+    }
+    fn wait_descriptor(&self, ring: usize, index: u32, ms: u64) -> KResult<u16> {
+        let end = time::monotonic_ns().saturating_add(ms * 1_000_000);
+        loop {
+            fence(Ordering::SeqCst);
+            let rings = self.rings.as_ref().unwrap();
+            let length = unsafe {
+                u16::from_le(
+                    rings[ring]
+                        .ptr
+                        .add(index as usize * 8 + 4)
+                        .cast::<u16>()
+                        .read_volatile(),
+                )
+            };
+            if length != 0 {
+                return Ok(length);
+            }
+            if time::monotonic_ns() >= end {
+                return Err(Errno::ETIMEDOUT);
+            }
+            delay(10)?;
+        }
     }
     fn reset(&mut self, report: &mut Report) -> KResult<()> {
         self.device.bus_master(false);
@@ -339,7 +473,10 @@ impl Controller {
         self.put(RTC, self.get(RTC) | 0x40);
         self.pipes();
         self.target(report)?;
+        // Final host-ring initialization follows target init, without modifying ROM rings.
+        self.pipes();
         self.device.bus_master(true);
+        report.record("PCI DMA enabled", self.device.read(4));
         report.record("CE0 write index", self.tx);
         report.record("CE1 write index", self.rx);
         Ok(())
@@ -368,11 +505,19 @@ impl Controller {
         let sent = self.wait(CE + 0x44, ENTRIES - 1, tx_next, 3000);
         report.record("CE0 source read index", self.get(CE + 0x44));
         report.record("CE0 error status", self.get(CE + 0x38));
-        sent?;
+        if let Err(error) = sent {
+            self.snapshot(report, CE);
+            report.record("BMI CE0 source timeout", self.get(CE + 0x44));
+            return Err(error);
+        }
         let received = self.wait(CE + 0x400 + 0x48, ENTRIES - 1, rx_next, 3000);
         report.record("CE1 destination read index", self.get(CE + 0x400 + 0x48));
         report.record("CE1 error status", self.get(CE + 0x400 + 0x38));
-        received?;
+        if let Err(error) = received {
+            self.snapshot(report, CE + 0x400);
+            report.record("BMI CE1 destination timeout", self.get(CE + 0x400 + 0x48));
+            return Err(error);
+        }
         // DRRI can be updated before the DMA descriptor write completes.
         // Wait for nbytes too, as ath10k does, rather than reporting a false short reply.
         let deadline = time::monotonic_ns().saturating_add(100_000_000);
@@ -411,6 +556,40 @@ impl Controller {
         Ok(())
     }
 }
+struct Boot<'a> {
+    controller: &'a mut Controller,
+    report: &'a mut Report,
+}
+impl boot::Io for Boot<'_> {
+    fn read32(&mut self, address: u32) -> KResult<u32> {
+        let value = self.controller.diag(address, None, self.report)?;
+        self.report.record("CE7 target value", value);
+        Ok(value)
+    }
+    fn write(&mut self, address: u32, words: &[u32]) -> KResult<()> {
+        self.controller
+            .diag(address, Some(words), self.report)
+            .map(|_| ())
+    }
+    fn wake_cpu(&mut self) -> KResult<()> {
+        let value = self.controller.get(CORE) | 0x2000;
+        self.controller.put(CORE, value);
+        self.report
+            .record("target CPU signalled", self.controller.get(CORE));
+        Ok(())
+    }
+}
+unsafe fn descriptor(ring: *mut u8, index: u32, address: u32, length: u16) {
+    unsafe {
+        let descriptor = ring.add(index as usize * 8);
+        descriptor.cast::<u32>().write_volatile(address.to_le());
+        descriptor
+            .add(4)
+            .cast::<u16>()
+            .write_volatile(length.to_le());
+        descriptor.add(6).cast::<u16>().write_volatile(0);
+    }
+}
 impl Drop for Controller {
     fn drop(&mut self) {
         // Disable bus mastering before descriptor pages are freed, including timeout paths.
@@ -443,9 +622,19 @@ fn probe(report: &mut Report) -> KResult<()> {
     report.record("D0/SOC_WAKE begin", 0);
     let mut controller = Controller::new(device)?;
     report.record("awake RTC", controller.get(LOCAL));
-    report.record("SOC chip ID", controller.get(RTC + 0xf0));
+    let chip = controller.get(RTC + 0xf0);
+    report.record("SOC chip ID", chip);
+    if (chip >> 8) & 0xf != 10 {
+        return Err(Errno::EOPNOTSUPP);
+    }
     report.record("previous firmware indicator", controller.get(INDICATOR));
     controller.reset(report)?;
+    report.record("ROM early configuration begin", 0);
+    boot::configure(&mut Boot {
+        controller: &mut controller,
+        report,
+    })?;
+    report.record("ROM early configuration complete", controller.get(CORE));
     controller.bmi_info(report)?;
     report.record("ROM ready; firmware not started", 0);
     Ok(())

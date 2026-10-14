@@ -1,4 +1,5 @@
 //! Checked ath10k firmware/board containers. No register or DMA access.
+pub mod boot;
 pub const ACER_BOARD: &[u8] =
     b"bus=pci,vendor=168c,device=003e,subsystem-vendor=11ad,subsystem-device=0807";
 pub const FIRMWARE: &[u8] = include_bytes!("../../firmware/ath10k/QCA6174/hw3.0/firmware-6.bin");

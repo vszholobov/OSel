@@ -10,7 +10,7 @@ description: Acer QCA6174 WPA2 bring-up plan from a hardware probe to network Te
 
 ## Stages {#stages}
 
-1. **PCI and ROM.** Unmodified bundled files and exact board, bounded D0/wake/reset/CE/BMI and saved report. Code exists; Acer `wifi probe` and `wifi regs` results must verify registers, target version and DMA exchange. QEMU cannot test this path.
+1. **PCI and ROM.** Unmodified bundled files and exact board, bounded D0/wake/reset/CE/BMI and saved report. PCI/D0/wake/reset are confirmed on Acer; the first BMI attempt timed out at CE0. ROM early configuration over CE7 and CPU signalling have been added; another Acer `wifi probe`/`wifi regs` must confirm DMA and target version. QEMU cannot test this path.
 2. **Firmware.** BMI host-interest, PLL, OTP/calibration, image loading, all CE configuration and BMI_DONE. HTC ready and WMI service-ready must confirm startup; timeouts preserve the stage and release resources. Firmware running is not set before those events.
 3. **Networks.** WMI TLV, 2.4 GHz channels, scan events, BSSID/SSID/channel/RSSI. Checked 802.11/RSN parsing. Initial target: visible SSID and WPA2-Personal CCMP, without WPA3/Enterprise/roaming. Region and permitted channels cannot be guessed from PCI identity.
 4. **Connection.** Authentication/association, EAPOL 4-way handshake, replay/MIC and PTK/GTK installation. Password input must be separate without echo, repository storage or diagnostic disclosure. Nonces require sufficient randomness, not only PIT or MAC.

@@ -27,7 +27,7 @@ description: OSel commands for network, PCI, memory and initial Acer Wi-Fi diagn
 | `wifi status` | QCA6174 PCI card, last probe stage and error |
 | `wifi fw` | bundled firmware version, API/WMI/HTT, OTP and exact board match |
 | `wifi probe` | checks the Acer card up to a BMI ROM response; does not start firmware or connect |
-| `wifi regs` | saved stages and values from the last probe, without rereading registers |
+| `wifi regs` | last 22 saved stages and values from the probe, without rereading registers |
 | `kbd` | PS/2 initialization, IRQ and input counters |
 
 `ping` sends at most one request per second, waits up to 1 second and stops on Ctrl+C. Timeout means no ICMP reply: a Tetris server may work while blocking ICMP. `ENETUNREACH` means no adapter, link or DHCP address. The gateway must come from DHCP; `10.0.2.2` is only for QEMU guests. Multicast, loopback and broadcast targets are rejected.

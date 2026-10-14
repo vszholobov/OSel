@@ -75,7 +75,7 @@ Go запускает программы через `os/exec`. Устройст�
 - [x] Intel 82574L (`e1000e`) в QEMU, DMA-кольца RX/TX.
 - [x] Драйвер Realtek RTL8168 G/GU/H/M для PCI ID Acer `10ec:8168`, диагностика XID; общий DMA-путь, DHCP и игра проверены через C+ в QEMU. PHY ноутбука ещё не проверен.
 - [x] ICMP ping, DNS-запросы и диагностика сети/PCI.
-- [ ] Wi-Fi QCA6174 WPA2 на Acer: [план](design/wifi.md); ROM-пробник реализован, аппаратная проверка ещё требуется.
+- [ ] Wi-Fi QCA6174 WPA2 на Acer: [план](design/wifi.md); PCI/D0/wake/reset подтверждены на Acer; после тайм-аута CE0 добавлена ранняя конфигурация ROM, нужен повторный аппаратный тест.
 - [x] smoltcp: DHCP, IPv4 и TCP.
 - [x] Исходящие сокеты Linux и режимы `epoll`, необходимые Go.
 - [x] `/etc/hosts` в ramdisk; настраиваемый адрес сервера клиента.
