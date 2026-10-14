@@ -209,6 +209,37 @@ pub fn anchors(markdown: &str) -> Vec<String> {
     ids
 }
 
+/// HTML-like angle brackets in prose, including unquoted Rust generics and placeholders.
+/// The full Markdown linter runs in CI; this catches accidental tags before that build.
+pub fn unquoted_tags(markdown: &str) -> Vec<(usize, String)> {
+    let mut found = Vec::new();
+    let mut in_fence = false;
+    for (number, line) in markdown.lines().enumerate() {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        for prose in line.split('`').step_by(2) {
+            for (start, _) in prose.match_indices('<') {
+                let rest = &prose[start + 1..];
+                let name = rest.trim_start_matches('/');
+                if !name.starts_with(|c: char| c.is_ascii_alphabetic()) {
+                    continue;
+                }
+                if let Some(end) = rest.find('>') {
+                    if !rest[..end].contains("://") {
+                        found.push((number + 1, prose[start..=start + end + 1].to_string()));
+                    }
+                }
+            }
+        }
+    }
+    found
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -247,6 +278,15 @@ mod tests {
     fn anchor_examples_do_not_define_sections() {
         let page = "Text `{#inline}`\n```markdown\n## Example {#example}\n```\n## Real {#real}";
         assert_eq!(anchors(page), ["real"]);
+    }
+
+    #[test]
+    fn unquoted_generics_and_paths_are_not_markdown_code() {
+        let page = "Use Arc<Process> and bin/<name>.\n`Arc<Process>` is code.\n```rust\nArc<Process>\n```\n<https://example.com>";
+        assert_eq!(
+            unquoted_tags(page),
+            [(1, "<Process>".to_string()), (1, "<name>".to_string())]
+        );
     }
 
     #[test]

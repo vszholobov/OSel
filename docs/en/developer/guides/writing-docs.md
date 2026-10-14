@@ -58,6 +58,8 @@ Accepted decisions retain their technical history: changed behavior requires a n
 
 Use plain Markdown readable without a build. Diplodoc extensions are limited to notes, expandable details, tabs for mutually exclusive alternatives and includes:
 
+Put angle-bracket types (`Arc<Process>`) and placeholder paths (`bin/<name>`) in backticks. Otherwise the builder treats them as HTML tags and rejects the page: raw HTML is disabled. `cargo docs-check` catches these omissions in both languages.
+
 ```markdown
 {% note warning %}
 

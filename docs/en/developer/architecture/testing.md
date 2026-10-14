@@ -52,7 +52,7 @@ Two stage-2 plans remain: compare the same ELF output/status against Linux (also
 
 ## Pitfalls {#pitfalls}
 
-Filters after cargo test -- do not work; select an integration kernel with --test. Cargo puts test ELF files in target/x86_64-unknown-none/debug/build/osel/<hash>/out, not deps; runner detects the 16-hex-digit suffix. Tests in one kernel share console/cursor, frame pool and input state. Leak-check panic appears after the test name, so it resembles a body failure.
+Filters after cargo test -- do not work; select an integration kernel with --test. Cargo puts test ELF files in `target/x86_64-unknown-none/debug/build/osel/<hash>/out`, not deps; runner detects the 16-hex-digit suffix. Tests in one kernel share console/cursor, frame pool and input state. Leak-check panic appears after the test name, so it resembles a body failure.
 
 ## Tests {#tests}
 

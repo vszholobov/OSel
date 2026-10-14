@@ -30,4 +30,4 @@ Separate syscall stacks/swapgs were deferred to threads. Always using iretq is s
 
 ## Consequences
 
-Runner invokes Cargo every time, cheaply when unchanged. A conflicting bin/<name> file fails packaging. All normal/test kernels receive the same programs.
+Runner invokes Cargo every time, cheaply when unchanged. A conflicting `bin/<name>` file fails packaging. All normal/test kernels receive the same programs.

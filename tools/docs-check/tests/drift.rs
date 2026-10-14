@@ -239,3 +239,14 @@ fn documentation_links_resolve() {
         }
     }
 }
+
+#[test]
+fn documentation_has_no_unquoted_html_like_types_or_paths() {
+    for page in markdown_files("docs") {
+        let tags = unquoted_tags(&read(&page));
+        assert!(
+            tags.is_empty(),
+            "{page}: quote types and placeholders with backticks; raw HTML is disabled: {tags:?}"
+        );
+    }
+}

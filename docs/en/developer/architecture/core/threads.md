@@ -46,11 +46,11 @@ user::start sanitizes ring 3, rejects noncanonical RIP with EFAULT and returns w
 
 ### Thread clone {#clone}
 
-`src/syscall.rs` uses spawn_in on the same Arc<Process>. Memory/files are shared, kernel stack independent. Copy frame with child RAX=0 and RSP=child_stack, preserving Go pointers in R9/R12/R13. Copy x87/SSE and inherit FS or set it from CLONE_SETTLS. See [flags/errors](../../reference/syscalls.md).
+`src/syscall.rs` uses spawn_in on the same `Arc<Process>`. Memory/files are shared, kernel stack independent. Copy frame with child RAX=0 and RSP=child_stack, preserving Go pointers in R9/R12/R13. Copy x87/SSE and inherit FS or set it from CLONE_SETTLS. See [flags/errors](../../reference/syscalls.md).
 
 ### Child process and execve {#child-processes}
 
-clone(CLONE_VM | CLONE_VFORK | SIGCHLD) uses scheduler::vfork: new PID and copied FdTable with shared open descriptions, temporarily shared Arc<IrqSpinlock<UserSpace>>, and only the calling parent thread blocked. Wake after child exec success or exit, including launch-error exit.
+clone(CLONE_VM | CLONE_VFORK | SIGCHLD) uses scheduler::vfork: new PID and copied FdTable with shared open descriptions, temporarily shared `Arc<IrqSpinlock<UserSpace>>`, and only the calling parent thread blocked. Wake after child exec success or exit, including launch-error exit.
 
 execve copies path/argv/envp, checks permissions and fully loads ELF/stack before commitment. Failure retains the old image. scheduler::exec then replaces the space, switches CR3, resets FS/FPU, closes CLOEXEC and releases the parent wait; the frame gets new entry/stack. Multithreaded exec returns EINVAL.
 
