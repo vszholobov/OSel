@@ -74,7 +74,7 @@ pub struct Exit {
 
 /// A running program: its address space and descriptors, shared by all of its threads
 /// (`clone` makes more). The locks guard every access from a thread or the page-fault
-/// handler; see the locking section of `docs/architecture/core/threads.md`.
+/// handler; see the locking section of `docs/ru/developer/architecture/core/threads.md`.
 pub struct Process {
     space: UnsafeCell<Arc<IrqSpinlock<UserSpace>>>,
     files: IrqSpinlock<FdTable>,

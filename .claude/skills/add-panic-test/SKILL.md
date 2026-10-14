@@ -32,4 +32,4 @@ description: Add an OSel integration test kernel that expects a panic or CPU exc
 
 4. Проверить в обоих режимах: `OSEL_BOOT=uefi cargo test --test <имя>` и то же с `bios`.
 
-5. Строка в `CHANGELOG.md` («Не выпущено»). Подробности о видах тестов — `docs/guides/testing.md`.
+5. Строка в `CHANGELOG.md` («Не выпущено»). Подробности о видах тестов — `docs/ru/developer/guides/testing.md`.

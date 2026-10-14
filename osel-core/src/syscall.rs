@@ -1,7 +1,7 @@
 //! Linux system calls: numbers, arguments, results and the way back to the program
 //!
 //! The kernel decides what each call does; here is what is the same for all of them.
-//! `docs/reference/syscalls.md` lists every call of `SYSCALLS`, `cargo docs-check` checks it.
+//! `docs/ru/developer/reference/syscalls.md` lists every call of `SYSCALLS`, `cargo docs-check` checks it.
 
 use crate::errno::KResult;
 use crate::trap::{GENERAL_PROTECTION, TrapFrame};

@@ -8,5 +8,5 @@ runner = "runner/run.sh"
 # host unit tests, no QEMU needed
 test-core = "test -p osel-core --target host-tuple"
 test-runner = "test --manifest-path runner/Cargo.toml --target host-tuple"
-# documentation matches the code, see docs/guides/writing-docs.md
+# documentation matches the code, see docs/ru/developer/guides/writing-docs.md
 docs-check = "test --manifest-path tools/docs-check/Cargo.toml --target host-tuple"

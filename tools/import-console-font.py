@@ -32,7 +32,7 @@ if __name__ == "__main__":
     print("// SPDX-License-Identifier: OFL-1.1")
     print("// Copyright (C) 2020 Dimitar Toshkov Zhekov.")
     print("// OSel Console: subset of Terminus Font 4.49.1, with unmodified glyph bitmaps.")
-    print("// Generated from ter-u16n.bdf and ter-u32n.bdf; see docs/architecture/drivers/console.md.")
+    print("// Generated from ter-u16n.bdf and ter-u32n.bdf; see docs/ru/developer/architecture/drivers/console.md.")
     print()
     convert(sys.argv[1], "SMALL", 16)
     print()

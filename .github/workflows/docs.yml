@@ -18,12 +18,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Test site output checks
+        run: python3 tools/test-docs-site.py
+
       # Diplodoc lints while building: broken links and anchors fail the job (docs/.yfmlint)
       - name: Build with Diplodoc
         uses: diplodoc-platform/docs-build-static-action@v1
         with:
           src-root: ./docs
           build-root: ./docs-html
+
+      - name: Check both languages and preserve previous URLs
+        run: python3 tools/docs-site.py --site docs-html
 
       # only master is published; a manual run on another branch just builds
       - name: Upload the site for GitHub Pages

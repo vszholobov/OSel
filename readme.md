@@ -4,7 +4,7 @@
 
 Учебная операционная система на Rust для x86_64: загружается через UEFI и BIOS, работает в QEMU и на ноутбуках с флешки. Цель — запустить на ней консольный тетрис на Go.
 
-**Документация:** [vszholobov.github.io/OSel](https://vszholobov.github.io/OSel/) (исходники в [`docs/`](docs/index.md)).
+**Документация:** [Русский](https://vszholobov.github.io/OSel/ru/) · [English](https://vszholobov.github.io/OSel/en/). [Пользователю](docs/ru/user/index.md) — готовые образы и игра; [разработчику](docs/ru/developer/index.md) — сборка, тесты и устройство ядра.
 
 ```shell
 cargo run          # собрать и запустить в QEMU
@@ -12,4 +12,4 @@ cargo test         # тесты ядра в QEMU
 cargo test-core    # тесты логики ядра на хосте, без QEMU
 ```
 
-С чего начать: [быстрый старт](docs/start/quickstart.md). ИИ-агентам: [`AGENTS.md`](AGENTS.md). История изменений: [`CHANGELOG.md`](CHANGELOG.md).
+С чего начать: [быстрый старт](docs/ru/developer/guides/quickstart.md). ИИ-агентам: [`AGENTS.md`](AGENTS.md). История изменений: [`CHANGELOG.md`](CHANGELOG.md).

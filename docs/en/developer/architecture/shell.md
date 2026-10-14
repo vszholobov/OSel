@@ -1,0 +1,56 @@
+---
+description: OSel shell commands, bounded input, ramdisk program launch and return after gameplay.
+---
+
+# Shell
+
+Language: [Русский](../../../ru/developer/architecture/shell.md) · [English](shell.md)
+
+**Audience:** developers changing command input or program launch.
+
+**Summary:** the kernel shows `osel>` after boot. Try `help`, `ls /bin`, `cat /etc/motd` or `tetris`. This minimal kernel shell runs one foreground program and uses a read-only filesystem.
+
+## Commands {#commands}
+
+| Command | Action |
+|---|---|
+| `help` | Commands and limitations |
+| `kbd` | PS/2 initialization and input counters; [diagnostics](drivers/keyboard.md#diagnostics) |
+| `ls [path]` | Directory contents, default root `/` |
+| `cat path` | Regular text file up to 64 KiB; replace control characters other than newline/tab with `?` |
+| `tetris` | `/bin/tetris --single`; x returns |
+| `clear` | External `/bin/clear` |
+| `hello`, `gohello` | Examples; gohello exits with 30, shown by shell |
+| `/bin/name arguments` | Run an executable |
+
+Names without `/` are found in `/bin`; relative paths start at root. Tetris receives `--single` automatically unless already present, so `tetris --seed 2` remains single-player.
+
+## Input {#input}
+
+PS/2 and COM1 feed shared `/dev/tty`. Enter submits; Backspace deletes; Ctrl+C/Ctrl+U cancel the line. Serial CR/LF is one Enter. Empty lines do nothing. Arrow ANSI sequences are consumed rather than inserted.
+
+The editor accepts printable ASCII and tabs as spaces. Length is at most 256 bytes and one display line minus prompt and one spare cell, keeping Backspace within the line. Overflow or non-ASCII rejects the entire command. The parser accepts at most 16 arguments. Quotes, escapes, variables, pipes, redirection, separators and background commands are rejected explicitly.
+
+## Behavior {#how}
+
+`src/main.rs` invokes `shell::run` in the main kernel thread after readiness. Before the first input byte, nonblocking reads alternate with 10 ms sleep and keyboard diagnostics update once a second, preserving cursor position. First input from either source stops updates and switches Tty reads to blocking. IRQ handlers neither parse nor print commands.
+
+Built-ins are help, ls, cat and kbd. `ls` uses `Inode::read_dir`; cat checks type and size before reading. Other commands verify executable regular files and call `program::run`, passing argv and `PATH=/bin`, `TERM=xterm`, `GODEBUG=asyncpreemptoff=1`.
+
+On exit, load error or program fault, restore terminal settings, discard residual input and reset color/cursor-visibility state. Report errors/nonzero status before the next prompt. [Process teardown](core/threads.md#process) handles descendants and resources.
+
+## Code {#code}
+
+`osel-core/src/shell.rs` owns `LineEditor`, parsing and executable paths. `src/shell.rs` owns the loop, built-ins, launch and restoration; `src/main.rs` enters it. `tests/shell.rs` checks VFS and repeated execution; `tools/check-shell.py` verifies the real kernel through COM1/PS2 in both boot modes.
+
+## Limitations {#pitfalls}
+
+No separate `/bin/sh`, scripts, cd, history, arrow editing, background jobs or process-group control. Ctrl+C cancels a shell line but delivers no signal to programs; Tetris handles its byte itself. All programs share one terminal. Ramdisk is read-only; cat excludes devices and large binaries. Clear pending game input on return. Without Go, Tetris and Go examples are absent while other commands work.
+
+## Tests {#tests}
+
+`cargo test-core` checks editing, CR/LF, cancellation, overflow, ANSI keys and parser limits. `cargo test --test shell` checks commands, VFS failures, repeated hello/clear and Go status, with leak checks.
+
+`OSEL_BOOT=uefi python3 tools/check-shell.py` (or bios) boots the real headless kernel and checks pre-input diagnostics, kbd/help/ls/cat, unknown commands, Backspace, rejected pipes/long lines, clear, gohello, two Tetris runs and PS/2 help with IRQ/character counters. Mismatch stops QEMU and fails. `--screenshot /tmp/osel-shell.png` saves the final screen; `--boot-screenshot /tmp/osel-keyboard.png` saves initial diagnostics.
+
+_Checked against code: 2026-10-13, branch fix-ps2-keyboard._

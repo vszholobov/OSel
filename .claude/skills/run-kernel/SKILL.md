@@ -20,6 +20,6 @@ OSEL_BOOT=bios cargo test --no-fail-fast
 OSEL_EXPECT="OSel ready to go!" cargo run
 ```
 
-Скриншот экрана и нажатия клавиш через монитор QEMU — рецепт в `docs/guides/debugging.md`, раздел «Скриншот экрана». Запускать там QEMU только без окна (`-display none`) и закрывать командой `quit` монитора.
+Скриншот экрана и нажатия клавиш через монитор QEMU — рецепт в `docs/ru/developer/guides/debugging.md`, раздел «Скриншот экрана». Запускать там QEMU только без окна (`-display none`) и закрывать командой `quit` монитора.
 
-Не оставлять работающий QEMU: проверить `pgrep -fl qemu-system`. Подробности — `docs/guides/debugging.md`, переменные runner — `docs/reference/runner.md`.
+Не оставлять работающий QEMU: проверить `pgrep -fl qemu-system`. Подробности — `docs/ru/developer/guides/debugging.md`, переменные runner — `docs/ru/developer/reference/runner.md`.
