@@ -1,5 +1,5 @@
 ---
-description: Initial QCA6174 driver: PCI, power, reset, Copy Engine, BMI and diagnostic snapshots.
+description: "Initial QCA6174 driver: PCI, power, reset, Copy Engine, BMI and diagnostic snapshots."
 ---
 
 # QCA6174 Wi-Fi

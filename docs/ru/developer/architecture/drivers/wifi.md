@@ -1,5 +1,5 @@
 ---
-description: Начальный драйвер QCA6174: PCI, питание, reset, Copy Engine, BMI и диагностический снимок.
+description: "Начальный драйвер QCA6174: PCI, питание, reset, Copy Engine, BMI и диагностический снимок."
 ---
 
 # Wi-Fi QCA6174
