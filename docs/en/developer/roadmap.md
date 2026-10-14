@@ -4,8 +4,6 @@ description: OSel development stages from a kernel to Go Tetris, real hardware a
 
 # Roadmap
 
-Language: [Русский](../../ru/developer/roadmap.md) · [English](roadmap.md)
-
 **Audience:** anyone tracking completed and future work.
 
 **Summary:** run console [Go Tetris](https://github.com/vszholobov/Tetris) in QEMU, then from USB on a laptop. Programs are ordinary Linux builds using OSel's Linux call subset ([0005](decisions/0005-linux-abi-for-go.md)). Networking is optional. Work starts in QEMU, with hardware checks at milestones.

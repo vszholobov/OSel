@@ -15,9 +15,6 @@ navigation:
       - text: GitHub
         type: link
         url: 'https://github.com/vszholobov/OSel'
-      - text: 'Русский'
-        type: link
-        url: 'https://vszholobov.github.io/OSel/ru/'
     rightItems:
       - type: search
       - type: controls

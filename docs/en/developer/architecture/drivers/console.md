@@ -4,8 +4,6 @@ description: Framebuffer console, built-in raster fonts, ANSI rendering and pani
 
 # Console
 
-Language: [Русский](../../../../ru/developer/architecture/drivers/console.md) · [English](console.md)
-
 **Audience:** developers changing display output.
 
 **Summary:** OSel Console embeds Terminus-derived 16×32 and fallback 8×16 rasters. Large letters use a native raster rather than scaling. UEFI/BIOS share host-tested rendering in osel-core; kernel avganec owns globals, print macros and panic display.

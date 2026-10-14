@@ -4,8 +4,6 @@ description: Pinned Go Tetris, single-player launch, external clear and end-to-e
 
 # Tetris
 
-Language: [Русский](../../../ru/developer/architecture/tetris.md) · [English](tetris.md)
-
 **Audience:** developers changing the game, build or scenario test.
 
 **Summary:** OSel builds `apps/tetris` and runs `/bin/tetris --single`. It needs no network, reads `/dev/tty` and launches external `/bin/clear`. Check with `cargo test --test tetris` in both boot modes.

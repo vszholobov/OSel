@@ -4,8 +4,6 @@ description: Acer Nitro UEFI boot, Secure Boot, BitLocker preparation and F12 bo
 
 # Acer Nitro
 
-Language: [Русский](../../../ru/user/hardware/acer-nitro.md) · [English](acer-nitro.md)
-
 **Audience:** anyone running OSel on an Acer Nitro.
 
 **Summary:** use `OSel.uefi.img`. Disable Secure Boot after saving a BitLocker recovery key if encryption is enabled. Enable the F12 boot menu once.

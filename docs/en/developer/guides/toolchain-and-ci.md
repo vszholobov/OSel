@@ -4,8 +4,6 @@ description: Pinned Rust nightly, upgrade procedure and GitHub Actions checks.
 
 # Toolchain and CI
 
-Language: [Русский](../../../ru/developer/guides/toolchain-and-ci.md) · [English](toolchain-and-ci.md)
-
 **Audience:** developers updating the compiler or investigating CI.
 
 **Summary:** `rust-toolchain.toml` pins nightly. Update it deliberately after both latest-nightly jobs pass. PR CI checks host tests, documentation, both QEMU boot modes, the real kernel and the documentation site; master publishes the site.

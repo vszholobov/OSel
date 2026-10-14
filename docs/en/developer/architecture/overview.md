@@ -4,8 +4,6 @@ description: OSel crates, module map, boot sequence and virtual address layout.
 
 # Architecture overview
 
-Language: [Русский](../../../ru/developer/architecture/overview.md) · [English](overview.md)
-
 **Audience:** developers opening the code for the first time.
 
 **Summary:** OSel is a no_std Rust x86_64 kernel booted by bootloader 0.11 in UEFI/BIOS. Kernel hardware code, host-tested osel-core logic and the host runner are separate. Every module below has an owning page.

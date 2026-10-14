@@ -4,8 +4,6 @@ description: Почему файлы в OSel идут через интерфе�
 
 # 0007. Интерфейсы хранения и ramdisk в cpio
 
-Язык: [Русский](0007-storage-interfaces.md) · [English](../../../en/developer/decisions/0007-storage-interfaces.md)
-
 **Для кого:** для тех, кто добавляет файловую систему, диск или меняет содержимое ramdisk.
 
 **Коротко:** ядро читает файлы только через `BlockDevice`, `FileSystem` и `Inode` из `osel-core`, а ошибки — коды Linux. Ramdisk — архив cpio «newc», который runner при каждом запуске собирает из папки `ramdisk/`, и монтируется как обычная файловая система поверх блочного устройства в памяти. Устройство — в [файлах и ramdisk](../architecture/core/fs.md).

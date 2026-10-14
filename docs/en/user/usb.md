@@ -4,8 +4,6 @@ description: Write an OSel image to a USB drive and boot a real computer without
 
 # USB boot
 
-Language: [Русский](../../ru/user/usb.md) · [English](usb.md)
-
 **Audience:** anyone running OSel on a real computer.
 
 **Summary:** download an image from GitHub Releases, verify its checksum, write the whole USB drive and select it in the boot menu. Rust, Go and a project build are unnecessary. OSel does not access internal disks; remove the USB drive to return to your usual system. Double-check the destination disk before writing.

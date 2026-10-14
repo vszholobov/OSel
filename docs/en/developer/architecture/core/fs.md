@@ -4,8 +4,6 @@ description: cpio ramdisk, storage/node interfaces, open descriptions, devices, 
 
 # Files and ramdisk
 
-Language: [Русский](../../../../ru/developer/architecture/core/fs.md) · [English](fs.md)
-
 **Audience:** developers reading files, adding image contents or connecting storage.
 
 **Summary:** runner archives ramdisk/ and built /bin programs in cpio. Bootloader loads it beside the kernel; osel::init mounts it as /. Kernel file consumers use BlockDevice/FileSystem/Inode from osel-core. Ramdisk is one implementation and errors are Linux-numbered Errno.

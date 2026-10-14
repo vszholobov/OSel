@@ -4,8 +4,6 @@ description: Why user x87/SSE was initially saved around execution with fxsave64
 
 # 0013. Program x87 and SSE state
 
-Language: [Русский](../../../ru/developer/decisions/0013-fpu-state.md) · [English](0013-fpu-state.md)
-
 **Audience:** developers changing program launch, switching or CR0/CR4.
 
 **Summary:** the soft-float kernel does not touch x87/SSE. Load a complete 512-byte fxsave64 state before execution and save it afterward, without lazy CR0.TS switching. Disable XSAVE/AVX. See [current state switching](../architecture/core/user-mode.md#fpu).

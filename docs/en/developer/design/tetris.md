@@ -4,8 +4,6 @@ description: Completed single-player Tetris and remaining network-game design.
 
 # Go Tetris
 
-Language: [Русский](../../../ru/developer/design/tetris.md) · [English](tetris.md)
-
 **Audience:** developers working on the game or future networking.
 
 **Summary:** single-player mode is in [Tetris PR 16](https://github.com/vszholobov/Tetris/pull/16). Current architecture, launch, external `clear` and OSel tests live in [Tetris](../architecture/tetris.md). The remaining plan is networking.

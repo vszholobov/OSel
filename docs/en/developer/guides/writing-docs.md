@@ -4,8 +4,6 @@ description: OSel documentation structure, bilingual updates, page templates, li
 
 # Writing documentation
 
-Language: [Русский](../../../ru/developer/guides/writing-docs.md) · [English](writing-docs.md)
-
 **Audience:** everyone updating documentation, including agents.
 
 **Summary:** user and developer documentation exist in Russian and English. Each fact has one home per language. Use page templates, repository-relative code paths and explicit heading anchors; add each new page to both tables of contents. CI builds the site and checks drift.
@@ -14,7 +12,7 @@ Language: [Русский](../../../ru/developer/guides/writing-docs.md) · [Eng
 
 Entry points are `docs/ru/index.md` and `docs/en/index.md`, each with `user/index.md` and `developer/index.md`. Ready-made images, gameplay, hardware and crash reporting are user topics. Source builds, testing, kernel internals, reference and decisions are developer topics.
 
-Update translations in the same PR. Page paths, commands, limitations and explicit anchors must match. Russian is the basis for agreeing technical changes; English contains the same material. Add pages to both tables of contents. Explain OSel and our choices without educational-source citations or comparisons with other projects. Preserve third-party licenses.
+Update translations in the same PR. Page paths, commands, limitations and explicit anchors must match. Russian is the basis for agreeing technical changes; English contains the same material. Add pages to both tables of contents. Select the language with the built-in Language control in the site header; do not add extra selectors to articles or navigation. Explain OSel and our choices without educational-source citations or comparisons with other projects. Preserve third-party licenses.
 
 | Section | Local folder | Purpose |
 |---|---|---|

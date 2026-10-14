@@ -4,8 +4,6 @@ description: OSel shell commands, bounded input, ramdisk program launch and retu
 
 # Shell
 
-Language: [Русский](../../../ru/developer/architecture/shell.md) · [English](shell.md)
-
 **Audience:** developers changing command input or program launch.
 
 **Summary:** the kernel shows `osel>` after boot. Try `help`, `ls /bin`, `cat /etc/motd` or `tetris`. This minimal kernel shell runs one foreground program and uses a read-only filesystem.

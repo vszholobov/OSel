@@ -4,8 +4,6 @@ description: Ноутбук Samsung NP530U4B (Series 5 Ultra 14") — режим
 
 # Samsung NP530U4B
 
-Язык: [Русский](samsung-np530u4b.md) · [English](../../../en/user/hardware/samsung-np530u4b.md)
-
 **Для кого:** для тех, кто запускает OSel на этом ноутбуке.
 
 **Коротко:** первая машина для проверки OSel на железе. Грузите образ `OSel.bios.img` в режиме BIOS (CSM). Один раз выключите в настройках BIOS Fast BIOS Mode, после этого флешка выбирается по F10.

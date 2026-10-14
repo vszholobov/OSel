@@ -4,8 +4,6 @@ description: Why initial user launch ran until an exception on the caller stack,
 
 # 0011. Run until exception and entry stubs
 
-Language: [Русский](../../../ru/developer/decisions/0011-user-entry.md) · [English](0011-user-entry.md)
-
 **Audience:** developers changing program entry, exceptions or calls.
 
 **Summary:** initially user::run used iretq from the caller's kernel stack and returned on a user exception. A static pointer and TSS RSP0 selected that stack without swapgs. Stubs sent ring-0 exceptions unchanged to existing handlers and built a complete user TrapFrame. See [current user mode](../architecture/core/user-mode.md).

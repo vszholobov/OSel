@@ -4,8 +4,6 @@ description: Virtual layout, physical frame pool, page tables, private program s
 
 # Memory
 
-Language: [Русский](../../../../ru/developer/architecture/core/memory.md) · [English](memory.md)
-
 **Audience:** developers changing pages, address spaces or heap allocation.
 
 **Summary:** kernel/bootloader mappings occupy the upper half. Programs own private lower halves and share the kernel half. with_memory guards page tables and the frame pool. Freed frames are reused LIFO and invalid frees panic. The heap is fixed at 16 MB; anonymous user pages appear on first permitted access.

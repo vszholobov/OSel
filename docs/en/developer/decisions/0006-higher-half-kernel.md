@@ -4,8 +4,6 @@ description: Why the kernel and bootloader mappings occupy the upper address hal
 
 # 0006. Higher-half kernel
 
-Language: [Русский](../../../ru/developer/decisions/0006-higher-half-kernel.md) · [English](0006-higher-half-kernel.md)
-
 **Audience:** developers changing virtual address layout or page tables.
 
 **Summary:** kernel code, stack, boot information, framebuffer and physical-memory mapping occupy the upper half beginning at `0xffff_8000_0000_0000`; the heap follows. The lower half is for user programs. User access is forbidden above the boundary and required below it. See [memory](../architecture/core/memory.md).

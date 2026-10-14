@@ -4,8 +4,6 @@ description: Per-thread kernel stacks, context switching, timer preemption, proc
 
 # Threads and scheduler
 
-Language: [Русский](../../../../ru/developer/architecture/core/threads.md) · [English](threads.md)
-
 **Audience:** developers changing threads, processes, switching or timers.
 
 **Summary:** each thread owns a guarded kernel stack with user TrapFrame at its top. switch_to saves callee-saved registers/RFLAGS and changes stacks; surrounding code changes CR3/RSP0/FS/x87/SSE. Timer schedules round-robin every tick. Threads share their Process space/files and clone creates more.

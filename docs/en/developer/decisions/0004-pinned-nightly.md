@@ -4,8 +4,6 @@ description: Why Rust nightly is pinned and the latest compiler is checked weekl
 
 # 0004. Pinned nightly
 
-Language: [Русский](../../../ru/developer/decisions/0004-pinned-nightly.md) · [English](0004-pinned-nightly.md)
-
 **Audience:** developers updating the toolchain or investigating build failures.
 
 **Summary:** `rust-toolchain.toml` pins a nightly date. Weekly CI checks the latest nightly; a green result allows a deliberate update using the [toolchain procedure](../guides/toolchain-and-ci.md).

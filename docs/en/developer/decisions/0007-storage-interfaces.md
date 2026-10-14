@@ -4,8 +4,6 @@ description: Why storage uses BlockDevice, FileSystem and Inode, with a cpio ram
 
 # 0007. Storage interfaces and cpio ramdisk
 
-Language: [Русский](../../../ru/developer/decisions/0007-storage-interfaces.md) · [English](0007-storage-interfaces.md)
-
 **Audience:** developers adding files, devices or storage.
 
 **Summary:** `BlockDevice` handles numbered blocks, `FileSystem` exposes a root, and `Inode` handles nodes. The ramdisk is a memory block device containing cpio “newc”; runner builds it from `ramdisk/`. Errors use Linux numbers from the start.

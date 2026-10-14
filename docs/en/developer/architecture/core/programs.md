@@ -4,8 +4,6 @@ description: Static ELF loading, program address spaces and the main stack with 
 
 # Programs
 
-Language: [Русский](../../../../ru/developer/architecture/core/programs.md) · [English](programs.md)
-
 **Audience:** developers changing loading or initial process state.
 
 **Summary:** a program is a static x86_64 ELF64 from the filesystem, as built by Go with `CGO_ENABLED=0`. `program::load` creates `UserSpace`; the core loader maps zeroed pages and copies segments. The stack follows System V ABI. See [user mode](user-mode.md) for execution.

@@ -4,8 +4,6 @@ description: GDT/TSS, IDT, exceptions, panic screen, IST stacks, PIC and PIT tim
 
 # Interrupts and exceptions
 
-Language: [Русский](../../../../ru/developer/architecture/core/interrupts.md) · [English](interrupts.md)
-
 **Audience:** developers changing handlers, GDT, timer or panic output.
 
 **Summary:** all nonreserved processor exceptions have handlers. Kernel exceptions except breakpoint report state and panic. Double fault, NMI and machine check use guarded dedicated stacks. PIC delivers a 100 Hz timer and keyboard IRQs. See [vectors](../../reference/vectors.md).

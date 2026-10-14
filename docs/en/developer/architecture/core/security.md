@@ -4,8 +4,6 @@ description: Ring-3 memory and system-call isolation guarantees and adversarial 
 
 # Program isolation
 
-Language: [Русский](../../../../ru/developer/architecture/core/security.md) · [English](security.md)
-
 **Audience:** developers changing user mode, calls or program memory.
 
 **Summary:** ring-3 programs cannot access kernel/other-process memory, redirect kernel execution through pointers or crash it by spawning threads. Protection uses page tables and pointer checks rather than SMAP/SMEP. `src/security.rs` checks failures remain contained and leak-free.

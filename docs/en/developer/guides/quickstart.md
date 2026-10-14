@@ -4,8 +4,6 @@ description: Install development tools, run OSel in QEMU and test it on macOS or
 
 # Build and run
 
-Language: [Русский](../../../ru/developer/guides/quickstart.md) · [English](quickstart.md)
-
 **Audience:** developers building OSel from source.
 
 **Summary:** install rustup and QEMU, clone the repository and run `cargo run`. Cargo obtains the pinned Rust toolchain and builds the boot image.

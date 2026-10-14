@@ -4,8 +4,6 @@ description: Samsung NP530U4B boot mode, firmware settings, keyboard and OSel te
 
 # Samsung NP530U4B
 
-Language: [Русский](../../../ru/user/hardware/samsung-np530u4b.md) · [English](samsung-np530u4b.md)
-
 **Audience:** anyone booting OSel on this laptop.
 
 **Summary:** the first target for real-hardware verification. Use `OSel.bios.img` in BIOS/CSM mode, disable Fast BIOS Mode once, then select the USB drive with F10.

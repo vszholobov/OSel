@@ -4,8 +4,6 @@ description: COM1 output, presence detection, terminal byte transport and emerge
 
 # Serial port
 
-Language: [Русский](../../../../ru/developer/architecture/drivers/serial.md) · [English](serial.md)
-
 **Audience:** developers changing serial output or test logs.
 
 **Summary:** serial_print!/serial_println! write COM1, connected to the host terminal in QEMU. Probe once and silently skip output if absent. Panic has a lock-free emergency path.

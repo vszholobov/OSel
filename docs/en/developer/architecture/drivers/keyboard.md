@@ -4,8 +4,6 @@ description: PS/2 setup, scan-code decoding, bounded input, fallback polling and
 
 # Keyboard
 
-Language: [Русский](../../../../ru/developer/architecture/drivers/keyboard.md) · [English](keyboard.md)
-
 **Audience:** developers changing input.
 
 **Summary:** configure i8042/PS2 explicitly, decode IRQ1 scan codes using US layout and queue 64 characters. Fallback polling handles missed IRQs. Boot diagnostics expose setup/counters; Ctrl+letter produces control bytes, such as Ctrl+C = \x03.

@@ -4,8 +4,6 @@ description: Named spinlocks, interrupt masking, kernel lock inventory and acqui
 
 # Locking
 
-Language: [Русский](../../../../ru/developer/architecture/core/locking.md) · [English](locking.md)
-
 **Audience:** developers adding globals or calling code from interrupt handlers.
 
 **Summary:** kernel globals use IrqSpinlock. It masks interrupts until release and restores the previous state. After 50 million failed attempts it panics with the lock name and owner/wait locations. Add every new named lock to both language inventories.

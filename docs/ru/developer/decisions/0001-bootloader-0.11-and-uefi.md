@@ -4,8 +4,6 @@ description: Почему OSel использует bootloader 0.11 и загр�
 
 # 0001. Загрузчик bootloader 0.11 и загрузка через UEFI
 
-Язык: [Русский](0001-bootloader-0.11-and-uefi.md) · [English](../../../en/developer/decisions/0001-bootloader-0.11-and-uefi.md)
-
 **Для кого:** для разработчиков, которые меняют загрузку и интерфейс BootInfo.
 
 **Коротко:** OSel грузится загрузчиком `bootloader` 0.11, который умеет и UEFI, и BIOS. Поэтому вместо VGA текст выводится в framebuffer, а образ диска собирает свой инструмент `runner/` вместо `bootimage`.

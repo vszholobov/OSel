@@ -4,8 +4,6 @@ description: Initial syscall stack, checked sysret/iret return paths and runner-
 
 # 0012. syscall entry and user/ programs
 
-Language: [Русский](../../../ru/developer/decisions/0012-syscall-entry-and-user-programs.md) · [English](0012-syscall-entry-and-user-programs.md)
-
 **Audience:** developers changing calls or ramdisk executables.
 
 **Summary:** syscall builds the exception TrapFrame on the launching kernel stack, enables interrupts and dispatches in Rust. Return uses sysretq, iretq for TF or program termination for an invalid address. Runner builds user/ assembly source into /bin. See [user mode](../architecture/core/user-mode.md#syscall) and [calls](../reference/syscalls.md).

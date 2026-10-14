@@ -4,8 +4,6 @@ description: Why mmap uses permission areas and demand-allocated anonymous pages
 
 # 0016. Anonymous memory on first access
 
-Language: [Русский](../../../ru/developer/decisions/0016-lazy-anonymous-memory.md) · [English](0016-lazy-anonymous-memory.md)
-
 **Audience:** developers changing mmap, user faults or low-half tables.
 
 **Summary:** VmaSet describes areas/rights and pages appear on first access. Anonymous mappings only; leaf entries own rights while intermediate tables permit all access. PROT_NONE clears PRESENT but retains the frame. See [memory](../architecture/core/memory.md#areas).

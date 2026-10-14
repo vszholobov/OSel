@@ -4,8 +4,6 @@ description: Start using an OSel image, play Tetris and return to your normal op
 
 # Quick start
 
-Language: [Русский](../../ru/user/quickstart.md) · [English](quickstart.md)
-
 **Audience:** users of ready-made OSel images.
 
 **Summary:** download `OSel.uefi.img` or `OSel.bios.img` and `SHA256SUMS` from the same release. After boot, the `osel>` prompt appears; `tetris` starts the game.

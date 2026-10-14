@@ -4,8 +4,6 @@ description: Runner environment variables, boot modes, image paths, exit codes a
 
 # Runner
 
-Language: [Русский](../../../ru/developer/reference/runner.md) · [English](runner.md)
-
 **Audience:** anyone launching the kernel or tests.
 
 **Summary:** `runner/` runs on the host, builds a disk image from the kernel ELF and launches QEMU. Cargo invokes it instead of executing the kernel directly. Configure it with `OSEL_*`; see [testing](../architecture/testing.md).

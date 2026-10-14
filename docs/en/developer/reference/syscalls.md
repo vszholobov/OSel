@@ -4,8 +4,6 @@ description: Linux x86_64 system-call numbers, arguments, OSel behavior and erro
 
 # System calls
 
-Language: [Русский](../../../ru/developer/reference/syscalls.md) · [English](syscalls.md)
-
 **Audience:** developers writing OSel programs or adding a call.
 
 **Summary:** use Linux x86_64 numbers/conventions: RAX number, RDI/RSI/RDX/R10/R8/R9 arguments, RAX result or negative errno. RCX/R11 are clobbered; other registers are preserved. Numbers use signed low 32 bits of RAX. Unknown calls return ENOSYS. [User mode](../architecture/core/user-mode.md#syscall) owns entry; docs-check compares both tables with `SYSCALLS` in `osel-core/src/syscall.rs`.

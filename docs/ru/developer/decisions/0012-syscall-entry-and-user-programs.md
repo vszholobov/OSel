@@ -4,8 +4,6 @@ description: Почему системные вызовы OSel идут чере
 
 # 0012. Вход через syscall и программы из user/
 
-Язык: [Русский](0012-syscall-entry-and-user-programs.md) · [English](../../../en/developer/decisions/0012-syscall-entry-and-user-programs.md)
-
 **Для кого:** для тех, кто трогает системные вызовы или добавляет программу в ramdisk.
 
 **Коротко:** `syscall` строит тот же `TrapFrame`, что и исключение, на стеке ядра, с которого программа запущена, включает прерывания и вызывает `dispatch` на Rust. Назад — `sysretq`, `iretq` при флаге TF или завершение программы, если адрес возврата вне нижней половины. Программы для ramdisk — исходники в `user/`, runner собирает их вложенным cargo и кладёт в `/bin`. Устройство — в [пользовательском режиме](../architecture/core/user-mode.md#syscall) и [справочнике вызовов](../reference/syscalls.md).
