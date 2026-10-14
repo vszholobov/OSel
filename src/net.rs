@@ -452,7 +452,7 @@ pub fn tcp_check(address: &str, port: u16) -> KResult<u64> {
         };
         if connected {
             let elapsed_us = time::monotonic_ns().saturating_sub(start) / 1000;
-            shutdown(id, 2)?;
+            shutdown(id, 1)?;
             // Let the worker send FIN before removing the socket and its buffers.
             time::sleep_until(time::monotonic_ns().saturating_add(100_000_000))?;
             return Ok(elapsed_us);
