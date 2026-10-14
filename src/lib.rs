@@ -22,6 +22,7 @@ use x86_64::VirtAddr;
 
 pub mod allocator;
 pub mod drivers;
+pub mod diagnostics;
 pub use drivers::{avganec, cereal, keyboard};
 pub mod fpu;
 pub mod fs;

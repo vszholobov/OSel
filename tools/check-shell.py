@@ -121,6 +121,12 @@ def main():
                 qmp("screendump", {"filename": str(pathlib.Path(args.boot_screenshot).resolve()), "format": "png"})
             command(b"kbd", b"PS/2 init: Ready, error=None")
             command(b"help", b"No quotes")
+            command(b"diag", b"=== OSel diagnostics END ===")
+            command(b"pci", b"subsystem=")
+            command(b"wifi fw", b"board=8124")
+            command(b"wifi probe", b"ENODEV")
+            command(b"wifi regs", b"snapshot, no register reads")
+            command(b"cat /usr/share/licenses/ath10k/LICENSE", b"Qualcomm Atheros")
             listing = command(b"ls /bin", b"clear\n")
             if args.require_tetris:
                 assert b"tetris\n" in listing, "required Tetris binary is missing from the image"

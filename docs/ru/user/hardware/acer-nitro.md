@@ -73,3 +73,7 @@ description: Ноутбук Acer Nitro с Windows 10 — загрузка OSel �
 3. **F10** → **Yes**.
 
 После включения Secure Boot Windows с BitLocker может ещё раз спросить ключ восстановления. Как вернуть флешку к обычному использованию — в разделе [Как вернуть обычную систему](../usb.md#recovery).
+
+## Wi-Fi {#wifi}
+
+Карта владельца: `PCI\VEN_168C&DEV_003E&SUBSYS_080711AD&REV_32`, QCA6174, LiteOn `11ad:0807`. Встроены прошивка hw3.0/API6 и точная запись платы. Пока реализован только ROM-пробник; подключения WPA2 нет. На Acer нужны `wifi probe` и `wifi regs`, см. [сбор отчёта](../diagnostics.md#report).

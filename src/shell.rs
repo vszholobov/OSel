@@ -119,17 +119,69 @@ pub fn execute(line: &str, out: &mut impl Write) -> u8 {
     };
     let result = match command {
         "help" if args.len() == 1 => {
-            let _ = out.write_str("help             commands and limitations\nls [path]        list a directory (default /)\ncat path         print a file (up to 64 KiB)\nkbd              keyboard initialization and IRQ counters\nnet              Ethernet, IP address and packet counters\ntetris --network --server IP:port  network game\ntetris           play; x returns to the shell\nclear            run /bin/clear\nhello, gohello   example programs\n/bin/name args   run an executable; bare names use /bin\nPaths are relative to /. No quotes, pipes, redirects or background jobs.\n");
+            let _ = out.write_str("help             commands and limitations\nls [path]        list a directory (default /)\ncat path         print a file (up to 64 KiB)\nkbd              keyboard initialization and IRQ counters\nnet              interface and packet counters\nnet ip|route|dns|tcp  addresses, gateway, DNS, connections\nnet dhcp         restart DHCP discovery\nping IP [count]  ICMP echo; gateway alias, Ctrl+C stops\nnslookup name    DNS A records from DHCP servers\ntcpcheck IP port TCP connection test, timeout 3 seconds\npci              PCI IDs, subsystem, revision and BAR\ndiag             complete diagnostic report\nwifi status|fw|regs|probe  QCA6174 ROM diagnostics\ntetris --network --server IP:port  network game\ntetris           play; x returns to the shell\nclear            run /bin/clear\nhello, gohello   example programs\n/bin/name args   run an executable; bare names use /bin\nPaths are relative to /. No quotes, pipes, redirects or background jobs.\n");
             Ok(0)
         }
         "ls" if args.len() <= 2 => list(args.get(1).copied().unwrap_or("/"), out),
         "cat" if args.len() == 2 => cat(args[1], out),
-        "net" if args.len() == 1 => { crate::net::status(out); Ok(0) }
+        "net" if args.len() == 1 => {
+            crate::net::status(out);
+            Ok(0)
+        }
+        "net" if args.len() == 2 => crate::net::diagnostics(args[1], out).map(|_| 0),
+        "nslookup" if args.len() == 2 => crate::net::lookup(args[1]).map(|addresses| {
+            for address in addresses {
+                let _ = writeln!(out, "{}: {address}", args[1]);
+            }
+            0
+        }),
+        "tcpcheck" if args.len() == 3 => args[2]
+            .parse::<u16>()
+            .map_err(|_| Errno::EINVAL)
+            .and_then(|port| crate::net::tcp_check(args[1], port))
+            .map(|us| {
+                let _ = writeln!(
+                    out,
+                    "TCP {}:{} connected in {}.{:03} ms",
+                    args[1],
+                    args[2],
+                    us / 1000,
+                    us % 1000
+                );
+                0
+            }),
+        "ping" if (2..=3).contains(&args.len()) => {
+            let count = if args.len() == 3 {
+                args[2].parse::<u16>().map_err(|_| Errno::EINVAL)
+            } else {
+                Ok(4)
+            };
+            count.and_then(|count| {
+                let terminal = tty::Tty::new(osel_core::vfs::Stat::default());
+                crate::net::ping_with_cancel(args[1], count, out, || {
+                    let mut byte = [0];
+                    terminal.read(0, &mut byte, true) == Ok(1) && byte[0] == 3
+                })
+            })
+        }
+        "pci" if args.len() == 1 => {
+            crate::diagnostics::pci(out);
+            Ok(0)
+        }
+        "diag" if args.len() == 1 => {
+            crate::diagnostics::report(out);
+            Ok(0)
+        }
+        "wifi" if args.len() <= 2 => {
+            crate::drivers::qca6174::command(args.get(1).copied().unwrap_or("status"), out)
+                .map(|_| 0)
+        }
         "kbd" if args.len() == 1 => {
             let _ = crate::keyboard::write_diagnostics(out);
             Ok(0)
         }
-        "help" | "ls" | "cat" | "kbd" | "net" => Err(Errno::EINVAL),
+        "help" | "ls" | "cat" | "kbd" | "net" | "ping" | "pci" | "diag" | "wifi" | "nslookup"
+        | "tcpcheck" => Err(Errno::EINVAL),
         _ => external(&args, out),
     };
     match result {
@@ -188,7 +240,10 @@ fn external(args: &[&str], out: &mut impl Write) -> KResult<u8> {
         return Err(Errno::EACCES);
     }
     let mut argv: Vec<&[u8]> = args.iter().map(|s| s.as_bytes()).collect();
-    if path.rsplit('/').next() == Some("tetris") && !args.contains(&"--single") && !args.contains(&"--network") {
+    if path.rsplit('/').next() == Some("tetris")
+        && !args.contains(&"--single")
+        && !args.contains(&"--network")
+    {
         argv.insert(1, b"--single");
     }
     let settings = tty::get_termios();

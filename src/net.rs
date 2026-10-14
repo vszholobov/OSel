@@ -15,7 +15,7 @@ use osel_core::{
 };
 use smoltcp::{
     iface::{Config, Interface, SocketHandle, SocketSet},
-    socket::{dhcpv4, tcp},
+    socket::{dhcpv4, dns, icmp, tcp},
     time::{Duration, Instant},
     wire::{EthernetAddress, IpAddress, IpCidr, IpEndpoint, Ipv4Address},
 };
@@ -40,6 +40,12 @@ struct Network {
     next_id: usize,
     port: u16,
     configured: bool,
+    gateway: Option<Ipv4Address>,
+    dns: Vec<Ipv4Address>,
+    leases: u64,
+    next_ping: u16,
+    pings: usize,
+    lookups: usize,
 }
 fn now() -> Instant {
     Instant::from_millis((time::monotonic_ns() / 1_000_000) as i64)
@@ -60,6 +66,10 @@ impl Network {
             .poll_egress(now(), &mut self.device, &mut self.sockets);
         match self.sockets.get_mut::<dhcpv4::Socket>(self.dhcp).poll() {
             Some(dhcpv4::Event::Configured(config)) => {
+                self.gateway = config.router;
+                self.dns.clear();
+                self.dns.extend(config.dns_servers.iter().copied());
+                self.leases += 1;
                 self.interface.update_ip_addrs(|addrs| {
                     addrs.clear();
                     addrs.push(IpCidr::Ipv4(config.address)).unwrap();
@@ -71,6 +81,8 @@ impl Network {
                 self.configured = true;
             }
             Some(dhcpv4::Event::Deconfigured) => {
+                self.gateway = None;
+                self.dns.clear();
                 self.configured = false;
                 self.interface.update_ip_addrs(|addrs| addrs.clear());
                 self.interface.routes_mut().remove_default_ipv4_route();
@@ -141,24 +153,17 @@ pub fn init() {
         );
     }
     let Some(mut device) = devices.into_iter().find_map(Ethernet::new) else {
-        crate::serial_println!("NET: no supported Ethernet card (Intel 82574L or Realtek RTL8168 G/GU/H/M)");
+        crate::serial_println!(
+            "NET: no supported Ethernet card (Intel 82574L or Realtek RTL8168 G/GU/H/M)"
+        );
         return;
     };
     let mac = device.mac();
     let mut config = Config::new(EthernetAddress(mac).into());
     config.random_seed = time::realtime_ns()
-        ^ u64::from_le_bytes([
-            mac[0],
-            mac[1],
-            mac[2],
-            mac[3],
-            mac[4],
-            mac[5],
-            0,
-            0,
-        ]);
+        ^ u64::from_le_bytes([mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], 0, 0]);
     let interface = Interface::new(config, &mut device, now());
-    let storage = (0..MAX_SOCKETS + 1)
+    let storage = (0..MAX_SOCKETS + 9)
         .map(|_| smoltcp::iface::SocketStorage::EMPTY)
         .collect::<Vec<_>>();
     let mut sockets = SocketSet::new(storage);
@@ -173,6 +178,12 @@ pub fn init() {
         next_id: 1,
         port: 49152,
         configured: false,
+        gateway: None,
+        dns: Vec::with_capacity(3),
+        leases: 0,
+        next_ping: 1,
+        pings: 0,
+        lookups: 0,
     });
     scheduler::spawn_kernel(worker).expect("network worker stack");
 }
@@ -219,8 +230,392 @@ pub fn status(out: &mut impl core::fmt::Write) {
             "Ethernet {name}: link={link}, addresses={addresses:?}, sockets={sockets}, rx={rx}, tx={tx}, dropped={dropped}"
         );
     } else {
-        let _ = writeln!(out, "No initialized Ethernet card: Intel 8086:10d3 or Realtek 10ec:8168 (G/GU/H/M); see NET boot diagnostics");
+        let _ = writeln!(
+            out,
+            "No initialized Ethernet card: Intel 8086:10d3 or Realtek 10ec:8168 (G/GU/H/M); see NET boot diagnostics"
+        );
     }
+}
+
+/// Diagnostics snapshot before writing to the console: never hold NETWORK over output.
+pub fn diagnostics(section: &str, out: &mut impl core::fmt::Write) -> KResult<()> {
+    if !matches!(section, "ip" | "route" | "dns" | "tcp" | "dhcp") {
+        return Err(Errno::EINVAL);
+    }
+    let snapshot = {
+        let mut guard = NETWORK.lock();
+        let net = guard.as_mut().ok_or(Errno::ENETUNREACH)?;
+        if section == "dhcp" {
+            net.sockets.get_mut::<dhcpv4::Socket>(net.dhcp).reset();
+        }
+        let tcp: Vec<_> = if section == "tcp" {
+            net.states
+                .iter()
+                .map(|(id, state)| {
+                    let socket = net.sockets.get::<tcp::Socket>(state.handle);
+                    (
+                        *id,
+                        socket.state(),
+                        socket.local_endpoint(),
+                        socket.remote_endpoint(),
+                        socket.recv_queue(),
+                        socket.send_queue(),
+                        state.error,
+                    )
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        (
+            net.device.mac(),
+            net.configured,
+            net.interface.ip_addrs().to_vec(),
+            net.gateway,
+            net.dns.clone(),
+            net.leases,
+            tcp,
+        )
+    };
+    let (mac, ready, addresses, gateway, dns, leases, tcp) = snapshot;
+    match section {
+        "ip" => {
+            let _ = writeln!(
+                out,
+                "MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}\nDHCP configured={ready} leases={leases}",
+                mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+            );
+            for address in addresses {
+                let _ = writeln!(out, "IPv4 {address}");
+            }
+        }
+        "route" => {
+            for address in addresses {
+                let _ = writeln!(out, "connected {address}");
+            }
+            if let Some(gateway) = gateway {
+                let _ = writeln!(out, "default via {gateway}");
+            } else {
+                let _ = writeln!(out, "No default route");
+            }
+        }
+        "dns" => {
+            if dns.is_empty() {
+                let _ = writeln!(out, "No DNS servers from DHCP");
+            }
+            for server in dns {
+                let _ = writeln!(out, "DNS {server}");
+            }
+        }
+        "tcp" => {
+            let _ = writeln!(out, "TCP sockets: {}", tcp.len());
+            for (id, state, local, remote, rx, tx, error) in tcp {
+                let _ = writeln!(
+                    out,
+                    "#{id} {state:?} {local:?} -> {remote:?}\n  queued rx={rx} tx={tx} error={error:?}"
+                );
+            }
+        }
+        "dhcp" => {
+            let _ = writeln!(
+                out,
+                "DHCP discovery requested; inspect net ip in a few seconds"
+            );
+        }
+        _ => unreachable!(),
+    }
+    Ok(())
+}
+
+struct PingSocket(SocketHandle);
+impl Drop for PingSocket {
+    fn drop(&mut self) {
+        if let Some(net) = NETWORK.lock().as_mut() {
+            net.sockets.remove(self.0);
+            net.pings -= 1;
+        }
+    }
+}
+
+struct DnsSocket(SocketHandle);
+impl Drop for DnsSocket {
+    fn drop(&mut self) {
+        if let Some(net) = NETWORK.lock().as_mut() {
+            net.sockets.remove(self.0);
+            net.lookups -= 1;
+        }
+    }
+}
+
+/// Resolve A records through the actual DHCP-provided DNS servers, bounded to 5 seconds.
+pub fn lookup(name: &str) -> KResult<Vec<Ipv4Address>> {
+    let (socket, query) = {
+        let mut guard = NETWORK.lock();
+        let net = guard.as_mut().ok_or(Errno::ENETUNREACH)?;
+        if !net.configured || net.dns.is_empty() {
+            return Err(Errno::ENETUNREACH);
+        }
+        if net.lookups >= 4 {
+            return Err(Errno::EAGAIN);
+        }
+        let servers: Vec<_> = net.dns.iter().map(|ip| IpAddress::Ipv4(*ip)).collect();
+        let mut socket = dns::Socket::new(&servers, vec![None]);
+        let query = socket
+            .start_query(
+                net.interface.context(),
+                name,
+                smoltcp::wire::DnsQueryType::A,
+            )
+            .map_err(|_| Errno::EINVAL)?;
+        let handle = net.sockets.add(socket);
+        net.lookups += 1;
+        (DnsSocket(handle), query)
+    };
+    let deadline = time::monotonic_ns().saturating_add(5_000_000_000);
+    loop {
+        let result = {
+            let mut guard = NETWORK.lock();
+            let net = guard.as_mut().ok_or(Errno::ENETUNREACH)?;
+            net.sockets
+                .get_mut::<dns::Socket>(socket.0)
+                .get_query_result(query)
+        };
+        match result {
+            Ok(addresses) => {
+                return Ok(addresses
+                    .into_iter()
+                    .map(|ip| match ip {
+                        IpAddress::Ipv4(ip) => ip,
+                    })
+                    .collect());
+            }
+            Err(dns::GetQueryResultError::Failed) => return Err(Errno::ENOENT),
+            Err(dns::GetQueryResultError::Pending) => {}
+        }
+        if time::monotonic_ns() >= deadline {
+            return Err(Errno::ETIMEDOUT);
+        }
+        time::sleep_until(time::monotonic_ns().saturating_add(10_000_000))?;
+    }
+}
+
+/// Probe an actual TCP service, with no HTTP/game data and a three-second deadline.
+pub fn tcp_check(address: &str, port: u16) -> KResult<u64> {
+    let address = address.parse::<Ipv4Address>().map_err(|_| Errno::EINVAL)?;
+    if port == 0
+        || address.is_unspecified()
+        || address.is_multicast()
+        || address.is_broadcast()
+        || address.is_loopback()
+    {
+        return Err(Errno::EINVAL);
+    }
+    {
+        let guard = NETWORK.lock();
+        let net = guard.as_ref().ok_or(Errno::ENETUNREACH)?;
+        if !net.configured || !net.device.link() {
+            return Err(Errno::ENETUNREACH);
+        }
+        if net.interface.ip_addrs().iter().any(|cidr| match cidr {
+            IpCidr::Ipv4(cidr) => cidr.broadcast() == Some(address),
+        }) {
+            return Err(Errno::EINVAL);
+        }
+    }
+    let file = socket()?;
+    let id = file.socket_id().ok_or(Errno::ENOTSOCK)?;
+    let start = time::monotonic_ns();
+    match connect(
+        id,
+        Endpoint {
+            ip: address.octets(),
+            port,
+        },
+        true,
+    ) {
+        Err(Errno::EINPROGRESS) | Ok(()) => {}
+        Err(error) => return Err(error),
+    }
+    loop {
+        let connected = {
+            let guard = NETWORK.lock();
+            let state = guard
+                .as_ref()
+                .ok_or(Errno::ENETUNREACH)?
+                .states
+                .get(&id)
+                .ok_or(Errno::ENOTSOCK)?;
+            if let Some(error) = state.error {
+                return Err(error);
+            }
+            state.connected
+        };
+        if connected {
+            let elapsed_us = time::monotonic_ns().saturating_sub(start) / 1000;
+            shutdown(id, 2)?;
+            // Let the worker send FIN before removing the socket and its buffers.
+            time::sleep_until(time::monotonic_ns().saturating_add(100_000_000))?;
+            return Ok(elapsed_us);
+        }
+        if time::monotonic_ns().saturating_sub(start) >= 3_000_000_000 {
+            return Err(Errno::ETIMEDOUT);
+        }
+        time::sleep_until(time::monotonic_ns().saturating_add(10_000_000))?;
+    }
+}
+
+/// Bounded synchronous ping. The worker owns polling; waits release NETWORK and IRQs.
+/// Return 1 for packet loss and an errno for invalid input or unavailable networking.
+pub fn ping(target: &str, count: u16, out: &mut impl core::fmt::Write) -> KResult<u8> {
+    ping_with_cancel(target, count, out, || false)
+}
+pub fn ping_with_cancel(
+    target: &str,
+    count: u16,
+    out: &mut impl core::fmt::Write,
+    mut cancelled: impl FnMut() -> bool,
+) -> KResult<u8> {
+    if !(1..=10).contains(&count) {
+        return Err(Errno::EINVAL);
+    }
+    let nonce = time::monotonic_ns();
+    let (address, ident, handle) = {
+        let mut guard = NETWORK.lock();
+        let net = guard.as_mut().ok_or(Errno::ENETUNREACH)?;
+        let address = if target == "gateway" {
+            net.gateway.ok_or(Errno::ENETUNREACH)?
+        } else {
+            target.parse::<Ipv4Address>().map_err(|_| Errno::EINVAL)?
+        };
+        if address.is_multicast()
+            || address.is_broadcast()
+            || address.is_unspecified()
+            || address.is_loopback()
+        {
+            return Err(Errno::EINVAL);
+        }
+        if net.interface.ip_addrs().iter().any(|cidr| match cidr {
+            IpCidr::Ipv4(cidr) => cidr.broadcast() == Some(address),
+        }) {
+            return Err(Errno::EINVAL);
+        }
+        if !net.configured || !net.device.link() {
+            return Err(Errno::ENETUNREACH);
+        }
+        if net.pings == 4 {
+            return Err(Errno::EAGAIN);
+        }
+        let ident = net.next_ping;
+        net.next_ping = net.next_ping.wrapping_add(1);
+        let buffer =
+            || icmp::PacketBuffer::new(vec![icmp::PacketMetadata::EMPTY; 4], vec![0; 2048]);
+        let mut socket = icmp::Socket::new(buffer(), buffer());
+        socket
+            .bind(icmp::Endpoint::Ident(ident))
+            .map_err(|_| Errno::EIO)?;
+        let handle = net.sockets.add(socket);
+        net.pings += 1;
+        (address, ident, PingSocket(handle))
+    };
+    let _ = writeln!(
+        out,
+        "PING {address}: 32 data bytes, timeout 1000 ms (Ctrl+C stops)"
+    );
+    let mut sent = 0u16;
+    let mut received = 0u16;
+    let mut total_us = 0u64;
+    let mut min_us = u64::MAX;
+    let mut max_us = 0;
+    'probes: for seq in 1..=count {
+        if cancelled() {
+            break;
+        }
+        let start = time::monotonic_ns();
+        let bytes = osel_core::icmp::request(ident, seq, nonce);
+        {
+            let mut guard = NETWORK.lock();
+            let net = guard.as_mut().ok_or(Errno::ENETUNREACH)?;
+            net.sockets
+                .get_mut::<icmp::Socket>(handle.0)
+                .send_slice(&bytes, address.into())
+                .map_err(|_| Errno::EAGAIN)?;
+        }
+        sent += 1;
+        loop {
+            if cancelled() {
+                break 'probes;
+            }
+            let matched = {
+                let mut guard = NETWORK.lock();
+                let net = guard.as_mut().ok_or(Errno::ENETUNREACH)?;
+                let socket = net.sockets.get_mut::<icmp::Socket>(handle.0);
+                let mut matched = false;
+                // Drain unrelated/old replies, bounded by the receive metadata capacity.
+                for _ in 0..4 {
+                    match socket.recv() {
+                        Ok((bytes, source))
+                            if source == IpAddress::Ipv4(address)
+                                && osel_core::icmp::reply_matches(bytes, ident, seq, nonce) =>
+                        {
+                            matched = true;
+                            break;
+                        }
+                        Ok(_) => {}
+                        Err(_) => break,
+                    }
+                }
+                matched
+            };
+            if matched {
+                let us = time::monotonic_ns().saturating_sub(start) / 1000;
+                received += 1;
+                total_us += us;
+                min_us = min_us.min(us);
+                max_us = max_us.max(us);
+                let _ = writeln!(
+                    out,
+                    "40 bytes from {address}: seq={seq} time={}.{:03} ms",
+                    us / 1000,
+                    us % 1000
+                );
+                break;
+            }
+            if time::monotonic_ns().saturating_sub(start) >= 1_000_000_000 {
+                let _ = writeln!(out, "timeout from {address}: seq={seq}");
+                break;
+            }
+            time::sleep_until(time::monotonic_ns().saturating_add(10_000_000))?;
+        }
+        // At most one request per second, including when the destination replies quickly.
+        if seq < count {
+            while time::monotonic_ns().saturating_sub(start) < 1_000_000_000 {
+                if cancelled() {
+                    break 'probes;
+                }
+                time::sleep_until(time::monotonic_ns().saturating_add(10_000_000))?;
+            }
+        }
+    }
+    let loss = if sent == 0 {
+        0
+    } else {
+        (sent - received) * 100 / sent
+    };
+    let _ = writeln!(out, "{sent} sent, {received} received, {loss}% loss");
+    if received > 0 {
+        let avg = total_us / u64::from(received);
+        let _ = writeln!(
+            out,
+            "rtt min/avg/max = {}.{:03}/{}.{:03}/{}.{:03} ms",
+            min_us / 1000,
+            min_us % 1000,
+            avg / 1000,
+            avg % 1000,
+            max_us / 1000,
+            max_us % 1000
+        );
+    }
+    Ok(u8::from(received != count))
 }
 pub fn socket() -> KResult<Arc<dyn FileLike>> {
     let mut guard = NETWORK.lock();

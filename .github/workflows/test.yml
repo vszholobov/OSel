@@ -38,6 +38,9 @@ jobs:
       - name: Kernel logic (osel-core)
         run: cargo test-core
 
+      - name: Firmware bytes and redistribution notices
+        run: python3 tools/check-firmware.py
+
       - name: Runner
         run: cargo test-runner
 

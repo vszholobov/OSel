@@ -12,6 +12,7 @@ description: OSel shell commands, bounded input, ramdisk program launch and retu
 
 | Command | Action |
 |---|---|
+| `diag`, `pci`, `net`, `net ip/route/dns/tcp/dhcp`, `ping`, `nslookup`, `tcpcheck`,  `wifi status/fw/regs/probe` | [Diagnostics](../../user/diagnostics.md#commands) |
 | `help` | Commands and limitations |
 | `kbd` | PS/2 initialization and input counters; [diagnostics](drivers/keyboard.md#diagnostics) |
 | `ls [path]` | Directory contents, default root `/` |
@@ -33,7 +34,7 @@ The editor accepts printable ASCII and tabs as spaces. Length is at most 256 byt
 
 `src/main.rs` invokes `shell::run` in the main kernel thread after readiness. Before the first input byte, nonblocking reads alternate with 10 ms sleep and keyboard diagnostics update once a second, preserving cursor position. First input from either source stops updates and switches Tty reads to blocking. IRQ handlers neither parse nor print commands.
 
-Built-ins are help, ls, cat and kbd. `ls` uses `Inode::read_dir`; cat checks type and size before reading. Other commands verify executable regular files and call `program::run`, passing argv and `PATH=/bin`, `TERM=xterm`, `GODEBUG=asyncpreemptoff=1`.
+Built-ins cover files, keyboard and [network diagnostics](../../user/diagnostics.md). `ls` uses `Inode::read_dir`; cat checks type and size before reading. Other commands verify executable regular files and call `program::run`, passing argv and `PATH=/bin`, `TERM=xterm`, `GODEBUG=asyncpreemptoff=1`.
 
 On exit, load error or program fault, restore terminal settings, discard residual input and reset color/cursor-visibility state. Report errors/nonzero status before the next prompt. [Process teardown](core/threads.md#process) handles descendants and resources.
 

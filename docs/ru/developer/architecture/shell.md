@@ -12,6 +12,7 @@ description: Оболочка OSel — команды, ввод, запуск п
 
 | Команда | Действие |
 |---|---|
+| `diag`, `pci`, `net`, `net ip/route/dns/tcp/dhcp`, `ping`, `nslookup`, `tcpcheck`,  `wifi status/fw/regs/probe` | [Диагностика](../../user/diagnostics.md#commands) |
 | `help` | список команд и ограничений |
 | `kbd` | результат настройки PS/2 и счётчики ввода, см. [диагностику клавиатуры](drivers/keyboard.md#diagnostics) |
 | `ls [путь]` | содержимое каталога; без аргумента — корень `/` |

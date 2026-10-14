@@ -66,6 +66,7 @@ description: Блокировки OSel — IrqSpinlock, отчёт о взаим
 | `PIPE` | `src/pipe.rs` | ограниченный буфер и открытые концы одного канала | чтение, запись, закрытие конца; перед сном отпускается |
 | `PIPE_WAITERS` | `src/pipe.rs` | потоки, ожидающие данные или место в канале | чтение, запись, закрытие конца, удаление потока; пробуждение берёт `SCHEDULER` |
 | `EVENTFD`, `EPOLL_REGISTRATIONS` | `osel-core/src/poll.rs` | счётчик eventfd и список наблюдения epoll (`Spinlock`) | `EventFd`, `Epoll` |
+| `WIFI_REPORT` | `src/drivers/qca6174.rs` | снимок 32 этапов и errno; нет MMIO, печати или сна под блокировкой | `wifi probe/status/regs`, `diag` |
 | `NETWORK` | `src/net.rs` | карта, DHCP/TCP и таблица сокетов | сетевой поток, операции сокетов; перед сном отпускается |
 | `PCI_CONFIG` | `src/drivers/pci.rs` | PCI address/data port pair | scan, command writes |
 | `PIT2` | `src/drivers/rtl8168.rs` | PIT channel 2, gate/speaker; аппаратные задержки Realtek | инициализация и остановка Realtek; IRQ выключены, вложенных блокировок нет |

@@ -48,6 +48,8 @@ Controls: `a`/`d` move, `s` moves down, `q`/`e` rotate. `x`, Escape or Ctrl+C re
 
 ## Connection failures {#errors}
 
-An offline server produces an error and returns to the shell. Check the address, port 8080, running server and TCP reachability. No card in `net` means another driver is needed. A card without an address suggests a cable or DHCP issue. Use numeric IPv4 addresses because DNS is absent. Hostnames can be added to the ramdisk `/etc/hosts` before building.
+An offline server produces an error and returns to the shell. Check the address, port 8080, running server and TCP reachability. No card in `net` means another driver is needed. A card without an address suggests a cable or DHCP issue. Use numeric IPv4 addresses because Go DNS still needs Linux UDP sockets. Hostnames can be added to the ramdisk `/etc/hosts` before building.
 
 Developers: [network tests](../developer/architecture/core/network.md#tests).
+
+[Network and Wi-Fi diagnostics](diagnostics.md): `ping gateway`, `net ip`, `net route`, `net dns`, `net tcp`, `nslookup` and `diag`. Shell DNS lookup is separate; Tetris still needs IPv4 or `/etc/hosts`.

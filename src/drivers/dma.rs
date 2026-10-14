@@ -1,4 +1,4 @@
-//! Physically contiguous, zeroed DMA pages shared by Ethernet drivers.
+//! Physically contiguous, zeroed DMA pages shared by network drivers.
 use crate::memory;
 use x86_64::structures::paging::{FrameAllocator, FrameDeallocator, PhysFrame};
 

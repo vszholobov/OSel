@@ -24,6 +24,7 @@ items:
     expanded: true
     items:
       - href: user/network.md
+      - href: user/diagnostics.md
       - href: user/quickstart.md
       - href: user/usb.md
       - href: user/crash-report.md
@@ -63,6 +64,7 @@ items:
           - name: Drivers
             items:
               - href: developer/architecture/drivers/ethernet.md
+              - href: developer/architecture/drivers/wifi.md
               - href: developer/architecture/drivers/console.md
               - href: developer/architecture/drivers/keyboard.md
               - href: developer/architecture/drivers/serial.md
@@ -100,3 +102,4 @@ items:
           - href: developer/design/stage-2-user-mode.md
           - href: developer/design/child-processes.md
           - href: developer/design/tetris.md
+          - href: developer/design/wifi.md

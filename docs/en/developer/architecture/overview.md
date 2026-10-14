@@ -27,6 +27,8 @@ Existing kernel module names include wordplay; keep their names when changing co
 
 | Module | Location | Responsibility | Owner |
 |---|---|---|---|
+| `qca6174` | `src/drivers/qca6174.rs` | QCA6174 PCI/reset/CE/BMI diagnostics | [Wi-Fi](drivers/wifi.md) |
+| `diagnostics` | `src/diagnostics.rs` | general diagnostic report | [Diagnostics](../../user/diagnostics.md) |
 | `drivers` | `src/drivers/mod.rs` | hardware drivers; existing names are re-exported from the root | [Ethernet](drivers/ethernet.md) |
 | `pci` | `src/drivers/pci.rs` | PCI configuration, BAR, bus mastering | [Ethernet](drivers/ethernet.md) |
 | `e1000e` | `src/drivers/e1000e.rs` | Intel 82574L, RX/TX DMA | [Ethernet](drivers/ethernet.md) |
@@ -57,6 +59,8 @@ Existing kernel module names include wordplay; keep their names when changing co
 | `sync` | `src/sync.rs` | Named spinlocks, interrupt masking and deadlock reports | [Details](core/locking.md) |
 | `qemuno` | `src/qemuno.rs` | QEMU exit through isa-debug-exit | [Details](testing.md) |
 | `testosterone` | `src/testosterone.rs` | Kernel test framework, expected panic and leak checks | [Details](testing.md) |
+| `icmp` | `osel-core/src/icmp.rs` | ICMP Echo, checksum and reply validation | [Network](core/network.md) |
+| `wifi` | `osel-core/src/wifi.rs` | firmware containers and exact PCI board | [Wi-Fi](drivers/wifi.md) |
 | `net` | `osel-core/src/net.rs` | Linux IPv4, PCI address / BAR parsing | [Ethernet](drivers/ethernet.md) |
 | `rtl8168` | `osel-core/src/rtl8168.rs` | Realtek XID, descriptors and bounded PHY initialization | [Ethernet](drivers/ethernet.md) |
 | `console` | `osel-core/src/console.rs` | Text rendering into byte buffers | [Details](drivers/console.md) |

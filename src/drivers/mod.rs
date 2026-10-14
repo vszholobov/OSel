@@ -7,3 +7,4 @@ pub mod e1000e;
 mod dma;
 pub mod rtl8168;
 pub mod ethernet;
+pub mod qca6174;

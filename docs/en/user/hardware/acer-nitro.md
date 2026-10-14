@@ -71,3 +71,7 @@ OSel has no disk drivers and does not access the Windows disk or the laptop's NV
 3. **F10** → **Yes**.
 
 BitLocker may request the key again after restoring Secure Boot. See [recovery](../usb.md#recovery) to reuse the USB drive normally.
+
+## Wi-Fi {#wifi}
+
+Owner card: `PCI\VEN_168C&DEV_003E&SUBSYS_080711AD&REV_32`, QCA6174, LiteOn `11ad:0807`. Firmware hw3.0/API6 and the exact board entry are bundled. Only the ROM probe is implemented; WPA2 connection is absent. Acer needs `wifi probe` and `wifi regs`; see [report collection](../diagnostics.md#report).

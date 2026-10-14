@@ -18,7 +18,7 @@ Each TCP socket owns two 16 KiB buffers and an independent identifier. At most 6
 
 ## Sockets and epoll {#sockets}
 
-IPv4/TCP implements `socket`, `connect`, `getsockname`, `getpeername`, `getsockopt`, `setsockopt`, `shutdown`, ordinary `read`/`write` and `writev`. Numbers, arguments and restrictions are in the [syscall reference](../../reference/syscalls.md). UDP, IPv6, `bind`, `listen`, `accept` and DNS are absent. Applications can use a numeric IPv4 address or a ramdisk `/etc/hosts` name.
+IPv4/TCP implements `socket`, `connect`, `getsockname`, `getpeername`, `getsockopt`, `setsockopt`, `shutdown`, ordinary `read`/`write` and `writev`. Numbers, arguments and restrictions are in the [syscall reference](../../reference/syscalls.md). Linux UDP sockets, IPv6, `bind`, `listen` and `accept` are absent. Applications can use a numeric IPv4 address or a ramdisk `/etc/hosts` name.
 
 Epoll keeps weak references to open descriptions: fd reuse never redirects an earlier registration. Level readiness, `EPOLLET`, `EPOLLONESHOT`, errors, hangups and `EPOLL_CTL_MOD` rearming are supported. Sockets, pipes and eventfd track new readiness transitions even when drained and refilled between scans. Unsupported interest bits return `EINVAL`; Linux epoll extensions are not all implemented.
 
@@ -41,7 +41,7 @@ Epoll keeps weak references to open descriptions: fd reuse never redirects an ea
 
 - Intel 82574L (`8086:10d3`) and Realtek RTL8168 G/GU/H/M (`10ec:8168`) have drivers. QEMU Realtek C+ tests shared DMA, not the laptop PHY. The owner confirmed the Acer PCI ID; physical connectivity is unverified. Wi-Fi and USB Ethernet require separate drivers.
 - The public server may be offline. Tests prove interoperability with the local repository server, not public-server availability.
-- HTTP/WebSocket uses no TLS. Hostnames require `/etc/hosts`; DNS is absent.
+- HTTP/WebSocket uses no TLS. Hostnames require `/etc/hosts`; DNS for Go programs needs Linux UDP sockets.
 - `SO_KEEPALIVE`, `TCP_KEEPIDLE` and `TCP_NODELAY` work. Separate keepalive intervals and probe counts return `ENOPROTOOPT`. Connection establishment is limited to 20 seconds; Go bounds a dial attempt to five seconds.
 - The last descriptor close aborts TCP and immediately releases buffers. Detached FIN/TIME_WAIT queues are deferred. `shutdown` closes sending; independent read shutdown is unsupported.
 
@@ -58,3 +58,11 @@ The same scenarios run through Realtek C+ in `tests/realtek_network.rs` and `tes
 - [0018: Ethernet and outgoing TCP sockets](../../decisions/0018-networking.md).
 
 _Checked against code: 2026-10-14, stage-4-network-tetris branch._
+
+## Diagnostic sockets {#diagnostics}
+
+The shell uses smoltcp ICMP and DNS directly, without new syscalls. DHCP retains gateway, DNS and configuration count; deconfiguration clears addresses, gateway and DNS. SocketSet preallocates 64 TCP, DHCP, 4 ICMP and 4 DNS slots: commands do not grow permanent capacity or leak. RAII removes temporary sockets on cancellation, errors and timeout. ICMP validates checksum, source address, identifier, sequence and nonce/full payload; duplicates cannot count for the next probe. TTL is omitted because the socket API does not expose it. DNS A queries use DHCP servers and a 5-second deadline. `net ip/route/dns/tcp` snapshots are printed after releasing `NETWORK`.
+
+`osel-core/src/icmp.rs` is host tested; `tests/support/network_diagnostics.rs` runs in Intel and Realtek network tests: real gateway Echo, unavailable destination, cancellation, invalid targets, repetition and memory cleanup. Commands: [user diagnostics](../../../user/diagnostics.md).
+
+`tcpcheck` uses a temporary TCP socket, existing nonblocking connect and a 3-second deadline. It verifies connection establishment without HTTP/WebSocket data and allows FIN to be sent before releasing buffers. Local server, refusal and timeout checks run in the same test and ready-image verification.
