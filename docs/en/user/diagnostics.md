@@ -12,7 +12,7 @@ description: OSel commands for network, PCI, memory and initial Acer Wi-Fi diagn
 
 | Command | Information or action |
 |---|---|
-| `diag` | version, commit, uptime, PIT, memory, keyboard, PCI, Ethernet, DHCP, routes, DNS, TCP and Wi-Fi status |
+| `diag` | version, commit, uptime, PIT, memory, keyboard, network PCI cards, Ethernet, DHCP, routes, DNS, TCP and Wi-Fi status |
 | `pci` | PCI ID, subsystem, revision, class, BAR0 and PCI command |
 | `net` | adapter, link, addresses, sockets and received/sent/dropped frames |
 | `net ip` | MAC, address/mask, DHCP readiness and configuration count |

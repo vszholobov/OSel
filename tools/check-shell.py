@@ -170,6 +170,8 @@ def main():
             counters = re.search(rb"irq=(\d+) bytes=(\d+) poll=(\d+) chars=(\d+)", result)
             assert counters and int(counters[1]) > 0 and int(counters[4]) >= 5, result
             if args.screenshot:
+                command(b"clear", b"\x1b[2J")
+                command(b"diag", b"=== OSel diagnostics END ===")
                 qmp("screendump", {"filename": str(pathlib.Path(args.screenshot).resolve()), "format": "png"})
             qmp("quit")
             assert process.wait(timeout=10) == 0

@@ -44,7 +44,26 @@ pub fn report(out: &mut impl Write) {
         heap.3
     );
     let _ = crate::keyboard::write_diagnostics(out);
-    pci(out);
+    // Keep the hardware report readable on the laptop display. `pci` lists all devices.
+    for device in crate::drivers::pci::scan()
+        .into_iter()
+        .filter(|d| d.class == 2)
+    {
+        let subsystem = device.read(0x2c);
+        let _ = writeln!(
+            out,
+            "PCI {:02x}:{:02x}.{} {:04x}:{:04x} rev={:02x} subsys={:04x}:{:04x} MMIO={:x?}",
+            device.bus,
+            device.slot,
+            device.function,
+            device.vendor,
+            device.device,
+            device.revision,
+            subsystem as u16,
+            subsystem >> 16,
+            device.first_memory_bar()
+        );
+    }
     crate::net::status(out);
     for section in ["ip", "route", "dns", "tcp"] {
         if let Err(error) = crate::net::diagnostics(section, out) {
