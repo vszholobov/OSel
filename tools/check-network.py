@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Play network Tetris from the real OSel shell with the actual local server."""
+import argparse
 import os
 import pathlib
 import selectors
@@ -10,6 +11,14 @@ import time
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--image", type=pathlib.Path, help="test an existing image without rebuilding")
+    parser.add_argument("--boot", choices=("uefi", "bios"), default=os.environ.get("OSEL_BOOT", "uefi"))
+    parser.add_argument("--ovmf-code", type=pathlib.Path, help="UEFI firmware code for --image")
+    parser.add_argument("--ovmf-vars", type=pathlib.Path, help="UEFI firmware variables for --image")
+    args = parser.parse_args()
+    if args.image and args.boot == "uefi" and not (args.ovmf_code and args.ovmf_vars):
+        parser.error("UEFI --image requires --ovmf-code and --ovmf-vars")
     root = pathlib.Path(__file__).resolve().parents[1]
     with tempfile.TemporaryDirectory(prefix="osel-network-", dir="/tmp") as directory:
         binary = pathlib.Path(directory) / "server"
@@ -25,7 +34,21 @@ def main():
             port = int(banner.rsplit(":", 1)[1])
             env = os.environ.copy()
             env.pop("OSEL_EXPECT", None)
-            process = subprocess.Popen(["cargo", "run", "--locked", "--", "-display", "none"],
+            env["OSEL_BOOT"] = args.boot
+            if args.image:
+                nic = env.get("OSEL_NIC") or "e1000e"
+                assert nic in ("e1000e", "rtl8139"), "network check requires e1000e or rtl8139"
+                launch = ["qemu-system-x86_64", "-vga", "std", "-global", "VGA.xres=1280",
+                          "-global", "VGA.yres=1024", "-drive",
+                          f"format=raw,snapshot=on,file={args.image.resolve()}",
+                          "-serial", "stdio", "-no-reboot", "-netdev", "user,id=net0",
+                          "-device", f"{nic},netdev=net0"]
+                if args.boot == "uefi":
+                    launch += ["-drive", f"if=pflash,format=raw,readonly=on,file={args.ovmf_code.resolve()}",
+                               "-drive", f"if=pflash,format=raw,snapshot=on,file={args.ovmf_vars.resolve()}"]
+            else:
+                launch = ["cargo", "run", "--locked", "--"]
+            process = subprocess.Popen(launch + ["-display", "none"],
                                        cwd=root, env=env, stdin=subprocess.PIPE,
                                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                        start_new_session=True)

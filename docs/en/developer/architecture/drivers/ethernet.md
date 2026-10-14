@@ -60,6 +60,8 @@ Register facts were checked against primary [FreeBSD re](https://github.com/free
 
 `tests/realtek_dma.rs` creates the secondary QEMU adapter three times, obtains DHCP, stops DMA and frees rings/buffers; bus mastering must be off and heap/pages returned. `tests/realtek_network.rs` repeats HTTP/WebSocket, a large TCP stream and two-client gameplay through Realtek. `tests/realtek_network_game.rs` drives the actual client, receives both fields and pong. All run under UEFI and BIOS. `OSEL_NIC=rtl8139 python3 tools/check-network.py` checks the real shell, two games and offline-server recovery.
 
+CI also runs network scenarios directly on release images under both firmware modes and NICs (`tools/check-network.py --image ... --boot ...`). QEMU uses snapshots: SHA256SUMS is checked after gameplay before uploading artifacts. These images are intended for the Acer hardware checkpoint.
+
 ## Decisions {#decisions}
 
 - [0018: Ethernet and outgoing TCP sockets](../../decisions/0018-networking.md).

@@ -106,6 +106,6 @@ description: Блокировки OSel — IrqSpinlock, отчёт о взаим
 
 - [0003 — IrqSpinlock](../../decisions/0003-irq-spinlock.md)
 
-_Сверено с кодом: 2026-10-13, ветка fix-ps2-keyboard._
+_Сверено с кодом: 2026-10-14, ветка stage-4-network-tetris._
 
 `NETWORK` может вложенно брать `ALLOCATOR` для сетевых буферов. `EPOLL_REGISTRATIONS` — список слабых ссылок на описания файлов; при сканировании берёт `NETWORK` или `PIPE`. Через ожидание блокировки не переносятся.
