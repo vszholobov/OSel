@@ -4,8 +4,6 @@ description: Ring-3 segments, TrapFrame, exception/syscall entry, FPU state and 
 
 # User mode
 
-Language: [Русский](../../../../ru/developer/architecture/core/user-mode.md) · [English](user-mode.md)
-
 **Audience:** developers changing kernel/program transitions.
 
 **Summary:** each program thread enters ring 3 using iretq from TrapFrame at its kernel-stack top. Exceptions preserve all registers and terminate the program; system calls use the same frame and run Rust dispatch with interrupts enabled. user::run launches and waits. See [threads](threads.md).

@@ -4,8 +4,6 @@ description: OSel developer documentation — building, tests, architecture, ref
 
 # Developer documentation
 
-Language: [Русский](../../ru/developer/index.md) · [English](index.md)
-
 **Audience:** anyone changing the kernel, programs, runner or documentation.
 
 **Summary:** start with the build instructions and module map. Architecture pages describe OSel today, decisions explain the reasons, and plans separate unfinished work.

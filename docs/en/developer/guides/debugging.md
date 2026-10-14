@@ -4,8 +4,6 @@ description: Debug OSel with serial output, panic addresses, LLDB/GDB, QEMU exce
 
 # Debugging
 
-Language: [Русский](../../../ru/developer/guides/debugging.md) · [English](debugging.md)
-
 **Audience:** developers investigating failures.
 
 **Summary:** start with the panic text on the red screen and serial output. Resolve RIP using LLDB. For stepping, run `cargo run -- -s -S` and attach a debugger to port 1234. For resets without a report, use `-d int,cpu_reset`.

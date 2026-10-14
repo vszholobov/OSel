@@ -4,8 +4,6 @@ description: Why each program owns its lower-half page tables and shares kernel 
 
 # 0009. Shared kernel half of address spaces
 
-Language: [Русский](../../../ru/developer/decisions/0009-shared-kernel-half.md) · [English](0009-shared-kernel-half.md)
-
 **Audience:** developers changing program memory or page-table ownership.
 
 **Summary:** each `AddressSpace` owns its level-4 table and lower half. Upper-half entries refer to shared kernel level-3 tables prepared during initialization, so later kernel mappings appear in every program.

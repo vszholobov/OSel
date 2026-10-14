@@ -4,8 +4,6 @@ description: Why threads own kernel stacks, switch in the timer handler and eage
 
 # 0015. Threads and preemption
 
-Language: [Русский](../../../ru/developer/decisions/0015-threads.md) · [English](0015-threads.md)
-
 **Audience:** developers changing scheduling, entry or timers.
 
 **Summary:** each thread owns a kernel stack with TrapFrame at its top. Timer switches directly in x86-interrupt without a full user frame. switch_to saves callee-saved/RFLAGS; Rust changes CR3/RSP0/current stack/FS/FPU around it. This replaces [0011](0011-user-entry.md)'s run-until-fault, [0012](0012-syscall-entry-and-user-programs.md)'s launch stack and [0013](0013-fpu-state.md)'s launch-bound FPU save. See [threads](../architecture/core/threads.md).

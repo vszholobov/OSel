@@ -4,8 +4,6 @@ description: Ноутбук Acer Nitro с Windows 10 — загрузка OSel �
 
 # Acer Nitro
 
-Язык: [Русский](acer-nitro.md) · [English](../../../en/user/hardware/acer-nitro.md)
-
 **Для кого:** для тех, кто запускает OSel на ноутбуке Acer Nitro.
 
 **Коротко:** современный ноутбук с загрузкой только через UEFI. Грузите образ `OSel.uefi.img`. Перед этим выключите Secure Boot, а если на Windows включено шифрование BitLocker, сначала сохраните ключ восстановления. Меню загрузки — F12, его нужно один раз включить в настройках.

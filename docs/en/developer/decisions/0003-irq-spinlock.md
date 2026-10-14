@@ -4,8 +4,6 @@ description: Why kernel globals use IrqSpinlock to mask interrupts and report de
 
 # 0003. IrqSpinlock for kernel globals
 
-Language: [Русский](../../../ru/developer/decisions/0003-irq-spinlock.md) · [English](0003-irq-spinlock.md)
-
 **Audience:** developers adding global kernel state.
 
 **Summary:** `src/sync.rs` wraps globals in `IrqSpinlock`. Acquiring a lock disables interrupts; releasing it restores their previous state. Recursive acquisition reports the lock name and acquisition/wait locations instead of silently hanging.

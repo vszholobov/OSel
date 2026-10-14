@@ -4,8 +4,6 @@ description: Why open files have three ownership layers and devices are nodes in
 
 # 0014. Descriptors and devices
 
-Language: [Русский](../../../ru/developer/decisions/0014-file-descriptors.md) · [English](0014-file-descriptors.md)
-
 **Audience:** developers adding file kinds, devices or file calls.
 
 **Summary:** descriptors point to OpenDescription then FileLike. Shared position/access/status belong to the description; FD_CLOEXEC belongs to the descriptor. WithDevices overlays CharDevice nodes in /dev. See [files](../architecture/core/fs.md#open-files).

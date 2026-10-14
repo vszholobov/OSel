@@ -4,8 +4,6 @@ description: Add host, kernel, integration and expected-panic tests, then run th
 
 # Add and run tests
 
-Language: [Русский](../../../ru/developer/guides/testing.md) · [English](testing.md)
-
 **Audience:** developers changing code.
 
 **Summary:** test pure logic in `osel-core` with `#[test]`; test hardware with kernel `#[test_case]` or integration kernels in `tests/`. Use `osel::panic_test!` for expected failures and check both boot modes. See [testing architecture](../architecture/testing.md).

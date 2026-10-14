@@ -17,10 +17,6 @@ OSel is an educational Rust operating system for x86_64. It boots through UEFI a
 
 [Developer documentation](developer/index.md): building, testing, architecture, reference, our decisions and plans.
 
-## Documentation language {#languages}
-
-[Русский](../ru/index.md) · [English](index.md). Both versions use the same page structure. A language switch is available in the site header.
-
 ## Working with the repository {#source}
 
 Repository: [OSel](https://github.com/vszholobov/OSel). Ready-made images: [releases](https://github.com/vszholobov/OSel/releases). Documentation describes the current `master`; changes are recorded in `CHANGELOG.md`. Agent instructions are in `AGENTS.md` at the repository root.

@@ -4,8 +4,6 @@ description: Maintain CHANGELOG.md and release verified UEFI/BIOS images through
 
 # Changelog and releases
 
-Language: [Русский](../../../ru/developer/guides/release.md) · [English](release.md)
-
 **Audience:** developers opening PRs or releasing OSel.
 
 **Summary:** every PR adds an entry to `CHANGELOG.md` under «Не выпущено» (Unreleased). A release numbers that section and tags the commit `vX.Y.Z`. CI builds and verifies both images and publishes them with checksums. Documentation tracks master; history belongs in the changelog.

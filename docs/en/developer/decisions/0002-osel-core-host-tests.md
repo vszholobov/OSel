@@ -4,8 +4,6 @@ description: Why hardware-independent kernel logic lives in osel-core and is tes
 
 # 0002. osel-core and host tests
 
-Language: [Русский](../../../ru/developer/decisions/0002-osel-core-host-tests.md) · [English](0002-osel-core-host-tests.md)
-
 **Audience:** developers deciding where new logic belongs.
 
 **Summary:** console rendering, allocators, memory maps, keyboard decoding, exception reports and locking live in `osel-core/`. `cargo test-core` tests them on the host in fractions of a second. Ports, assembly and globals remain in `src/`.

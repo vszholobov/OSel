@@ -4,8 +4,6 @@ description: Why OSel uses bootloader 0.11 for both UEFI and BIOS with the curre
 
 # 0001. bootloader 0.11 and UEFI boot
 
-Language: [Русский](../../../ru/developer/decisions/0001-bootloader-0.11-and-uefi.md) · [English](0001-bootloader-0.11-and-uefi.md)
-
 **Audience:** developers changing boot or BootInfo handling.
 
 **Summary:** `bootloader` 0.11 supports UEFI and BIOS. Text uses the framebuffer instead of VGA; `runner/` builds disk images instead of `bootimage`.

@@ -4,8 +4,6 @@ description: Why Go os/exec uses a checked vfork-style clone, transactional exec
 
 # 0017. Child processes
 
-Language: [Русский](../../../ru/developer/decisions/0017-child-processes.md) · [English](0017-child-processes.md)
-
 **Audience:** developers changing process creation, exec, waits or cancellation.
 
 **Summary:** child processes have separate descriptor tables, share memory until `execve` or exit, and retain results until `wait4`. Process termination interrupts blocked calls so Rust resources are released before thread stacks disappear.

@@ -4,8 +4,6 @@ description: Why OSel loads static ELF64 through a small parser and ProgramMemor
 
 # 0010. Static ELF loader
 
-Language: [Русский](../../../ru/developer/decisions/0010-static-elf-loader.md) · [English](0010-static-elf-loader.md)
-
 **Audience:** developers changing program loading or initial memory.
 
 **Summary:** OSel accepts static x86_64 ELF64 executables (`ET_EXEC`). A small `osel-core` parser uses `ProgramMemory` to map zeroed pages and copy bytes, making loading host-testable. The main stack is mapped eagerly.

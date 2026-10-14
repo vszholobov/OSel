@@ -4,8 +4,6 @@ description: OSel decisions — status, context, alternatives and consequences.
 
 # Our decisions
 
-Language: [Русский](../../../ru/developer/decisions/index.md) · [English](index.md)
-
 **Audience:** developers looking for the reason behind an implementation choice.
 
 **Summary:** decisions record our constraints, chosen behavior, alternatives and consequences. Architecture pages own the current implementation. If a decision changes, add a new numbered decision and update the old status.

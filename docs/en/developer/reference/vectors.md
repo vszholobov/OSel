@@ -4,8 +4,6 @@ description: OSel IDT vectors, exception names, IST stacks, error codes and hard
 
 # Interrupt vectors
 
-Language: [Русский](../../../ru/developer/reference/vectors.md) · [English](vectors.md)
-
 **Audience:** developers reading exception reports or adding handlers.
 
 **Summary:** `src/interrupts.rs` handles every nonreserved processor exception. Kernel exceptions except breakpoint panic through `fatal_exception`; user exceptions stop the program except IST vectors. Hardware interrupts start at 32. Missing handlers report SEGMENT NOT PRESENT with the vector encoded in the error. See [interrupts](../architecture/core/interrupts.md).

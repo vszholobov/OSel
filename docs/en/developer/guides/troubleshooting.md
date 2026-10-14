@@ -4,8 +4,6 @@ description: OSel failure messages and symptoms, with causes and next debugging 
 
 # Troubleshooting
 
-Language: [Русский](../../../ru/developer/guides/troubleshooting.md) · [English](troubleshooting.md)
-
 **Audience:** developers investigating a failed test, CI job or boot.
 
 **Summary:** find the message below, then follow the linked subsystem. For an unknown symptom, start with [debugging](debugging.md). Runner prints `failed: …`; panic contents come from the kernel.

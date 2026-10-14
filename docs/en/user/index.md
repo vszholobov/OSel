@@ -4,8 +4,6 @@ description: OSel user documentation — ready-made images, booting, hardware an
 
 # User documentation
 
-Language: [Русский](../../ru/user/index.md) · [English](index.md)
-
 **Audience:** anyone who wants to run OSel and play Tetris.
 
 **Summary:** download an image, boot it in QEMU or from USB, and type `tetris` in the shell. You do not need to build the kernel or install Rust or Go.

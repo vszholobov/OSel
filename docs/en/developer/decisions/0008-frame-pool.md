@@ -4,8 +4,6 @@ description: Why physical frames use FrameSource and a checked LIFO FramePool wi
 
 # 0008. Physical frame pool
 
-Language: [Русский](../../../ru/developer/decisions/0008-frame-pool.md) · [English](0008-frame-pool.md)
-
 **Audience:** developers allocating or freeing physical pages.
 
 **Summary:** `FrameSource` allocates and deallocates frames; `FramePool` wraps `RegionFrameAllocator`, reuses released frames in LIFO order and rejects double-free or foreign frames. Kernel tests check frame leaks.

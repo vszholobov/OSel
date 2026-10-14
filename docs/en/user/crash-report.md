@@ -4,8 +4,6 @@ description: What the red OSel crash screen means and how to report a failure.
 
 # Crash reports
 
-Language: [Русский](../../ru/user/crash-report.md) · [English](crash-report.md)
-
 **Audience:** anyone seeing a red `OSel crashed :(` screen.
 
 **Summary:** the kernel encountered an error and halted. Photograph the whole screen legibly and send the developer the image, computer model, boot image and preceding actions. Power off by holding the power button for 5–10 seconds.

@@ -4,8 +4,6 @@ description: Host/runner/QEMU test levels, testosterone framework, expected pani
 
 # Testing architecture
 
-Language: [Русский](../../../ru/developer/architecture/testing.md) · [English](testing.md)
-
 **Audience:** developers adding or repairing tests.
 
 **Summary:** pure kernel logic and runner use fast host tests; hardware tests are kernels booted in QEMU with both firmware modes. Serial text and QEMU exit codes report results. Framework tests check heap/frame leaks. See [test recipes](../guides/testing.md).

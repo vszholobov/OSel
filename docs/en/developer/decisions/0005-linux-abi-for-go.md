@@ -4,8 +4,6 @@ description: Why OSel implements a Linux system-call subset for static Go progra
 
 # 0005. Linux ABI for Go programs
 
-Language: [Русский](../../../ru/developer/decisions/0005-linux-abi-for-go.md) · [English](0005-linux-abi-for-go.md)
-
 **Audience:** developers designing system calls and user mode.
 
 **Summary:** the goal is console Tetris written in Go. Build an ordinary Linux binary with `GOOS=linux GOARCH=amd64 CGO_ENABLED=0`; implement the Linux call numbers and conventions needed by its runtime. Unsupported calls return `ENOSYS`.

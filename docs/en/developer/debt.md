@@ -4,8 +4,6 @@ description: Deliberately deferred OSel work and links to the owning subsystem p
 
 # Technical debt
 
-Language: [Русский](../../ru/developer/debt.md) · [English](debt.md)
-
 **Audience:** developers choosing improvements or encountering a known limitation.
 
 **Summary:** one row per deferred decision, with its reason and owning page. Remove completed items; details belong to subsystem pages.
