@@ -47,7 +47,7 @@ Growing t but bytes=0 points to controller/scanning. Growing poll/chars with irq
 
 ## Code {#code}
 
-`src/keyboard.rs`: init, interrupt, poll, diagnostics, write_diagnostics, DECODER, BUFFER, handle_scancode, pop_char, dropped_chars. `osel-core/src/ps2.rs`: protocol and filtering. `osel-core/src/keyboard.rs`: ScancodeDecoder/RingBuffer. `src/interrupts.rs`: handler and controller drain.
+`src/drivers/keyboard.rs`: init, interrupt, poll, diagnostics, write_diagnostics, DECODER, BUFFER, handle_scancode, pop_char, dropped_chars. `osel-core/src/ps2.rs`: protocol and filtering. `osel-core/src/keyboard.rs`: ScancodeDecoder/RingBuffer. `src/interrupts.rs`: handler and controller drain.
 
 ## Invariants {#invariants}
 

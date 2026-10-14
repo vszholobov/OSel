@@ -30,4 +30,5 @@ description: Deliberately deferred OSel work and links to the owning subsystem p
 | Linux output/exit comparison and Go strace | Planned, not automated | [Future tests](architecture/testing.md#future-checks) |
 | Deterministic QEMU -icount time | No runner mode yet; tests tolerate timing variance | [Future tests](architecture/testing.md#future-checks) |
 | USB-writing script | Manual until real-hardware verification | [USB](../user/usb.md) |
-| Laptop verification | Requires the owner, drive and machine | [Roadmap](roadmap.md) |
+
+Networking defers other Ethernet adapters, IRQ/MSI, DNS, listening sockets and detached FIN/TIME_WAIT queues; see [networking restrictions](architecture/core/network.md#pitfalls).

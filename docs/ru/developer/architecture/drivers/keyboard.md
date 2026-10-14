@@ -57,7 +57,7 @@ description: Клавиатура OSel — PS/2, декодирование ск
 
 ## Где в коде {#code}
 
-- `src/keyboard.rs` — `init`, `interrupt`, `poll`, `diagnostics`, `write_diagnostics`, `DECODER`, `BUFFER`, `handle_scancode`, `pop_char`, `dropped_chars`.
+- `src/drivers/keyboard.rs` — `init`, `interrupt`, `poll`, `diagnostics`, `write_diagnostics`, `DECODER`, `BUFFER`, `handle_scancode`, `pop_char`, `dropped_chars`.
 - `osel-core/src/ps2.rs` — протокол настройки, ACK/RESEND, отчёт ошибок и фильтрация runtime-байтов.
 - `osel-core/src/keyboard.rs` — `ScancodeDecoder`, `RingBuffer`.
 - `src/interrupts.rs` — `keyboard_interrupt_handler`, `flush_keyboard_controller`.
@@ -85,7 +85,7 @@ description: Клавиатура OSel — PS/2, декодирование ск
 ## Тесты {#tests}
 
 - `osel-core/src/keyboard.rs` — буфер: порядок, переполнение, ёмкость 0 и 1; декодер: буквы, Shift, Caps Lock, Enter, Backspace, Tab, Esc, стрелки, Ctrl+C, Pause, Print Screen, мусорные байты.
-- `src/keyboard.rs` — настоящие прерывания: скан-коды подаются через команду контроллера `0xD2`, проверяются Shift, расширенные клавиши и переполнение буфера.
+- `src/drivers/keyboard.rs` — настоящие прерывания: скан-коды подаются через команду контроллера `0xD2`, проверяются Shift, расширенные клавиши и переполнение буфера.
 - Там же: настройка после искусственного отключения порта/сканирования/translation/IRQ, резервный опрос при маскированном IRQ 1 без дублирования, фильтрация ответов протокола.
 - `osel-core/src/ps2.rs` — порядок обмена, сохранение системного бита, ACK/RESEND, отсутствующий/занятый контроллер, застрявший буфер, отсутствие ответа, ошибка передачи и проверка командного байта.
 - `tools/check-shell.py` — автоматическое обновление диагностики без ввода, команда `kbd` и реальные клавиши через QEMU `sendkey`, а не только инъекция готовых скан-кодов. `--boot-screenshot` сохраняет экран диагностики.

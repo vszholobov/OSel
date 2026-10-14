@@ -57,6 +57,32 @@ pub enum Errno {
     ENAMETOOLONG = 36,
     /// Function not implemented
     ENOSYS = 38,
+    /// Descriptor does not refer to a socket
+    ENOTSOCK = 88,
+    /// Socket protocol is not supported
+    EPROTONOSUPPORT = 93,
+    /// Operation is not supported for this socket
+    EOPNOTSUPP = 95,
+    /// Address family is not supported
+    EAFNOSUPPORT = 97,
+    /// Address is already in use
+    EADDRINUSE = 98,
+    /// Network is unreachable
+    ENETUNREACH = 101,
+    /// Connection reset by peer
+    ECONNRESET = 104,
+    /// Socket is not connected
+    ENOTCONN = 107,
+    /// Socket is already connected
+    EISCONN = 106,
+    /// Connection refused
+    ECONNREFUSED = 111,
+    /// Connection establishment is already in progress
+    EALREADY = 114,
+    /// Operation is in progress
+    EINPROGRESS = 115,
+    /// Protocol option is unavailable
+    ENOPROTOOPT = 92,
     /// Connection timed out: a `futex` or wait deadline passed
     ETIMEDOUT = 110,
 }
@@ -95,6 +121,19 @@ impl Errno {
             Errno::EPIPE => "EPIPE",
             Errno::ENAMETOOLONG => "ENAMETOOLONG",
             Errno::ENOSYS => "ENOSYS",
+            Errno::ENOTSOCK => "ENOTSOCK",
+            Errno::EPROTONOSUPPORT => "EPROTONOSUPPORT",
+            Errno::EOPNOTSUPP => "EOPNOTSUPP",
+            Errno::EAFNOSUPPORT => "EAFNOSUPPORT",
+            Errno::EADDRINUSE => "EADDRINUSE",
+            Errno::ENETUNREACH => "ENETUNREACH",
+            Errno::ECONNRESET => "ECONNRESET",
+            Errno::EISCONN => "EISCONN",
+            Errno::ENOTCONN => "ENOTCONN",
+            Errno::ECONNREFUSED => "ECONNREFUSED",
+            Errno::EALREADY => "EALREADY",
+            Errno::EINPROGRESS => "EINPROGRESS",
+            Errno::ENOPROTOOPT => "ENOPROTOOPT",
             Errno::ETIMEDOUT => "ETIMEDOUT",
         }
     }
@@ -142,6 +181,19 @@ mod tests {
             (Errno::EPIPE, 32),
             (Errno::ENAMETOOLONG, 36),
             (Errno::ENOSYS, 38),
+            (Errno::ENOTSOCK, 88),
+            (Errno::EPROTONOSUPPORT, 93),
+            (Errno::EOPNOTSUPP, 95),
+            (Errno::EAFNOSUPPORT, 97),
+            (Errno::EADDRINUSE, 98),
+            (Errno::ENETUNREACH, 101),
+            (Errno::ECONNRESET, 104),
+            (Errno::ENOTCONN, 107),
+            (Errno::EISCONN, 106),
+            (Errno::ECONNREFUSED, 111),
+            (Errno::EALREADY, 114),
+            (Errno::EINPROGRESS, 115),
+            (Errno::ENOPROTOOPT, 92),
             (Errno::ETIMEDOUT, 110),
         ];
         for (errno, code) in expected {

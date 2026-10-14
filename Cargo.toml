@@ -18,6 +18,7 @@ uart_16550 = "0.6.0"
 pic8259 = "0.11"
 pc-keyboard = "0.9"
 linked_list_allocator = "0.10"
+smoltcp = { version = "0.12.0", default-features = false, features = ["alloc", "medium-ethernet", "proto-ipv4", "socket-tcp", "socket-dhcpv4"] }
 
 [dependencies.noto-sans-mono-bitmap]
 version = "0.3.2"
@@ -119,3 +120,9 @@ harness = false
 [[test]]
 name = "child_processes"
 harness = false
+
+[[test]]
+name = "network"
+
+[[test]]
+name = "network_game"

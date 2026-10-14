@@ -18,7 +18,7 @@ OSel targets real laptops. `bootloader` 0.9 only supports BIOS; many modern comp
 
 - Use `bootloader` 0.11: one kernel ELF, two images, `OSel.uefi.img` and `OSel.bios.img`.
 - Build for the built-in `x86_64-unknown-none` target without a custom JSON target.
-- Render text to the framebuffer using `osel-core/src/console.rs` and `src/avganec.rs`; UEFI has no VGA text mode.
+- Render text to the framebuffer using `osel-core/src/console.rs` and `src/drivers/avganec.rs`; UEFI has no VGA text mode.
 - Build images and launch QEMU using `runner/src/main.rs`, connected to Cargo through `runner/run.sh`.
 - Run CI tests in both boot modes.
 

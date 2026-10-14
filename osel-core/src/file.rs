@@ -31,6 +31,13 @@ pub trait FileLike: Send + Sync {
         self.write(offset, buf)
     }
 
+    fn socket_id(&self) -> Option<usize> { None }
+    /// Linux epoll readiness, including error/hangup bits for stream files.
+    fn poll_flags(&self) -> u32 {
+        let ready = self.poll(); (if ready.readable { 1 } else { 0 }) | (if ready.writable { 4 } else { 0 })
+    }
+    /// Increment on each new readiness edge; stream implementations update this on I/O.
+    fn readiness_epochs(&self) -> [u64; 2] { [0, 0] }
     fn stat(&self) -> Stat;
 
     /// The node of the file system behind it, for `openat` relative to a directory

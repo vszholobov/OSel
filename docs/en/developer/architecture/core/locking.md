@@ -22,12 +22,12 @@ Spinlock in `osel-core/src/sync.rs` tries lock up to DEFAULT_MAX_SPINS, recordin
 
 | Lock | Location | Protected state and callers |
 |---|---|---|
-| `WRITER` | `src/avganec.rs` | Framebuffer; print!/with_console/read_pixel, breakpoint try_lock, panic force-unlock |
-| `SERIAL1` | `src/cereal.rs` | COM1; port/serial macros, panic force-unlock |
+| `WRITER` | `src/drivers/avganec.rs` | Framebuffer; print!/with_console/read_pixel, breakpoint try_lock, panic force-unlock |
+| `SERIAL1` | `src/drivers/cereal.rs` | COM1; port/serial macros, panic force-unlock |
 | `PICS` | `src/interrupts.rs` | PIC pair; setup, timer/keyboard/spurious handlers |
-| `DECODER` | `src/keyboard.rs` | Scan-code state, keyboard input |
-| `BUFFER` | `src/keyboard.rs` | Character queue, IRQ/pop_char/dropped_chars |
-| `KEYBOARD_DIAGNOSTICS` | `src/keyboard.rs` | Setup report and runtime counters, IRQ/poll/snapshot |
+| `DECODER` | `src/drivers/keyboard.rs` | Scan-code state, keyboard input |
+| `BUFFER` | `src/drivers/keyboard.rs` | Character queue, IRQ/pop_char/dropped_chars |
+| `KEYBOARD_DIAGNOSTICS` | `src/drivers/keyboard.rs` | Setup report and runtime counters, IRQ/poll/snapshot |
 | `ALLOCATOR` | `src/allocator.rs` | Heap, global allocator/with_allocator |
 | `MEMORY` | `src/memory.rs` | Tables/frame pool, with_memory and user demand faults |
 | `TTY_TEXT` | `src/tty.rs` | Partial UTF-8 output, Tty::write; release before printing |
@@ -51,7 +51,9 @@ Spinlock in `osel-core/src/sync.rs` tries lock up to DEFAULT_MAX_SPINS, recordin
 | `POLL_WAITERS` | `src/poll.rs` | epoll_pwait sleepers, epoll_pwait/notify |
 | `PIPE` | `src/pipe.rs` | Pipe data/endpoints, read/write/close; unlock before sleeping |
 | `PIPE_WAITERS` | `src/pipe.rs` | Data/space waiters and teardown; waking takes SCHEDULER |
-| `EVENTFD`, `EPOLL` | `osel-core/src/poll.rs` | Counter/watch list, plain Spinlock |
+| `EVENTFD`, `EPOLL_REGISTRATIONS` | `osel-core/src/poll.rs` | Counter/watch list, plain Spinlock |
+| `NETWORK` | `src/net.rs` | adapter, DHCP/TCP and socket state | network thread and socket operations; released before sleep |
+| `PCI_CONFIG` | `src/drivers/pci.rs` | PCI address/data port pair | scan, command writes |
 | `ROOT_FS` | `src/fs.rs` | Root filesystem, init/root; hold only to clone Arc |
 
 Existing nesting: DECODER → BUFFER or KEYBOARD_DIAGNOSTICS; SCHEDULER → ALLOCATOR when the thread table changes; MM → MEMORY when mapping pages, including user faults. Keep other locks separate.
@@ -77,3 +79,5 @@ Core tests verify owner/wait reports, try_lock/force_unlock and invariants under
 [0003](../../decisions/0003-irq-spinlock.md).
 
 _Checked against code: 2026-10-13, branch fix-ps2-keyboard._
+
+`NETWORK` can nest `ALLOCATOR` for network buffers. `EPOLL_REGISTRATIONS` holds weak open-description references and can nest `NETWORK` or `PIPE` while scanning. No lock crosses a wait.

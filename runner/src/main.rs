@@ -26,6 +26,7 @@ use std::thread::{self, sleep};
 use std::time::{Duration, Instant};
 
 mod fixtures;
+mod network_fixture;
 
 /// `exit_qemu(QemuExitCode::Success)` makes QEMU exit with `(0x10 << 1) | 1`
 const TEST_SUCCESS_EXIT_CODE: i32 = 33;
@@ -66,12 +67,18 @@ fn main() -> ExitCode {
     let kernel = PathBuf::from(args.next().expect("usage: osel-runner <kernel-elf> [qemu args...]"));
     let mut extra_qemu_args: Vec<_> = args.collect();
 
+    let network_game = kernel.file_name().is_some_and(|name| name.to_string_lossy().starts_with("network_game-"));
+    let network_test = kernel.file_name().is_some_and(|name| name.to_string_lossy().starts_with("network-"));
+    let _network_server = if network_test || network_game {
+        match network_fixture::Server::start(&repository(), network_game) { Ok(s) => Some(s), Err(e) => { eprintln!("{e}"); return ExitCode::FAILURE; } }
+    } else { None };
     let config = parse_boot(env::var("OSEL_BOOT").ok().as_deref()).and_then(|boot| {
         let timeout = parse_timeout(env::var("OSEL_TIMEOUT").ok().as_deref())?;
         let ramdisk_dir = ramdisk_dir(env::var_os("OSEL_RAMDISK").as_deref(), &repository());
         let mut programs = build_user_programs(&repository())?;
-        programs.extend(build_go_programs(&repository())?);
+        programs.extend(build_go_programs(&repository(), network_test)?);
         programs.extend(build_tetris(&repository())?);
+        if let Some(server) = &_network_server { programs.push(("network-test-address".into(), server.guest_address.as_bytes().to_vec())); }
         let tetris_present = programs.iter().any(|(name, _)| name == "tetris");
         if kernel
             .file_name()
@@ -121,6 +128,7 @@ fn main() -> ExitCode {
         ));
     }
     qemu.args(["-serial", "stdio", "-no-reboot"]);
+    qemu.args(["-netdev", "user,id=net0", "-device", "e1000e,netdev=net0"]);
     match mode {
         Mode::Run => {}
         Mode::Test => {
@@ -139,7 +147,7 @@ fn main() -> ExitCode {
             .file_name()
             .and_then(|name| name.to_str())
             .is_some_and(|name| name.starts_with("tetris-"));
-    if scripted_tetris {
+    if scripted_tetris || network_game {
         qemu.stdin(Stdio::piped());
     }
     qemu.args(&extra_qemu_args);
@@ -160,7 +168,7 @@ fn main() -> ExitCode {
         Mode::Test => {
             let input = child.stdin.take();
             let output = thread::spawn(move || {
-                let mut script = scripted_tetris.then(|| TetrisInput::new(tetris_present));
+                let mut script = (scripted_tetris || network_game).then(|| { let mut s = TetrisInput::new(tetris_present); s.network = network_game; s });
                 let summary = forward_serial_with_input(
                     BufReader::new(stdout),
                     std::io::stdout(),
@@ -329,9 +337,9 @@ fn build_user_programs(repository: &Path) -> Result<Vec<(String, Vec<u8>)>, Stri
 /// machine. Without it the programs are simply left out and tests that need them skip; a
 /// real build failure (not a missing `go`) is an error. Built static for linux/amd64 with
 /// the base instruction set, the way OSel can load and run it.
-fn build_go_programs(repository: &Path) -> Result<Vec<(String, Vec<u8>)>, String> {
+fn build_go_programs(repository: &Path, network_test: bool) -> Result<Vec<(String, Vec<u8>)>, String> {
     let mut programs = Vec::new();
-    for name in GO_PROGRAMS {
+    for name in GO_PROGRAMS.iter().copied().chain(network_test.then_some("netcheck")) {
         let source_dir = repository.join("user-go").join(name);
         let output = repository.join("user-go/target").join(name);
         let result = Command::new("go")
@@ -515,6 +523,7 @@ struct TetrisInput {
     next: usize,
     skipped: bool,
     allow_skip: bool,
+    network: bool,
 }
 
 impl TetrisInput {
@@ -533,13 +542,23 @@ impl TetrisInput {
         ("TETRIS EXIT", b""),
     ];
 
+    const NETWORK_STEPS: &[(&str, &[u8])] = &[
+        ("NETWORK CONNECTED", b""),
+        ("NETWORK FIELD type=0", b""),
+        ("NETWORK FIELD type=1", b"s"),
+        ("NETWORK INPUT key=s", b""),
+        ("NETWORK FIELD type=0", b""),
+        ("NETWORK PONG tetris", b"x"),
+        ("NETWORK EXIT", b""),
+    ];
+    fn steps(&self) -> &'static [(&'static str, &'static [u8])] { if self.network { Self::NETWORK_STEPS } else { Self::STEPS } }
     fn observe(&mut self, line: &str) -> Option<&'static [u8]> {
         if line.trim() == "TETRIS SKIP: Go is not installed" {
             self.skipped = self.allow_skip && self.next == 0;
             return None;
         }
-        let &(expected, input) = Self::STEPS.get(self.next)?;
-        if line.trim() != expected {
+        let &(expected, input) = self.steps().get(self.next)?;
+        if (self.network && !line.trim().starts_with(expected)) || (!self.network && line.trim() != expected) {
             return None;
         }
         self.next += 1;
@@ -547,7 +566,7 @@ impl TetrisInput {
     }
 
     fn complete(&self) -> bool {
-        self.skipped || self.next == Self::STEPS.len()
+        self.skipped || self.next == self.steps().len()
     }
 }
 
@@ -714,6 +733,23 @@ mod tests {
     }
 
     const TIMEOUT: Duration = Duration::from_secs(60);
+
+    #[test]
+    fn network_input_requires_both_fields_a_move_and_pong() {
+        let mut script = TetrisInput::new(true); script.network = true;
+        assert_eq!(script.observe("NETWORK FIELD type=0 data=abc"), None);
+        assert_eq!(script.observe("NETWORK CONNECTED session=123"), Some(&b""[..]));
+        assert_eq!(script.observe("NETWORK FIELD type=1 data=abc"), None);
+        assert_eq!(script.observe("NETWORK FIELD type=0 data=abc"), Some(&b""[..]));
+        assert_eq!(script.observe("NETWORK FIELD type=1 data=abc"), Some(&b"s"[..]));
+        assert_eq!(script.observe("NETWORK PONG tetris"), None);
+        assert_eq!(script.observe("NETWORK INPUT key=s"), Some(&b""[..]));
+        assert_eq!(script.observe("NETWORK FIELD type=0 data=def"), Some(&b""[..]));
+        assert_eq!(script.observe("NETWORK PONG tetris"), Some(&b"x"[..]));
+        assert!(!script.complete());
+        assert_eq!(script.observe("NETWORK EXIT"), Some(&b""[..]));
+        assert!(script.complete());
+    }
 
     #[test]
     fn interactive_updates_flush_without_newlines() {

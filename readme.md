@@ -6,6 +6,8 @@
 
 **Документация:** [Русский](https://vszholobov.github.io/OSel/ru/) · [English](https://vszholobov.github.io/OSel/en/). [Пользователю](docs/ru/user/index.md) — готовые образы и игра; [разработчику](docs/ru/developer/index.md) — сборка, тесты и устройство ядра.
 
+Код: [ядро](src/) · [аппаратные драйверы](src/drivers/) · [логика без железа](osel-core/) · [runner](runner/).
+
 ```shell
 cargo run          # собрать и запустить в QEMU
 cargo test         # тесты ядра в QEMU

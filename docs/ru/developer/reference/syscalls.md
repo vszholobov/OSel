@@ -20,6 +20,14 @@ description: Справочник системных вызовов OSel — н�
 | 10 | `mprotect` | `addr`, `len`, `prot` | меняет права всех страниц диапазона; `len` 0 — ничего | `EINVAL` для невыровненного `addr` и неизвестных битов `prot`; `ENOMEM`, если часть диапазона не отображена, — тогда не меняется ничего |
 | 11 | `munmap` | `addr`, `len` | убирает области и освобождает страницы; пустой диапазон — не ошибка | `EINVAL` для невыровненного `addr`, `len` 0 и диапазона за нижней половиной |
 | 16 | `ioctl` | `fd`, `request`, `arg` | режим терминала `TCGETS`, `TCSETS`, `TCSETSW`, `TCSETSF`, размер окна `TIOCGWINSZ`; структура Linux x86_64 | `EBADF`, `ENOTTY`, `EFAULT`; `EINVAL` для ненулевого `VTIME` или другой дисциплины ввода |
+| 20 | `writev` | `fd`, `iov`, `iovcnt` | записывает до 1024 iovec; частичный результат при EAGAIN | `EBADF`, `EFAULT`, `EINVAL`, `EAGAIN`, `EPIPE` |
+| 41 | `socket` | `domain`, `type`, `protocol` | только AF_INET, SOCK_STREAM, TCP; NONBLOCK и CLOEXEC | `EAFNOSUPPORT`, `EPROTONOSUPPORT`, `ENETUNREACH`, `EMFILE`, `EINVAL` |
+| 42 | `connect` | `fd`, `addr`, `addrlen` | исходящий TCP; неблокирующий EINPROGRESS | `ENOTSOCK`, `EFAULT`, `EINVAL`, `EINPROGRESS`, `EALREADY`, `EISCONN`, `ECONNREFUSED`, `ETIMEDOUT` |
+| 48 | `shutdown` | `fd`, `how` | SHUT_WR отправляет FIN; отдельное закрытие чтения не поддержано | `ENOTSOCK`, `ENOTCONN`, `EINVAL`, `EOPNOTSUPP` |
+| 51 | `getsockname` | `fd`, `addr`, `addrlen` | локальный IPv4-адрес и порт | `ENOTSOCK`, `ENOTCONN`, `EFAULT` |
+| 52 | `getpeername` | `fd`, `addr`, `addrlen` | адрес TCP-сервера | `ENOTSOCK`, `ENOTCONN`, `EFAULT` |
+| 54 | `setsockopt` | `fd`, `level`, `optname`, `optval`, `optlen` | TCP_NODELAY, SO_KEEPALIVE, TCP_KEEPIDLE; прочее ENOPROTOOPT | `ENOTSOCK`, `EFAULT`, `EINVAL`, `ENOPROTOOPT` |
+| 55 | `getsockopt` | `fd`, `level`, `optname`, `optval`, `optlen` | SO_ERROR с очищением ошибки, SO_TYPE | `ENOTSOCK`, `EFAULT`, `EINVAL`, `ENOPROTOOPT` |
 | 32 | `dup` | `oldfd` | копирует дескриптор в наименьший свободный номер, без `FD_CLOEXEC` | `EBADF`, `EMFILE` |
 | 33 | `dup2` | `oldfd`, `newfd` | заменяет точный дескриптор, сбрасывает его `FD_CLOEXEC`; при совпадении номеров проверяет открытый дескриптор и ничего не меняет | `EBADF` |
 | 35 | `nanosleep` | `req`, `rem` | спит на время `timespec` из `req`, блокируя поток; при убийстве процесса пишет остаток в `rem` и `EINTR`. Шаг времени — один тик таймера (10 мс) | `EINVAL` для отрицательного или слишком большого `tv_nsec`; `EFAULT`; `EINTR` |
@@ -63,3 +71,5 @@ description: Справочник системных вызовов OSel — н�
 `execve` принимает не более 1023 строк в каждом из `argv` и `envp`; строки вместе ограничены 128 КиБ. Готовый стартовый стек с указателями и auxv также должен поместиться в 128 КиБ. Превышение — `E2BIG` до замены образа.
 
 _Сверено с кодом: 2026-10-13, коммит 6f96d29 и рабочие изменения этапа 2.5._
+
+IPv4/TCP и режимы `epoll` — [сеть](../architecture/core/network.md#sockets). UDP, IPv6 и слушающие сокеты отсутствуют.

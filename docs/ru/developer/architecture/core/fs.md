@@ -166,3 +166,7 @@ description: Файлы в OSel — ramdisk в формате cpio, интерф
 - [0005 — ABI Linux для программ на Go](../../decisions/0005-linux-abi-for-go.md): отсюда коды ошибок Linux.
 
 _Сверено с кодом: 2026-10-13, коммит 6f96d29 и рабочие изменения этапа 2.5._
+
+Сокеты реализуют тот же `FileLike`; готовность, слабые регистрации `epoll`, `EPOLLET` и `EPOLLONESHOT` описаны в [сети](network.md#sockets).
+
+`fstat` сокета возвращает тип `S_IFSOCK`; описание сокета реализовано в `src/net.rs`, узла в ramdisk у него нет.

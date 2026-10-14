@@ -18,7 +18,7 @@ description: Почему OSel использует bootloader 0.11 и загр�
 
 - Загрузчик `bootloader` 0.11: один образ ядра, два образа диска — `OSel.uefi.img` и `OSel.bios.img`.
 - Ядро собирается под встроенную цель `x86_64-unknown-none`, без своего JSON-описания цели.
-- Вывод текста — в framebuffer (`osel-core/src/console.rs`, `src/avganec.rs`): под UEFI текстового режима VGA нет.
+- Вывод текста — в framebuffer (`osel-core/src/console.rs`, `src/drivers/avganec.rs`): под UEFI текстового режима VGA нет.
 - Образы и запуск QEMU — `runner/` (`runner/src/main.rs`), он подключён как runner cargo через `runner/run.sh`.
 - Тесты в CI гоняются в обоих режимах загрузки.
 

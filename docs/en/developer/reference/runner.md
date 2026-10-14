@@ -88,3 +88,7 @@ Test/Expect strip ANSI and OVMF `BdsDxe:` lines while preserving kernel blank li
 `runner/run.sh` is the Cargo wrapper. `runner/src/main.rs` contains `parse_boot`, `parse_timeout`, `ramdisk_dir`, `pack_ramdisk`, `is_test_binary`, `image_path`, `create_disk_image`, `ovmf_firmware`, `forward_serial_output`, `test_outcome`, `expect_outcome` and `wait_with_timeout`.
 
 _Checked against code: 2026-10-13, branch release-images._
+
+## Network tests {#network}
+
+The runner attaches `e1000e` to QEMU user networking. For `tests/network.rs` and `tests/network_game.rs`, it builds and starts `tools/network-fixture/`: actual Tetris server handlers on an ephemeral loopback port. The guest address is passed in `/bin/network-test-address`; runner exit terminates and reaps the server. `netcheck` from `user-go/netcheck/` tests two clients and a large stream; the actual client receives scripted COM1 input. Missing Go or server build failures fail these tests.

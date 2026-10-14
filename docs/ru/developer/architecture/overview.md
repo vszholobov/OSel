@@ -27,9 +27,13 @@ description: Обзор OSel — из каких крейтов и модуле�
 
 | Модуль | Где | Что делает | Страница |
 |---|---|---|---|
-| `avganec` | `src/avganec.rs` | консоль на framebuffer: `print!`, `println!`, экран паники | [Консоль](drivers/console.md) |
-| `cereal` | `src/cereal.rs` | последовательный порт COM1: `serial_print!`, аварийный вывод | [Последовательный порт](drivers/serial.md) |
-| `keyboard` | `src/keyboard.rs` | инициализация PS/2, IRQ, резервный опрос, буфер и диагностика | [Клавиатура](drivers/keyboard.md) |
+| `drivers` | `src/drivers/mod.rs` | аппаратные драйверы, старые имена экспортируются из корня | [Ethernet](drivers/ethernet.md) |
+| `pci` | `src/drivers/pci.rs` | PCI configuration, BAR, bus mastering | [Ethernet](drivers/ethernet.md) |
+| `e1000e` | `src/drivers/e1000e.rs` | Intel 82574L, RX/TX DMA | [Ethernet](drivers/ethernet.md) |
+| `net` | `src/net.rs` | DHCP, TCP, Linux sockets, поток обслуживания | [Сеть](core/network.md) |
+| `avganec` | `src/drivers/avganec.rs` | консоль на framebuffer: `print!`, `println!`, экран паники | [Консоль](drivers/console.md) |
+| `cereal` | `src/drivers/cereal.rs` | последовательный порт COM1: `serial_print!`, аварийный вывод | [Последовательный порт](drivers/serial.md) |
+| `keyboard` | `src/drivers/keyboard.rs` | инициализация PS/2, IRQ, резервный опрос, буфер и диагностика | [Клавиатура](drivers/keyboard.md) |
 | `interrupts` | `src/interrupts.rs` | IDT, обработчики исключений, PIC, таймер, ложные IRQ | [Прерывания](core/interrupts.md) |
 | `gdt` | `src/gdt.rs` | GDT с сегментами кольца 3, TSS, стеки IST для double fault, NMI и machine check | [Прерывания](core/interrupts.md) |
 | `fpu` | `src/fpu.rs` | включение SSE и x87 (CR0, CR4), `fxsave64` и `fxrstor64` | [Пользовательский режим](core/user-mode.md#fpu) |
@@ -55,6 +59,7 @@ description: Обзор OSel — из каких крейтов и модуле�
 
 | Модуль | Где | Что делает | Страница |
 |---|---|---|---|
+| `net` | `osel-core/src/net.rs` | Linux IPv4, PCI address / BAR parsing | [Ethernet](drivers/ethernet.md) |
 | `console` | `osel-core/src/console.rs` | отрисовка текста в любой байтовый буфер | [Консоль](drivers/console.md) |
 | `shell` | `osel-core/src/shell.rs` | ограниченный редактор строки, разбор аргументов и имён программ | [Оболочка](shell.md) |
 | `font` | `osel-core/src/font.rs` | встроенные растры шрифта 8×16 и 16×32, выбор размера и глифа | [Консоль](drivers/console.md#font) |
@@ -138,3 +143,5 @@ description: Обзор OSel — из каких крейтов и модуле�
 - [0015 — потоки и вытеснение](../decisions/0015-threads.md)
 
 _Сверено с кодом: 2026-10-13, ветка release-images._
+
+После настройки терминала `net::init` обнаруживает PCI и запускает сетевой поток до включения прерываний. Подробности — [сеть](core/network.md).

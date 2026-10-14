@@ -39,3 +39,11 @@ Game `go test -race ./...` in lib/client checks movement, walls, rotations, line
 `tests/tetris.rs` uses `--single --seed 2 --trace`, starting with an L piece so rotation changes state. Runner requires TETRIS READY and an unprompted TETRIS TICK to prove blocking reads do not stop the timer. It sends a,d,s,q,e and requires `changed=true` after each, then x and TETRIS EXIT. Exit code alone is insufficient. The framework checks heap/frame recovery. Runner tests verify ordering, duplicate/unrelated lines, ANSI filtering and missing-Go skips in both firmware modes.
 
 _Checked against code: 2026-10-13, working branch for stage 3._
+
+## Network play {#network}
+
+`tetris --network --server IP:port` starts the HTTP/WebSocket client; `--create` creates a session and `--session ID` joins one. Offline launch is preserved. Two ASCII fields and previews fit 80 columns and render at up to 30 frames/s. Server errors return to the shell. Tests use the actual submodule server on a local port without requiring the public server.
+
+[How to play](../../user/network.md), [network architecture and tests](core/network.md).
+
+[Network client changes: Tetris PR 18](https://github.com/vszholobov/Tetris/pull/18).

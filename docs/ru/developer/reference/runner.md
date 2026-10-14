@@ -100,3 +100,7 @@ description: Справочник runner — переменные окружен
 - `runner/src/main.rs` — `parse_boot`, `parse_timeout`, `ramdisk_dir`, `pack_ramdisk`, `is_test_binary`, `image_path`, `create_disk_image`, `ovmf_firmware`, `forward_serial_output`, `test_outcome`, `expect_outcome`, `wait_with_timeout`.
 
 _Сверено с кодом: 2026-10-13, ветка release-images._
+
+## Сетевые тесты {#network}
+
+Runner подключает `e1000e` к пользовательской сети QEMU. Для `tests/network.rs` и `tests/network_game.rs` собирается и запускается `tools/network-fixture/`: настоящие обработчики сервера Tetris, случайный порт на loopback. Адрес гостя передаётся через `/bin/network-test-address`; сервер завершается и забирается при выходе runner. `netcheck` из `user-go/netcheck/` проверяет два клиента и большой поток, настоящий клиент получает сценарий через COM1. Отсутствие Go или ошибка сборки сервера не пропускают эти тесты.

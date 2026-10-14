@@ -20,6 +20,14 @@ description: Linux x86_64 system-call numbers, arguments, OSel behavior and erro
 | 10 | `mprotect` | addr, len, prot | Change full-range rights; zero length no-op; incomplete coverage changes nothing | EINVAL alignment/prot; ENOMEM missing range |
 | 11 | `munmap` | addr, len | Remove areas/free pages; empty mapped coverage is allowed | EINVAL alignment, zero length or range beyond lower half |
 | 16 | `ioctl` | fd, request, arg | TCGETS, TCSETS, TCSETSW, TCSETSF and TIOCGWINSZ; Linux x86_64 structs | EBADF, ENOTTY, EFAULT; EINVAL nonzero VTIME/line discipline |
+| 20 | `writev` | `fd`, `iov`, `iovcnt` | writes up to 1024 iovecs; partial count on EAGAIN | `EBADF`, `EFAULT`, `EINVAL`, `EAGAIN`, `EPIPE` |
+| 41 | `socket` | `domain`, `type`, `protocol` | AF_INET, SOCK_STREAM, TCP; NONBLOCK and CLOEXEC | `EAFNOSUPPORT`, `EPROTONOSUPPORT`, `ENETUNREACH`, `EMFILE`, `EINVAL` |
+| 42 | `connect` | `fd`, `addr`, `addrlen` | outgoing TCP; nonblocking EINPROGRESS | `ENOTSOCK`, `EFAULT`, `EINVAL`, `EINPROGRESS`, `EALREADY`, `EISCONN`, `ECONNREFUSED`, `ETIMEDOUT` |
+| 48 | `shutdown` | `fd`, `how` | SHUT_WR sends FIN; separate read shutdown is unsupported | `ENOTSOCK`, `ENOTCONN`, `EINVAL`, `EOPNOTSUPP` |
+| 51 | `getsockname` | `fd`, `addr`, `addrlen` | local IPv4 address and port | `ENOTSOCK`, `ENOTCONN`, `EFAULT` |
+| 52 | `getpeername` | `fd`, `addr`, `addrlen` | TCP peer address | `ENOTSOCK`, `ENOTCONN`, `EFAULT` |
+| 54 | `setsockopt` | `fd`, `level`, `optname`, `optval`, `optlen` | TCP_NODELAY, SO_KEEPALIVE, TCP_KEEPIDLE; other options ENOPROTOOPT | `ENOTSOCK`, `EFAULT`, `EINVAL`, `ENOPROTOOPT` |
+| 55 | `getsockopt` | `fd`, `level`, `optname`, `optval`, `optlen` | SO_ERROR (read and clear), SO_TYPE | `ENOTSOCK`, `EFAULT`, `EINVAL`, `ENOPROTOOPT` |
 | 32 | `dup` | oldfd | Lowest free descriptor, clear FD_CLOEXEC | EBADF, EMFILE |
 | 33 | `dup2` | oldfd, newfd | Replace exact descriptor and clear CLOEXEC; same number validates then no-op | EBADF |
 | 35 | `nanosleep` | req, rem | Block for timespec at 10 ms granularity; kill writes remaining duration and returns EINTR | EINVAL negative/invalid tv_nsec; EFAULT; EINTR |
@@ -63,3 +71,5 @@ waitid, pidfd_open, clone3 and full fork return ENOSYS, allowing Go's vfork-styl
 execve permits at most 1023 argv and 1023 envp strings, together at most 128 KiB. The completed pointer/auxv stack must also fit 128 KiB. Exceeding either bound gives E2BIG before replacing the old image.
 
 _Checked against code: 2026-10-13, commit 6f96d29 and stage-2.5 work._
+
+See [networking](../architecture/core/network.md#sockets) for IPv4/TCP and `epoll` modes. UDP, IPv6 and listening sockets are absent.

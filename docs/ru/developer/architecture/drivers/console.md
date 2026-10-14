@@ -30,7 +30,7 @@ description: Консоль OSel — вывод текста в framebuffer, м�
 
 Потоковый разбор ANSI сохраняется между записями: `CSI A/B/C/D` двигают курсор, `H/f` задают строку и столбец, `G` — столбец, `J/K` стирают экран или строку. Координаты ограничиваются размерами экрана. `SGR` понимает основные и яркие цвета текста и фона, `0` сбрасывает цвета; мигание и другие атрибуты принимаются без отрисовки. `?25h/l` сохраняют запрос видимости курсора, но сам текстовый курсор пока не рисуется. Параметры ограничены восемью числами по 16 бит, переполнение насыщается, лишние параметры делают последовательность недействительной. Для очистки `clear` пишет `ESC[H ESC[2J`; ядро не запускает внешних программ из консоли.
 
-В ядре (`src/avganec.rs`):
+В ядре (`src/drivers/avganec.rs`):
 
 - `init` забирает framebuffer у загрузчика. Если он не подходит, причина печатается в последовательный порт, а печать на экран дальше ничего не делает;
 - `print!` и `println!` пишут в `WRITER`; до `init` и без framebuffer это пустая операция;
@@ -42,7 +42,7 @@ description: Консоль OSel — вывод текста в framebuffer, м�
 
 - `osel-core/src/console.rs` — `Console`, `Color`, `ConsoleError`, `encode`, `decode`, `cell_shows`, `cell_shows_in`.
 - `osel-core/src/font.rs` — выбор размера и поиск глифа; таблицы растров — `osel-core/fonts/console.rs`.
-- `src/avganec.rs` — `WRITER`, `init`, `print!`, `println!`, `try_print`, `with_console`, `read_pixel`, `panic_screen`.
+- `src/drivers/avganec.rs` — `WRITER`, `init`, `print!`, `println!`, `try_print`, `with_console`, `read_pixel`, `panic_screen`.
 
 ## Встроенный шрифт и лицензия {#font}
 
@@ -81,7 +81,7 @@ OSel Console — сокращённый набор из Terminus Font 4.49.1, п
 
 - `osel-core/src/console.rs` — геометрия, перенос, прокрутка, табуляция, Backspace, все форматы пикселей, защита от записи за пределы буфера; ANSI через границы записей, очистка, цвета и глиф «Ж».
 - `osel-core/src/font.rs` — выбор размера, границы растров, знак замены и отличие крупного начертания от увеличенного маленького.
-- `src/avganec.rs` — вывод в настоящий framebuffer, границы `read_pixel`, размер экрана и выбор шрифта.
+- `src/drivers/avganec.rs` — вывод в настоящий framebuffer, границы `read_pixel`, размер экрана и выбор шрифта.
 - `tests/basic_boot.rs`, `tests/no_framebuffer.rs`, `tests/panic_screen.rs`.
 
 ## Связанные решения {#decisions}

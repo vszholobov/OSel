@@ -75,8 +75,8 @@ fn syscalls_page_lists_every_call() {
 fn locking_page_lists_every_lock() {
     let mut locks = Vec::new();
     for dir in ["src", "osel-core/src"] {
-        for module in docs_check::modules(dir, &[]) {
-            let source = read(&format!("{dir}/{module}.rs"));
+        for path in rust_files(dir) {
+            let source = read(&path);
             let code = without_tests(&source);
             for prefix in ["IrqSpinlock::new(\"", "Spinlock::new(\""] {
                 for lock in string_arguments(code, prefix) {
