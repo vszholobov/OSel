@@ -1,5 +1,5 @@
 ---
-description: Decision 0018: a visible driver directory, smoltcp and outgoing TCP sockets for Go.
+description: "Decision 0018: a visible driver directory, smoltcp and outgoing TCP sockets for Go."
 ---
 
 # 0018: Ethernet and outgoing TCP sockets
