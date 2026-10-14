@@ -38,7 +38,7 @@ The runner always includes `/usr/share/licenses/ath10k/LICENSE` and `/usr/share/
 
 Atomic BUSY permits one probe. Its guard releases the flag on all ordinary returns. `WIFI_REPORT` protects only a copyable 32-record report; no sleeping, MMIO or printing occurs under it. The caller owns the probe; waits require enabled IRQs and must not run in an IRQ handler. `NETWORK` and `WIFI_REPORT` are not nested.
 
-Each attempt clears the report first. The last completed stage and errno remain after the command returns. `wifi regs` reads saved state rather than registers with side effects. Stages are sent to COM1 before the whole probe finishes.
+Each attempt clears the report first. The last completed stage and errno remain after the command returns. `wifi regs` reads saved state rather than registers with side effects. Stages are shown on the display and sent to COM1 before the whole probe finishes.
 
 ## Pitfalls {#pitfalls}
 

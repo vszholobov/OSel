@@ -63,7 +63,7 @@ impl Report {
         self.stage = stage;
         self.records[self.len.min(LOG_CAPACITY - 1)] = Record { stage, value };
         self.len = (self.len + 1).min(LOG_CAPACITY);
-        crate::serial_println!("WIFI {}: {:08x}", stage, value);
+        crate::println!("WIFI {}: {:08x}", stage, value);
         *REPORT.lock() = *self;
     }
 }
