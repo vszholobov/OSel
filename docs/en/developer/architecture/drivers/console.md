@@ -24,7 +24,7 @@ Kernel init consumes framebuffer and reports failure to serial; screen printing 
 
 ## Code {#code}
 
-`osel-core/src/console.rs`: Console, Color, ConsoleError, encode/decode, cell_shows/cell_shows_in. `osel-core/src/font.rs`: raster selection; `osel-core/fonts/console.rs`: tables. `src/avganec.rs`: WRITER, init, macros, try_print, with_console/read_pixel, panic_screen.
+`osel-core/src/console.rs`: Console, Color, ConsoleError, encode/decode, cell_shows/cell_shows_in. `osel-core/src/font.rs`: raster selection; `osel-core/fonts/console.rs`: tables. `src/drivers/avganec.rs`: WRITER, init, macros, try_print, with_console/read_pixel, panic_screen.
 
 ## Embedded font and license {#font}
 
@@ -53,7 +53,7 @@ Validate tiny/unknown framebuffers to avoid recursive rendering panic. Only Ж i
 
 ## Tests {#tests}
 
-Host console tests cover geometry, wrapping, scrolling, tab/Backspace, formats, bounds, split ANSI, clearing/colors and Ж. Font tests cover selection, boundaries, replacement and native large raster versus scaling. `src/avganec.rs` checks real framebuffer/pixel bounds/font selection; integration includes `tests/basic_boot.rs`, `tests/no_framebuffer.rs`, `tests/panic_screen.rs`.
+Host console tests cover geometry, wrapping, scrolling, tab/Backspace, formats, bounds, split ANSI, clearing/colors and Ж. Font tests cover selection, boundaries, replacement and native large raster versus scaling. `src/drivers/avganec.rs` checks real framebuffer/pixel bounds/font selection; integration includes `tests/basic_boot.rs`, `tests/no_framebuffer.rs`, `tests/panic_screen.rs`.
 
 ## Decisions {#decisions}
 

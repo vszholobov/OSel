@@ -106,3 +106,7 @@ Kernel tests cover blocking/nonblocking pipe wakes and final-copy endpoint lifet
 [0007](../../decisions/0007-storage-interfaces.md), [0014](../../decisions/0014-file-descriptors.md), [0005](../../decisions/0005-linux-abi-for-go.md).
 
 _Checked against code: 2026-10-13, commit 6f96d29 and stage-2.5 work._
+
+Sockets implement the same `FileLike`; see [networking](network.md#sockets) for readiness, weak epoll registrations, `EPOLLET` and `EPOLLONESHOT`.
+
+Socket `fstat` reports `S_IFSOCK`; `src/net.rs` implements its description without a ramdisk inode.

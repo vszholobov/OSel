@@ -6,6 +6,14 @@
 use crate::errno::KResult;
 use crate::trap::{GENERAL_PROTECTION, TrapFrame};
 
+pub const SOCKET: u64 = 41;
+pub const CONNECT: u64 = 42;
+pub const SHUTDOWN: u64 = 48;
+pub const GETSOCKNAME: u64 = 51;
+pub const GETPEERNAME: u64 = 52;
+pub const SETSOCKOPT: u64 = 54;
+pub const GETSOCKOPT: u64 = 55;
+pub const WRITEV: u64 = 20;
 pub const READ: u64 = 0;
 pub const WRITE: u64 = 1;
 pub const CLOSE: u64 = 3;
@@ -50,6 +58,15 @@ pub const GETPPID: u64 = 110;
 
 /// Every system call OSel implements: Linux x86_64 number and name
 pub const SYSCALLS: &[(u64, &str)] = &[
+    (SOCKET, "socket"),
+    (CONNECT, "connect"),
+    (SHUTDOWN, "shutdown"),
+    (GETSOCKNAME, "getsockname"),
+    (GETPEERNAME, "getpeername"),
+    (SETSOCKOPT, "setsockopt"),
+    (GETSOCKOPT, "getsockopt"),
+    (WRITEV, "writev"),
+
     (IOCTL, "ioctl"),
     (DUP, "dup"),
     (DUP2, "dup2"),

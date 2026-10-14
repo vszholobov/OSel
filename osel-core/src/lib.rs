@@ -6,6 +6,8 @@
 #![cfg_attr(not(test), no_std)]
 
 extern crate alloc;
+pub mod net;
+pub mod rtl8168;
 
 pub mod address_space;
 pub mod block;

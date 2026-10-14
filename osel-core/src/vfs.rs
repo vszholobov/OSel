@@ -29,6 +29,8 @@ pub enum FileType {
     CharDevice,
     /// An anonymous byte-stream pipe
     Fifo,
+    /// A network socket exposed through a file descriptor
+    Socket,
 }
 
 impl FileType {
@@ -39,6 +41,7 @@ impl FileType {
             FileType::Directory => 0o040000,
             FileType::CharDevice => 0o020000,
             FileType::Fifo => 0o010000,
+            FileType::Socket => 0o140000,
         }
     }
 }
@@ -413,5 +416,7 @@ mod tests {
         assert_eq!(stat.mode(), 0o40755);
         let stat = Stat { file_type: FileType::Regular, permissions: 0o644, ..stat };
         assert_eq!(stat.mode(), 0o100644);
+        let socket = Stat { file_type: FileType::Socket, permissions: 0o600, ..stat };
+        assert_eq!(socket.mode(), 0o140600);
     }
 }

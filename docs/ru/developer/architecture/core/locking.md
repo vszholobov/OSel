@@ -36,12 +36,12 @@ description: Блокировки OSel — IrqSpinlock, отчёт о взаим
 
 | Блокировка | Где | Что защищает | Кто берёт |
 |---|---|---|---|
-| `WRITER` | `src/avganec.rs` | консоль на framebuffer | `print!`, `with_console`, `read_pixel`; обработчик точки останова через `try_lock`; экран паники снимает силой |
-| `SERIAL1` | `src/cereal.rs` | порт COM1 | `serial_print!` через `port()`; экран паники и `test_panic_handler` снимают силой |
+| `WRITER` | `src/drivers/avganec.rs` | консоль на framebuffer | `print!`, `with_console`, `read_pixel`; обработчик точки останова через `try_lock`; экран паники снимает силой |
+| `SERIAL1` | `src/drivers/cereal.rs` | порт COM1 | `serial_print!` через `port()`; экран паники и `test_panic_handler` снимают силой |
 | `PICS` | `src/interrupts.rs` | два контроллера PIC | `init_pics`, `with_pics`; обработчики таймера, клавиатуры и ложных IRQ |
-| `DECODER` | `src/keyboard.rs` | состояние декодера скан-кодов | обработчик клавиатуры |
-| `BUFFER` | `src/keyboard.rs` | буфер введённых символов | обработчик клавиатуры, `pop_char`, `dropped_chars` |
-| `KEYBOARD_DIAGNOSTICS` | `src/keyboard.rs` | отчёт настройки PS/2 и счётчики IRQ/байтов/символов | инициализация, IRQ 1, резервный опрос, снимок для оболочки |
+| `DECODER` | `src/drivers/keyboard.rs` | состояние декодера скан-кодов | обработчик клавиатуры |
+| `BUFFER` | `src/drivers/keyboard.rs` | буфер введённых символов | обработчик клавиатуры, `pop_char`, `dropped_chars` |
+| `KEYBOARD_DIAGNOSTICS` | `src/drivers/keyboard.rs` | отчёт настройки PS/2 и счётчики IRQ/байтов/символов | инициализация, IRQ 1, резервный опрос, снимок для оболочки |
 | `ALLOCATOR` | `src/allocator.rs` | куча | глобальный аллокатор, `with_allocator` |
 | `MEMORY` | `src/memory.rs` | таблица страниц и аллокатор страниц | `with_memory`; page fault программы на нетронутой странице (`UserSpace::fault`), когда ядро не держит ни одной блокировки |
 | `TTY_TEXT` | `src/tty.rs` | недособранный символ UTF-8 вывода терминала между вызовами `write` | `Tty::write`; печать — после того, как блокировка отпущена |
@@ -65,14 +65,17 @@ description: Блокировки OSel — IrqSpinlock, отчёт о взаим
 | `POLL_WAITERS` | `src/poll.rs` | потоки, ждущие в `epoll_pwait` | `poll::epoll_pwait`, `notify` |
 | `PIPE` | `src/pipe.rs` | ограниченный буфер и открытые концы одного канала | чтение, запись, закрытие конца; перед сном отпускается |
 | `PIPE_WAITERS` | `src/pipe.rs` | потоки, ожидающие данные или место в канале | чтение, запись, закрытие конца, удаление потока; пробуждение берёт `SCHEDULER` |
-| `EVENTFD`, `EPOLL` | `osel-core/src/poll.rs` | счётчик eventfd и список наблюдения epoll (`Spinlock`) | `EventFd`, `Epoll` |
+| `EVENTFD`, `EPOLL_REGISTRATIONS` | `osel-core/src/poll.rs` | счётчик eventfd и список наблюдения epoll (`Spinlock`) | `EventFd`, `Epoll` |
+| `NETWORK` | `src/net.rs` | карта, DHCP/TCP и таблица сокетов | сетевой поток, операции сокетов; перед сном отпускается |
+| `PCI_CONFIG` | `src/drivers/pci.rs` | PCI address/data port pair | scan, command writes |
+| `PIT2` | `src/drivers/rtl8168.rs` | PIT channel 2, gate/speaker; аппаратные задержки Realtek | инициализация и остановка Realtek; IRQ выключены, вложенных блокировок нет |
 | `ROOT_FS` | `src/fs.rs` | корневая файловая система | `fs::init`, `fs::root`; держится только на время копирования `Arc` |
 
 Порядок вложения, который уже есть в коде: `DECODER`, затем `BUFFER` или `KEYBOARD_DIAGNOSTICS` (при декодировании клавиатуры); `SCHEDULER`, затем `ALLOCATOR` (таблица потоков растёт и сжимается под блокировкой планировщика). `MM`, затем `MEMORY` (отображение страницы под `MM` берёт `MEMORY`); так же их берёт обработчик page fault. Другие блокировки друг в друга не вкладываются.
 
 ## Где в коде {#code}
 
-Диагностика клавиатуры хранится под `KEYBOARD_DIAGNOSTICS` (`src/keyboard.rs`): отчёт инициализации и счётчики IRQ/байтов/символов. При приёме байта блокировка отпускается до декодирования и пробуждения читателей; при подсчёте символа возможен порядок `DECODER` → `KEYBOARD_DIAGNOSTICS`, обратного порядка нет. Снимок для печати берётся до блокировки консоли.
+Диагностика клавиатуры хранится под `KEYBOARD_DIAGNOSTICS` (`src/drivers/keyboard.rs`): отчёт инициализации и счётчики IRQ/байтов/символов. При приёме байта блокировка отпускается до декодирования и пробуждения читателей; при подсчёте символа возможен порядок `DECODER` → `KEYBOARD_DIAGNOSTICS`, обратного порядка нет. Снимок для печати берётся до блокировки консоли.
 
 - `osel-core/src/sync.rs` — `Spinlock`, `SpinlockGuard`, `DEFAULT_MAX_SPINS`.
 - `src/sync.rs` — `IrqSpinlock`, `IrqSpinlockGuard`.
@@ -95,7 +98,7 @@ description: Блокировки OSel — IrqSpinlock, отчёт о взаим
 
 - `osel-core/src/sync.rs` — отчёт с обоими местами, `try_lock`, `force_unlock`, инвариант при 8 конкурирующих потоках.
 - `src/sync.rs` — флаг прерываний при захвате, вложении и неудачном `try_lock`; таймер продолжает тикать.
-- `src/memory.rs`, `src/allocator.rs`, `src/avganec.rs` — внутри блокировок прерывания выключены.
+- `src/memory.rs`, `src/allocator.rs`, `src/drivers/avganec.rs` — внутри блокировок прерывания выключены.
 - `tests/deadlock.rs`, `tests/memory_reentrancy.rs` — отчёт о взаимоблокировке на `ALLOCATOR` и `MEMORY`.
 - `tests/panic_while_printing.rs` — экран паники при взятых `WRITER` и `SERIAL1`.
 
@@ -103,4 +106,6 @@ description: Блокировки OSel — IrqSpinlock, отчёт о взаим
 
 - [0003 — IrqSpinlock](../../decisions/0003-irq-spinlock.md)
 
-_Сверено с кодом: 2026-10-13, ветка fix-ps2-keyboard._
+_Сверено с кодом: 2026-10-14, ветка stage-4-network-tetris._
+
+`NETWORK` может вложенно брать `ALLOCATOR` для сетевых буферов. `EPOLL_REGISTRATIONS` — список слабых ссылок на описания файлов; при сканировании берёт `NETWORK` или `PIPE`. Через ожидание блокировки не переносятся.

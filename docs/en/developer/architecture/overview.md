@@ -27,9 +27,16 @@ Existing kernel module names include wordplay; keep their names when changing co
 
 | Module | Location | Responsibility | Owner |
 |---|---|---|---|
-| `avganec` | `src/avganec.rs` | Framebuffer console, print macros and panic screen | [Details](drivers/console.md) |
-| `cereal` | `src/cereal.rs` | COM1 serial and emergency output | [Details](drivers/serial.md) |
-| `keyboard` | `src/keyboard.rs` | PS/2 initialization, scan-code decoding, input buffers and diagnostics | [Details](drivers/keyboard.md) |
+| `drivers` | `src/drivers/mod.rs` | hardware drivers; existing names are re-exported from the root | [Ethernet](drivers/ethernet.md) |
+| `pci` | `src/drivers/pci.rs` | PCI configuration, BAR, bus mastering | [Ethernet](drivers/ethernet.md) |
+| `e1000e` | `src/drivers/e1000e.rs` | Intel 82574L, RX/TX DMA | [Ethernet](drivers/ethernet.md) |
+| `dma` | `src/drivers/dma.rs` | shared DMA pages | [Ethernet](drivers/ethernet.md) |
+| `ethernet` | `src/drivers/ethernet.rs` | Intel/Realtek dispatch for smoltcp | [Ethernet](drivers/ethernet.md) |
+| `rtl8168` | `src/drivers/rtl8168.rs` | Realtek G/GU/H/M and C+, DMA and PHY | [Ethernet](drivers/ethernet.md) |
+| `net` | `src/net.rs` | DHCP, TCP, Linux sockets, service thread | [Networking](core/network.md) |
+| `avganec` | `src/drivers/avganec.rs` | Framebuffer console, print macros and panic screen | [Details](drivers/console.md) |
+| `cereal` | `src/drivers/cereal.rs` | COM1 serial and emergency output | [Details](drivers/serial.md) |
+| `keyboard` | `src/drivers/keyboard.rs` | PS/2 initialization, scan-code decoding, input buffers and diagnostics | [Details](drivers/keyboard.md) |
 | `interrupts` | `src/interrupts.rs` | IDT, exceptions, PIC, timer and spurious IRQs | [Details](core/interrupts.md) |
 | `gdt` | `src/gdt.rs` | GDT, user selectors, TSS and IST stacks | [Details](core/interrupts.md) |
 | `fpu` | `src/fpu.rs` | x87/SSE initialization, saved state and clean defaults | [Details](core/user-mode.md#fpu) |
@@ -50,6 +57,8 @@ Existing kernel module names include wordplay; keep their names when changing co
 | `sync` | `src/sync.rs` | Named spinlocks, interrupt masking and deadlock reports | [Details](core/locking.md) |
 | `qemuno` | `src/qemuno.rs` | QEMU exit through isa-debug-exit | [Details](testing.md) |
 | `testosterone` | `src/testosterone.rs` | Kernel test framework, expected panic and leak checks | [Details](testing.md) |
+| `net` | `osel-core/src/net.rs` | Linux IPv4, PCI address / BAR parsing | [Ethernet](drivers/ethernet.md) |
+| `rtl8168` | `osel-core/src/rtl8168.rs` | Realtek XID, descriptors and bounded PHY initialization | [Ethernet](drivers/ethernet.md) |
 | `console` | `osel-core/src/console.rs` | Text rendering into byte buffers | [Details](drivers/console.md) |
 | `shell` | `osel-core/src/shell.rs` | Bounded line editor, command parsing, program launch and terminal restoration | [Details](shell.md) |
 | `font` | `osel-core/src/font.rs` | Built-in 8×16/16×32 rasters and glyph selection | [Details](drivers/console.md#font) |
@@ -109,3 +118,5 @@ See [memory](core/memory.md) for ownership and pitfalls.
 See [our decisions](../decisions/index.md) for bootloader, host tests, higher-half memory, storage, frames, shared address spaces, ELF, user entry, calls, FPU, descriptors and threads.
 
 _Checked against code: 2026-10-13, branch release-images._
+
+After terminal setup, `net::init` discovers PCI and starts the network thread before enabling interrupts. See [networking](core/network.md).

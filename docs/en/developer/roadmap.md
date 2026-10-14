@@ -10,7 +10,7 @@ description: OSel development stages from a kernel to Go Tetris, real hardware a
 
 Active-stage design lives in `design/`. Closing a stage moves its details into architecture and decisions, following the [single-home rule](guides/writing-docs.md#single-home).
 
-## Stage 1. Kernel — implemented, hardware check pending {#stage-1}
+## Stage 1. Kernel — verified on the owner’s computer {#stage-1}
 
 - [x] `bootloader` 0.11, UEFI and BIOS, framebuffer text ([0001](decisions/0001-bootloader-0.11-and-uefi.md)).
 - [x] Interrupts, 100 Hz timer, PS/2 keyboard and idle `hlt` ([interrupts](architecture/core/interrupts.md), [keyboard](architecture/drivers/keyboard.md)).
@@ -19,7 +19,7 @@ Active-stage design lives in `design/`. Closing a stage moves its details into a
 - [x] Interrupt-masking locks with deadlock reports ([locking](architecture/core/locking.md)).
 - [x] Host/QEMU/CI tests and heap-leak checks ([testing](architecture/testing.md)).
 - [ ] USB-writing script; currently [manual](../user/usb.md).
-- [ ] Boot [Samsung NP530U4B](../user/hardware/samsung-np530u4b.md) from USB and print pressed keys.
+- [x] Real-computer boot and Tetris confirmed by the owner on 2026-10-14. Model and firmware mode are not recorded; Samsung-specific validation remains unconfirmed.
 
 ## Stage 2. Programs — done {#stage-2}
 
@@ -48,7 +48,7 @@ Go `os/exec` launches programs; see [processes](architecture/core/threads.md#pro
 - [x] `/bin/clear` and `PATH=/bin`: Tetris uses `exec.Command("clear")`, `cmd.Stdout = os.Stdout`, `cmd.Run()` and resumes afterward.
 - [x] Successful, failed and repeated launches tested in UEFI and BIOS.
 
-## Stage 3. Tetris — works in QEMU, laptop pending {#stage-3}
+## Stage 3. Tetris — verified on a real computer {#stage-3}
 
 See [Tetris](architecture/tetris.md). The external clearing command is preserved. The game's [PR 16](https://github.com/vszholobov/Tetris/pull/16) adds single-player mode.
 
@@ -57,19 +57,23 @@ See [Tetris](architecture/tetris.md). The external clearing command is preserved
 - [x] `help`, `ls`, `cat`, executable launch, external `clear` and repeated play.
 - [x] CI keyboard input/output scenario through serial.
 - [x] ANSI framebuffer sequences and the `Ж` glyph; the game field uses ASCII.
-- [x] PS/2 input through `/dev/tty`; real laptop keyboard remains unverified.
+- [x] PS/2 input through `/dev/tty`; the owner confirmed real-computer game controls on 2026-10-14.
 
-Hardware milestone: play Tetris on Samsung from USB.
+Hardware milestone: Tetris works on the owner’s computer; model and BIOS/UEFI mode are not recorded.
 
 ## Stage 4 (optional). Network and modern hardware {#stage-4}
 
-See [network design](design/tetris.md).
+Network Tetris is implemented and tested in QEMU with the repository's local server. See [networking](architecture/core/network.md), [Ethernet](architecture/drivers/ethernet.md) and [user instructions](../user/network.md).
 
-- [ ] PCI enumeration and network adapter discovery.
-- [ ] Intel `e1000e` in QEMU, then the laptop adapter.
-- [ ] smoltcp stack, DHCP and TCP.
-- [ ] Sockets and full `epoll`.
-- [ ] Server address in ramdisk `/etc/hosts`; play against the real server.
-- [ ] UEFI boot on [Acer Nitro](../user/hardware/acer-nitro.md).
+- [x] PCI and adapter discovery; hardware drivers in `src/drivers/`.
+- [x] Intel 82574L (`e1000e`) in QEMU with RX/TX DMA rings.
+- [x] Realtek RTL8168 G/GU/H/M driver for Acer PCI ID `10ec:8168`, XID diagnostics; shared DMA, DHCP and gameplay tested through QEMU C+. Laptop PHY remains untested.
+- [x] smoltcp: DHCP, IPv4 and TCP.
+- [x] Outgoing Linux sockets and Go's required `epoll` modes.
+- [x] Ramdisk `/etc/hosts` and configurable client server address.
+- [x] Actual local Tetris server: two players, movement, fields, ping/pong, exit and repeated launch without leaks, UEFI and BIOS.
+- [ ] Physical Acer networking: PCI ID is known; XID, PHY startup and wired DHCP/gameplay still need checking. Samsung is outside the task.
+- [ ] Connect to the public server after the owner starts it.
+- [ ] Boot [Acer Nitro](../user/hardware/acer-nitro.md) through UEFI.
 
 Deferred work is listed in [technical debt](debt.md).

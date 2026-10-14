@@ -10,7 +10,7 @@ description: COM1 output, presence detection, terminal byte transport and emerge
 
 ## Behavior {#how}
 
-port() in `src/cereal.rs` locks SERIAL1 and probes 0x3F8 with Uart16550Tty::new_port on first access. Failed probing leaves None. Macros call _print and ignore write errors. `src/main.rs` duplicates the version/commit banner to serial; release-image checks verify it before commands.
+port() in `src/drivers/cereal.rs` locks SERIAL1 and probes 0x3F8 with Uart16550Tty::new_port on first access. Failed probing leaves None. Macros call _print and ignore write errors. `src/main.rs` duplicates the version/commit banner to serial; release-image checks verify it before commands.
 
 write_terminal sends raw bytes as FIFO becomes ready, without diagnostic UTF-8/CRLF rewriting. Release SERIAL1 before readiness waits; ordinary output is preemptible with interrupts enabled. Writes remain synchronous and repeatedly make nonblocking readiness checks.
 
@@ -20,7 +20,7 @@ emergency_print writes registers directly without locks/probing; bounded readine
 
 ## Code {#code}
 
-`src/cereal.rs`: SERIAL1, port, _print, emergency_print and serial macros.
+`src/drivers/cereal.rs`: SERIAL1, port, _print, emergency_print and serial macros.
 
 ## Invariants {#invariants}
 
@@ -36,6 +36,6 @@ Do not initialize through lazy_static: panic during probing formerly left initia
 
 ## Tests {#tests}
 
-`src/cereal.rs` checks QEMU presence and macro use in expressions. `tests/panic_while_printing.rs` checks a held SERIAL1; `tests/nested_panic.rs` checks emergency output.
+`src/drivers/cereal.rs` checks QEMU presence and macro use in expressions. `tests/panic_while_printing.rs` checks a held SERIAL1; `tests/nested_panic.rs` checks emergency output.
 
 _Checked against code: 2026-10-13, branch release-images._

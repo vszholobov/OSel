@@ -48,7 +48,7 @@ For IRQ7/15, read the PIC ISR and use pit::is_spurious. Missing ISR bit means sp
 
 ## Code {#code}
 
-`src/gdt.rs`: init, selectors, ist_stacks, kernel_stack_slot, reload_data_segments. `src/interrupts.rs`: IDT, init_idt/init_pics, with_pics, entry stubs, fatal_exception, ticks. `osel-core/src/exception.rs`: ExceptionReport, SelectorError, PageFaultCause, FixedBuf. `osel-core/src/pit.rs`: divisor, masks and spurious checks. `src/avganec.rs`: panic_screen.
+`src/gdt.rs`: init, selectors, ist_stacks, kernel_stack_slot, reload_data_segments. `src/interrupts.rs`: IDT, init_idt/init_pics, with_pics, entry stubs, fatal_exception, ticks. `osel-core/src/exception.rs`: ExceptionReport, SelectorError, PageFaultCause, FixedBuf. `osel-core/src/pit.rs`: divisor, masks and spurious checks. `src/drivers/avganec.rs`: panic_screen.
 
 ## Invariants {#invariants}
 

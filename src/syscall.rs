@@ -25,6 +25,9 @@ use osel_core::syscall::{
     PIPE2, PRCTL, PRLIMIT64, READ, RT_SIGACTION, RT_SIGPROCMASK, Return, SCHED_GETAFFINITY,
     SCHED_YIELD, SIGALTSTACK, SYSCALL_VECTOR, TGKILL, WAIT4, WRITE, fd_arg,
 };
+use osel_core::syscall::{
+    CONNECT, GETPEERNAME, GETSOCKNAME, GETSOCKOPT, SETSOCKOPT, SHUTDOWN, SOCKET, WRITEV,
+};
 use osel_core::trap::TrapFrame;
 use osel_core::user_mem::Access as MemAccess;
 use osel_core::vfs::{FileType, Inode, PATH_MAX, resolve};
@@ -150,6 +153,14 @@ unsafe extern "C" fn syscall_entry() {
 extern "C" fn dispatch(frame: &mut TrapFrame) -> u64 {
     let [a0, a1, a2, a3, a4, a5] = syscall::args(frame);
     let result = match syscall::number(frame) {
+        Some(SOCKET) => socket(a0 as u32, a1 as u32, a2 as u32),
+        Some(CONNECT) => connect(fd_arg(a0), a1, a2 as u32 as u64),
+        Some(GETSOCKNAME) => socket_name(fd_arg(a0), a1, a2, false),
+        Some(GETPEERNAME) => socket_name(fd_arg(a0), a1, a2, true),
+        Some(SETSOCKOPT) => setsockopt(fd_arg(a0), a1 as u32, a2 as u32, a3, a4),
+        Some(GETSOCKOPT) => getsockopt(fd_arg(a0), a1 as u32, a2 as u32, a3, a4),
+        Some(SHUTDOWN) => shutdown(fd_arg(a0), a1 as u32),
+        Some(WRITEV) => writev(fd_arg(a0), a1, a2),
         Some(READ) => read(fd_arg(a0), a1, a2),
         Some(WRITE) => write(fd_arg(a0), a1, a2),
         Some(OPENAT) => openat(fd_arg(a0), a1, a2 as u32),
@@ -596,7 +607,7 @@ fn epoll_ctl(epfd: i32, op: u64, fd: i32, event: u64) -> KResult<u64> {
     }
     let epoll = files().get(epfd)?;
     let epoll = epoll.file().as_epoll().ok_or(Errno::EINVAL)?;
-    epoll.ctl(op, fd, events, data).map(|()| 0)
+    epoll.register(op, fd, events, data, &target).map(|()| 0)
 }
 
 /// `epoll_pwait(epfd, events, maxevents, timeout)`
@@ -608,21 +619,11 @@ fn epoll_pwait(epfd: i32, events: u64, maxevents: usize, timeout_ms: i64) -> KRe
     // a fresh reference to the epoll file, so no descriptor lock is held while blocking
     let epoll = epoll_description.file().clone();
     let epoll = epoll.as_epoll().ok_or(Errno::EINVAL)?;
-    let scan = |max: usize| {
-        let mut ready = alloc::vec::Vec::new();
-        for entry in epoll.watched() {
-            if ready.len() >= max {
-                break;
-            }
-            if let Ok(target) = files().get(entry.fd) {
-                let revents = crate::poll::revents(target.file().poll(), entry.events);
-                if revents != 0 {
-                    ready.push((entry.data, revents));
-                }
-            }
-        }
-        ready
-    };
+    if maxevents > 4096 {
+        return Err(Errno::EINVAL);
+    }
+    space().check_user(events, maxevents * crate::poll::EPOLL_EVENT_SIZE, MemAccess::Write)?;
+    let scan = |max: usize| epoll.scan(max);
     let write_events = |ready: &[(u64, u32)]| {
         let mut bytes = alloc::vec![0u8; ready.len() * crate::poll::EPOLL_EVENT_SIZE];
         for (slot, &(data, revents)) in bytes.chunks_mut(crate::poll::EPOLL_EVENT_SIZE).zip(ready) {
@@ -676,6 +677,117 @@ fn mmap(addr: u64, len: u64, prot: u64, flags: u64, fd: i32, offset: u64) -> KRe
     space().mmap(addr, len, prot_arg(prot), flags)
 }
 
+fn socket(domain: u32, kind: u32, protocol: u32) -> KResult<u64> {
+    if domain != 2 {
+        return Err(Errno::EAFNOSUPPORT);
+    }
+    if kind & !(O_NONBLOCK | O_CLOEXEC | 15) != 0 {
+        return Err(Errno::EINVAL);
+    }
+    if kind & 15 != 1 || (protocol != 0 && protocol != 6) {
+        return Err(Errno::EPROTONOSUPPORT);
+    }
+    let file = crate::net::socket()?;
+    let description = Arc::new(OpenDescription::new(
+        file,
+        Access {
+            read: true,
+            write: true,
+        },
+        kind,
+    ));
+    Ok(files().insert(description, kind & O_CLOEXEC != 0)? as u64)
+}
+fn socket_description(fd: i32) -> KResult<(Arc<OpenDescription>, usize)> {
+    let d = files().get(fd)?;
+    let id = d.file().socket_id().ok_or(Errno::ENOTSOCK)?;
+    Ok((d, id))
+}
+fn connect(fd: i32, address: u64, len: u64) -> KResult<u64> {
+    let (d, id) = socket_description(fd)?;
+    if len < 16 {
+        return Err(Errno::EINVAL);
+    }
+    let mut bytes = [0; 16];
+    space().copy_from_user(address, &mut bytes)?;
+    crate::net::connect(
+        id,
+        osel_core::net::Endpoint::decode(&bytes)?,
+        d.flags() & O_NONBLOCK != 0,
+    )
+    .map(|()| 0)
+}
+fn socket_name(fd: i32, address: u64, length: u64, peer: bool) -> KResult<u64> {
+    let (_, id) = socket_description(fd)?;
+    let mut len = [0; 4];
+    space().copy_from_user(length, &mut len)?;
+    let n = (u32::from_le_bytes(len) as usize).min(16);
+    space().check_user(address, n, MemAccess::Write)?;
+    space().check_user(length, 4, MemAccess::Write)?;
+    let endpoint = crate::net::endpoint(id, peer)?;
+    space().copy_to_user(address, &endpoint.encode()[..n])?;
+    space().copy_to_user(length, &16u32.to_le_bytes())?;
+    Ok(0)
+}
+fn getsockopt(fd: i32, level: u32, option: u32, value: u64, length: u64) -> KResult<u64> {
+    let (_, id) = socket_description(fd)?;
+    let mut len = [0; 4];
+    space().copy_from_user(length, &mut len)?;
+    if u32::from_le_bytes(len) < 4 {
+        return Err(Errno::EINVAL);
+    }
+    space().check_user(value, 4, MemAccess::Write)?;
+    space().check_user(length, 4, MemAccess::Write)?;
+    let result = match (level, option) {
+        (1, 4) => crate::net::socket_error(id)?,
+        (1, 3) => 1, // SO_TYPE
+        _ => return Err(Errno::ENOPROTOOPT),
+    };
+    space().copy_to_user(value, &result.to_le_bytes())?;
+    space().copy_to_user(length, &4u32.to_le_bytes())?;
+    Ok(0)
+}
+fn setsockopt(fd: i32, level: u32, option: u32, value: u64, length: u64) -> KResult<u64> {
+    let (_, id) = socket_description(fd)?;
+    if length != 4 {
+        return Err(Errno::EINVAL);
+    }
+    let mut bytes = [0; 4];
+    space().copy_from_user(value, &mut bytes)?;
+    crate::net::set_option(id, level, option, i32::from_le_bytes(bytes)).map(|()| 0)
+}
+fn shutdown(fd: i32, how: u32) -> KResult<u64> {
+    let (_, id) = socket_description(fd)?;
+    crate::net::shutdown(id, how).map(|()| 0)
+}
+/// Scatter/gather write, bounded like Linux IOV_MAX. Return a partial write on EAGAIN.
+fn writev(fd: i32, address: u64, count: u64) -> KResult<u64> {
+    files().get(fd)?;
+    if count > 1024 {
+        return Err(Errno::EINVAL);
+    }
+    let mut vectors = vec![0; count as usize * 16];
+    space().copy_from_user(address, &mut vectors)?;
+    let mut done = 0;
+    for vector in vectors.chunks_exact(16) {
+        let base = u64::from_le_bytes(vector[..8].try_into().unwrap());
+        let len = u64::from_le_bytes(vector[8..].try_into().unwrap());
+        if len == 0 {
+            continue;
+        }
+        match write(fd, base, len) {
+            Ok(n) => {
+                done += n;
+                if n < len {
+                    break;
+                }
+            }
+            Err(_) if done > 0 => break,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(done)
+}
 /// `read(fd, buf, count)`
 fn read(fd: i32, buf: u64, count: u64) -> KResult<u64> {
     let description = files().get(fd)?;

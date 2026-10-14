@@ -21,15 +21,15 @@ use bootloader_api::{BootInfo, BootloaderConfig};
 use x86_64::VirtAddr;
 
 pub mod allocator;
-pub mod avganec;
-pub mod cereal;
+pub mod drivers;
+pub use drivers::{avganec, cereal, keyboard};
 pub mod fpu;
 pub mod fs;
 pub mod futex;
 pub mod gdt;
 pub mod interrupts;
-pub mod keyboard;
 pub mod memory;
+pub mod net;
 pub mod pipe;
 pub mod poll;
 pub mod program;
@@ -105,6 +105,7 @@ pub fn init(boot_info: &'static BootInfo) {
     poll::init(scheduler::MAX_THREADS);
     pipe::init(scheduler::MAX_THREADS);
     tty::init(scheduler::MAX_THREADS);
+    net::init();
     x86_64::instructions::interrupts::enable();
 }
 

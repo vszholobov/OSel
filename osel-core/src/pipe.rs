@@ -12,6 +12,7 @@ pub struct Pipe {
     bytes: VecDeque<u8>,
     reader: bool,
     writer: bool,
+    epochs: [u64; 2],
 }
 
 impl Default for Pipe {
@@ -26,6 +27,7 @@ impl Pipe {
             bytes: VecDeque::with_capacity(PIPE_CAPACITY),
             reader: true,
             writer: true,
+            epochs: [1, 1],
         }
     }
 
@@ -37,10 +39,12 @@ impl Pipe {
         if self.bytes.is_empty() && self.writer {
             return Err(Errno::EAGAIN);
         }
+        let was_writable = self.write_ready().writable;
         let count = buf.len().min(self.bytes.len());
         for byte in &mut buf[..count] {
             *byte = self.bytes.pop_front().unwrap();
         }
+        if !was_writable && self.write_ready().writable { self.epochs[1] += 1; }
         Ok(count)
     }
 
@@ -57,18 +61,22 @@ impl Pipe {
             return Err(Errno::EAGAIN);
         }
         let count = room.min(buf.len());
+        if self.bytes.is_empty() { self.epochs[0] += 1; }
         self.bytes.extend(&buf[..count]);
         Ok(count)
     }
 
     pub fn close_reader(&mut self) {
-        self.reader = false;
+        self.reader = false; self.epochs[1] += 1;
     }
 
     pub fn close_writer(&mut self) {
-        self.writer = false;
+        self.writer = false; self.epochs[0] += 1;
     }
 
+    pub fn readiness_epochs(&self) -> [u64; 2] { self.epochs }
+    pub fn read_flags(&self) -> u32 { (if self.read_ready().readable { 1 } else { 0 }) | (if !self.writer { 0x10 } else { 0 }) }
+    pub fn write_flags(&self) -> u32 { (if self.write_ready().writable { 4 } else { 0 }) | (if !self.reader { 8 } else { 0 }) }
     pub fn read_ready(&self) -> Ready {
         Ready {
             readable: !self.bytes.is_empty() || !self.writer,
@@ -135,4 +143,15 @@ mod tests {
             assert_eq!(result, data);
         }
     }
+    #[test]
+    fn readiness_edges_survive_drain_and_refill_and_report_peer_close() {
+        let mut pipe = Pipe::new(); let start = pipe.readiness_epochs();
+        pipe.write(b"a").unwrap(); let first = pipe.readiness_epochs();
+        assert!(first[0] > start[0]);
+        pipe.read(&mut [0]).unwrap(); pipe.write(b"b").unwrap();
+        assert!(pipe.readiness_epochs()[0] > first[0]);
+        pipe.close_writer(); assert_eq!(pipe.read_flags() & 0x11, 0x11);
+        pipe.close_reader(); assert_eq!(pipe.write_flags() & 0xc, 0xc);
+    }
+
 }

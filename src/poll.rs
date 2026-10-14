@@ -88,8 +88,13 @@ pub fn epoll_pwait(
             return Err(Errno::EINTR);
         }
         POLL_WAITERS.lock().push(id);
-        if scan(maxevents).is_empty() {
-            time::wait_until(deadline, id);
+        let events = scan(maxevents);
+        if events.is_empty() { time::wait_until(deadline, id); }
+        else {
+            POLL_WAITERS.lock().retain(|&waiter| waiter != id);
+            irq::enable();
+            write_events(&events)?;
+            return Ok(events.len() as u64);
         }
         POLL_WAITERS.lock().retain(|&waiter| waiter != id);
         irq::enable();

@@ -20,18 +20,26 @@ pub fn without_tests(source: &str) -> &str {
     source.split("#[cfg(test)]").next().unwrap_or(source)
 }
 
-/// Names of the `.rs` files directly in `dir`, without extension, sorted
+/// Every Rust source file below `dir`, relative to the repository, sorted.
+pub fn rust_files(dir: &str) -> Vec<String> {
+    fn walk(root: &Path, path: &Path, out: &mut Vec<String>) {
+        for entry in fs::read_dir(path).unwrap_or_else(|e| panic!("cannot list {}: {e}", path.display())) {
+            let path = entry.expect("directory entry").path();
+            if path.is_dir() { walk(root, &path, out); }
+            else if path.extension().is_some_and(|e| e == "rs") { out.push(path.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/")); }
+        }
+    }
+    let root = repo(); let mut paths = Vec::new(); walk(&root, &root.join(dir), &mut paths); paths.sort(); paths
+}
+fn module_name(path: &Path) -> String {
+    let stem = path.file_stem().unwrap().to_str().unwrap();
+    if stem == "mod" { path.parent().unwrap().file_name().unwrap().to_str().unwrap().into() } else { stem.into() }
+}
+/// Module names, including directory modules and their driver implementations.
 pub fn modules(dir: &str, except: &[&str]) -> Vec<String> {
-    let mut names: Vec<String> = fs::read_dir(repo().join(dir))
-        .unwrap_or_else(|e| panic!("cannot list {dir}: {e}"))
-        .filter_map(|entry| {
-            let name = entry.ok()?.file_name().into_string().ok()?;
-            let module = name.strip_suffix(".rs")?.to_string();
-            (!except.contains(&module.as_str())).then_some(module)
-        })
-        .collect();
-    names.sort();
-    names
+    let mut names: Vec<_> = rust_files(dir).iter().map(|p| module_name(Path::new(p)))
+        .filter(|name| !except.contains(&name.as_str())).collect();
+    names.sort(); names.dedup(); names
 }
 
 /// Every `.md` file below `dir` (relative to the repository), recursively, sorted
@@ -296,5 +304,15 @@ mod tests {
             repo_paths(text),
             ["osel-core/src/", "Cargo.toml", "docs/a.md"]
         );
+    }
+}
+
+#[cfg(test)]
+mod source_tree_tests {
+    use super::*;
+    #[test] fn directory_modules_keep_their_names() {
+        assert_eq!(module_name(Path::new("src/drivers/mod.rs")), "drivers");
+        assert_eq!(module_name(Path::new("src/drivers/e1000e.rs")), "e1000e");
+        assert!(rust_files("src").iter().any(|p| p == "src/drivers/pci.rs"));
     }
 }

@@ -70,6 +70,10 @@ jobs:
             python3 tools/check-shell.py --image "dist/OSel.$boot.img" --boot "$boot" \
               --ovmf-code runner/.ovmf/x64/code.fd --ovmf-vars runner/.ovmf/x64/vars.fd \
               --require-tetris --expected-version "$version" --expected-commit "$commit"
+            for nic in e1000e rtl8139; do
+              OSEL_NIC="$nic" python3 tools/check-network.py --image "dist/OSel.$boot.img" --boot "$boot" \
+                --ovmf-code runner/.ovmf/x64/code.fd --ovmf-vars runner/.ovmf/x64/vars.fd
+            done
           done
           (cd dist && sha256sum --check SHA256SUMS)
           git diff --exit-code -- Cargo.lock runner/Cargo.lock user user-go apps/tetris

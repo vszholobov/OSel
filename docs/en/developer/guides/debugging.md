@@ -12,7 +12,7 @@ Arguments after `cargo run --` go directly to QEMU. Test kernels discard additio
 
 ## Serial output {#serial}
 
-`serial_print!` and `serial_println!` in `src/cereal.rs` use COM1. QEMU connects it to stdout; runner filters firmware chatter in noninteractive modes. Panic text is duplicated as `OSel <version> (commit <hash>) crashed: …`. Printing works before framebuffer initialization. Missing COM1 is silently tolerated.
+`serial_print!` and `serial_println!` in `src/drivers/cereal.rs` use COM1. QEMU connects it to stdout; runner filters firmware chatter in noninteractive modes. Panic text is duplicated as `OSel <version> (commit <hash>) crashed: …`. Printing works before framebuffer initialization. Missing COM1 is silently tolerated.
 
 ## Analyze a panic screen {#panic-screen}
 

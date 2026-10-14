@@ -95,6 +95,12 @@ jobs:
       - name: Exercise the interactive shell
         run: python3 tools/check-shell.py
 
+      - name: Exercise network play and offline-server recovery
+        run: python3 tools/check-network.py
+
+      - name: Exercise Realtek DMA network play and offline-server recovery
+        run: OSEL_NIC=rtl8139 python3 tools/check-network.py
+
   latest-nightly:
     name: latest nightly (${{ matrix.boot }})
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'

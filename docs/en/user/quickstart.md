@@ -26,7 +26,7 @@ After `OSel ready to go!`, the `osel>` prompt appears. Type `help` for commands,
 
 ## Tetris {#tetris}
 
-Type `tetris`. Controls: `a` and `d` move left and right, `s` moves down, `q` and `e` rotate. `x`, Escape or Ctrl+C ends the game and returns to the prompt. Run it again with the same command. Network play is not supported yet.
+Type `tetris`. Controls: `a` and `d` move left and right, `s` moves down, `q` and `e` rotate. `x`, Escape or Ctrl+C ends the game and returns to the prompt. Run it again with the same command. See [network play](network.md) for the networking stage.
 
 ## Exit {#exit}
 

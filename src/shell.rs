@@ -119,16 +119,17 @@ pub fn execute(line: &str, out: &mut impl Write) -> u8 {
     };
     let result = match command {
         "help" if args.len() == 1 => {
-            let _ = out.write_str("help             commands and limitations\nls [path]        list a directory (default /)\ncat path         print a file (up to 64 KiB)\nkbd              keyboard initialization and IRQ counters\ntetris           play; x returns to the shell\nclear            run /bin/clear\nhello, gohello   example programs\n/bin/name args   run an executable; bare names use /bin\nPaths are relative to /. No quotes, pipes, redirects or background jobs.\n");
+            let _ = out.write_str("help             commands and limitations\nls [path]        list a directory (default /)\ncat path         print a file (up to 64 KiB)\nkbd              keyboard initialization and IRQ counters\nnet              Ethernet, IP address and packet counters\ntetris --network --server IP:port  network game\ntetris           play; x returns to the shell\nclear            run /bin/clear\nhello, gohello   example programs\n/bin/name args   run an executable; bare names use /bin\nPaths are relative to /. No quotes, pipes, redirects or background jobs.\n");
             Ok(0)
         }
         "ls" if args.len() <= 2 => list(args.get(1).copied().unwrap_or("/"), out),
         "cat" if args.len() == 2 => cat(args[1], out),
+        "net" if args.len() == 1 => { crate::net::status(out); Ok(0) }
         "kbd" if args.len() == 1 => {
             let _ = crate::keyboard::write_diagnostics(out);
             Ok(0)
         }
-        "help" | "ls" | "cat" | "kbd" => Err(Errno::EINVAL),
+        "help" | "ls" | "cat" | "kbd" | "net" => Err(Errno::EINVAL),
         _ => external(&args, out),
     };
     match result {
@@ -187,7 +188,7 @@ fn external(args: &[&str], out: &mut impl Write) -> KResult<u8> {
         return Err(Errno::EACCES);
     }
     let mut argv: Vec<&[u8]> = args.iter().map(|s| s.as_bytes()).collect();
-    if path.rsplit('/').next() == Some("tetris") && !args.contains(&"--single") {
+    if path.rsplit('/').next() == Some("tetris") && !args.contains(&"--single") && !args.contains(&"--network") {
         argv.insert(1, b"--single");
     }
     let settings = tty::get_termios();

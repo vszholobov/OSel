@@ -17,6 +17,7 @@ description: Runner environment variables, boot modes, image paths, exit codes a
 | Variable | Values | Default | Behavior |
 |---|---|---|---|
 | `OSEL_BOOT` | `uefi`, `bios` | `uefi` | Build/select firmware image; empty means unset; other values fail |
+| `OSEL_NIC` | `e1000e`, `rtl8139`, `none` | `e1000e` | QEMU NIC; `realtek_network` tests default to `rtl8139` (C+). `none` omits networking; unknown values are rejected |
 | `OSEL_EXPECT` | Text | Unset | Boot real kernel headlessly and succeed when serial output contains it; empty means unset |
 | `OSEL_TIMEOUT` | Positive integer seconds | 60 | Timeout for Test/Expect |
 | `OSEL_OVMF_DIR` | Directory | `.ovmf` inside runner | UEFI firmware cache |
@@ -88,3 +89,7 @@ Test/Expect strip ANSI and OVMF `BdsDxe:` lines while preserving kernel blank li
 `runner/run.sh` is the Cargo wrapper. `runner/src/main.rs` contains `parse_boot`, `parse_timeout`, `ramdisk_dir`, `pack_ramdisk`, `is_test_binary`, `image_path`, `create_disk_image`, `ovmf_firmware`, `forward_serial_output`, `test_outcome`, `expect_outcome` and `wait_with_timeout`.
 
 _Checked against code: 2026-10-13, branch release-images._
+
+## Network tests {#network}
+
+The runner attaches the `OSEL_NIC` adapter to QEMU user networking. For `tests/network.rs`, `tests/network_game.rs` and their `tests/realtek_network.rs`, `tests/realtek_network_game.rs` counterparts, it builds and starts `tools/network-fixture/`: actual Tetris server handlers on an ephemeral loopback port. Realtek variants default to `rtl8139` (C+); `tests/realtek_dma.rs` adds a secondary C+ to check DMA initialization and cleanup after traffic. The guest address is passed in `/bin/network-test-address`; runner exit terminates and reaps the server. `netcheck` from `user-go/netcheck/` tests two clients and a large stream; the actual client receives scripted COM1 input. Missing Go or server build failures fail these tests.

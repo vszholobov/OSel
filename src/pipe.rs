@@ -123,6 +123,8 @@ impl FileLike for Endpoint {
         }
     }
 
+    fn readiness_epochs(&self) -> [u64; 2] { self.state.lock().readiness_epochs() }
+    fn poll_flags(&self) -> u32 { let state = self.state.lock(); if self.reader { state.read_flags() } else { state.write_flags() } }
     fn epollable(&self) -> bool {
         true
     }

@@ -52,3 +52,5 @@ No separate `/bin/sh`, scripts, cd, history, arrow editing, background jobs or p
 `OSEL_BOOT=uefi python3 tools/check-shell.py` (or bios) boots the real headless kernel and checks pre-input diagnostics, kbd/help/ls/cat, unknown commands, Backspace, rejected pipes/long lines, clear, gohello, two Tetris runs and PS/2 help with IRQ/character counters. Mismatch stops QEMU and fails. `--screenshot /tmp/osel-shell.png` saves the final screen; `--boot-screenshot /tmp/osel-keyboard.png` saves initial diagnostics.
 
 _Checked against code: 2026-10-13, branch fix-ps2-keyboard._
+
+The `net` command shows Ethernet and DHCP status. `tetris --network --server IP:port` enables [network play](../../user/network.md); without `--network`, the shell still inserts `--single`.

@@ -30,7 +30,7 @@ IDT строится в `src/interrupts.rs`. Исключения, которы�
 
 ### Экран паники {#panic-screen}
 
-Обработчик паники ядра (`src/main.rs`) вызывает `avganec::panic_screen` (`src/avganec.rs`):
+Обработчик паники ядра (`src/main.rs`) вызывает `avganec::panic_screen` (`src/drivers/avganec.rs`):
 
 1. выключает прерывания;
 2. через `enter_panic` (`src/lib.rs`) проверяет, не вложенная ли это паника. Если вложенная — печатает одну строку `nested panic: …` через `emergency_print` и возвращает `false`, ничего не рисуя;
@@ -74,7 +74,7 @@ PIC сообщает о ложных прерываниях на IRQ 7 и IRQ 15
 - `src/interrupts.rs` — IDT, `init_idt`, `init_pics`, `with_pics`, заглушки `entry_stub`, обработчики, `fatal_exception`, `ticks`.
 - `osel-core/src/exception.rs` — `ExceptionReport`, `SelectorError`, `PageFaultCause`, `FixedBuf`.
 - `osel-core/src/pit.rs` — `divisor`, `pic_masks`, `is_spurious`.
-- `src/avganec.rs` — `panic_screen`.
+- `src/drivers/avganec.rs` — `panic_screen`.
 
 ## Инварианты {#invariants}
 
