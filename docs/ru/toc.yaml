@@ -1,0 +1,100 @@
+title: OSel
+href: index.md
+navigation:
+  logo:
+    url: 'https://vszholobov.github.io/OSel/ru/'
+    urlTitle: 'На главную'
+    light:
+      icon: 'https://vszholobov.github.io/OSel/images/osel-logo.svg'
+      text: 'Операционная система OSel'
+    dark:
+      icon: 'https://vszholobov.github.io/OSel/images/osel-logo.svg'
+      text: 'Операционная система OSel'
+  header:
+    leftItems:
+      - text: GitHub
+        type: link
+        url: 'https://github.com/vszholobov/OSel'
+      - text: 'English'
+        type: link
+        url: 'https://vszholobov.github.io/OSel/en/'
+    rightItems:
+      - type: search
+      - type: controls
+items:
+  - name: Пользователю
+    href: user/index.md
+    expanded: true
+    items:
+      - href: user/quickstart.md
+      - href: user/usb.md
+      - href: user/crash-report.md
+      - name: Оборудование
+        items:
+          - href: user/hardware/samsung-np530u4b.md
+          - href: user/hardware/acer-nitro.md
+  - name: Разработчику
+    href: developer/index.md
+    items:
+      - name: Сборка и работа над проектом
+        items:
+          - href: developer/guides/quickstart.md
+          - href: developer/guides/testing.md
+          - href: developer/guides/debugging.md
+          - href: developer/guides/troubleshooting.md
+          - href: developer/guides/toolchain-and-ci.md
+          - href: developer/guides/release.md
+          - href: developer/guides/writing-docs.md
+      - name: Устройство системы
+        items:
+          - href: developer/architecture/overview.md
+          - href: developer/architecture/testing.md
+          - href: developer/architecture/shell.md
+          - href: developer/architecture/tetris.md
+          - name: Ядро
+            items:
+              - href: developer/architecture/core/fs.md
+              - href: developer/architecture/core/interrupts.md
+              - href: developer/architecture/core/locking.md
+              - href: developer/architecture/core/memory.md
+              - href: developer/architecture/core/programs.md
+              - href: developer/architecture/core/security.md
+              - href: developer/architecture/core/threads.md
+              - href: developer/architecture/core/user-mode.md
+          - name: Драйверы
+            items:
+              - href: developer/architecture/drivers/console.md
+              - href: developer/architecture/drivers/keyboard.md
+              - href: developer/architecture/drivers/serial.md
+      - name: Справочники
+        items:
+          - href: developer/reference/runner.md
+          - href: developer/reference/vectors.md
+          - href: developer/reference/syscalls.md
+      - name: Наши решения
+        items:
+          - href: developer/decisions/0001-bootloader-0.11-and-uefi.md
+          - href: developer/decisions/0002-osel-core-host-tests.md
+          - href: developer/decisions/0003-irq-spinlock.md
+          - href: developer/decisions/0004-pinned-nightly.md
+          - href: developer/decisions/0005-linux-abi-for-go.md
+          - href: developer/decisions/0006-higher-half-kernel.md
+          - href: developer/decisions/0007-storage-interfaces.md
+          - href: developer/decisions/0008-frame-pool.md
+          - href: developer/decisions/0009-shared-kernel-half.md
+          - href: developer/decisions/0010-static-elf-loader.md
+          - href: developer/decisions/0011-user-entry.md
+          - href: developer/decisions/0012-syscall-entry-and-user-programs.md
+          - href: developer/decisions/0013-fpu-state.md
+          - href: developer/decisions/0014-file-descriptors.md
+          - href: developer/decisions/0015-threads.md
+          - href: developer/decisions/0016-lazy-anonymous-memory.md
+          - href: developer/decisions/0017-child-processes.md
+          - href: developer/decisions/index.md
+      - name: Планы
+        items:
+          - href: developer/roadmap.md
+          - href: developer/debt.md
+          - href: developer/design/stage-2-user-mode.md
+          - href: developer/design/child-processes.md
+          - href: developer/design/tetris.md

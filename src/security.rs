@@ -4,7 +4,7 @@
 //! kernel bad pointers, or floods it with threads. Each test asserts the kernel contains
 //! it: the attacker ends with a fault or an errno, the kernel stays healthy, and no frames
 //! or heap leak. The guarantees these pin down are described in
-//! `docs/architecture/core/security.md`.
+//! `docs/ru/developer/architecture/core/security.md`.
 //!
 //! Isolation rests on the page tables, not on SMAP or SMEP: a program's pages are the lower
 //! half only, user accessible; the kernel half is not user accessible, and the kernel

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: OFL-1.1
 // Copyright (C) 2020 Dimitar Toshkov Zhekov.
 // OSel Console: subset of Terminus Font 4.49.1, with unmodified glyph bitmaps.
-// Generated from ter-u16n.bdf and ter-u32n.bdf; see docs/architecture/drivers/console.md.
+// Generated from ter-u16n.bdf and ter-u32n.bdf; see docs/ru/developer/architecture/drivers/console.md.
 
 #[rustfmt::skip]
 const SMALL: [[u16; 16]; 97] = [

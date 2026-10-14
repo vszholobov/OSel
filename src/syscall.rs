@@ -1,7 +1,7 @@
 //! syscall module is the `syscall` entry and the system calls the kernel implements
 //!
 //! Numbers, arguments and the choice of the way back live in `osel_core::syscall`; the
-//! list of calls is in docs/reference/syscalls.md.
+//! list of calls is in docs/ru/developer/reference/syscalls.md.
 
 use crate::fs;
 use crate::gdt::{self, USER_CODE_SELECTOR, USER_DATA_SELECTOR};

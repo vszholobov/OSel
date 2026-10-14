@@ -5,7 +5,10 @@ use std::path::{Path, PathBuf};
 
 /// The repository root
 pub fn repo() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().expect("repository root")
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("repository root")
 }
 
 pub fn read(path: &str) -> String {
@@ -34,13 +37,20 @@ pub fn modules(dir: &str, except: &[&str]) -> Vec<String> {
 /// Every `.md` file below `dir` (relative to the repository), recursively, sorted
 pub fn markdown_files(dir: &str) -> Vec<String> {
     fn walk(root: &Path, dir: &Path, out: &mut Vec<String>) {
-        let Ok(entries) = fs::read_dir(dir) else { return };
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
                 walk(root, &path, out);
             } else if path.extension().is_some_and(|e| e == "md") {
-                out.push(path.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/"));
+                out.push(
+                    path.strip_prefix(root)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                );
             }
         }
     }
@@ -56,7 +66,10 @@ pub fn identifiers_after(text: &str, prefix: &str) -> Vec<String> {
     let mut found = Vec::new();
     for (start, _) in text.match_indices(prefix) {
         let rest = &text[start + prefix.len()..];
-        let word: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+        let word: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
         if !word.is_empty() && !found.contains(&word) {
             found.push(word);
         }
@@ -103,16 +116,43 @@ pub fn code_spans(markdown: &str) -> Vec<String> {
 /// Code spans that name a file or folder of the repository: `src/memory.rs`,
 /// `src/sync.rs::IrqSpinlock`, `osel-core/src/`. Generated and wildcard paths are skipped.
 pub fn repo_paths(markdown: &str) -> Vec<String> {
-    const ROOTS: &[&str] =
-        &["src/", "osel-core/", "runner/", "tests/", "tools/", "docs/", ".github/", ".cargo/", ".claude/"];
-    const FILES: &[&str] = &["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "AGENTS.md", "CLAUDE.md", "CHANGELOG.md", "readme.md"];
+    const ROOTS: &[&str] = &[
+        "src/",
+        "osel-core/",
+        "runner/",
+        "tests/",
+        "tools/",
+        "docs/",
+        ".github/",
+        ".cargo/",
+        ".claude/",
+    ];
+    const FILES: &[&str] = &[
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        "AGENTS.md",
+        "CLAUDE.md",
+        "CHANGELOG.md",
+        "readme.md",
+    ];
     code_spans(markdown)
         .into_iter()
         .filter_map(|span| {
-            // `src/sync.rs::IrqSpinlock` and `docs/guides/debugging.md#debugger` name a file too
-            let path = span.split("::").next()?.split('#').next()?.trim().to_string();
-            let is_repo_path = ROOTS.iter().any(|root| path.starts_with(root)) || FILES.contains(&path.as_str());
-            let generated = path.contains('*') || path.contains('<') || path.contains(' ') || path.starts_with("runner/.ovmf");
+            // `src/sync.rs::IrqSpinlock` and `docs/ru/developer/guides/debugging.md#debugger` name a file too
+            let path = span
+                .split("::")
+                .next()?
+                .split('#')
+                .next()?
+                .trim()
+                .to_string();
+            let is_repo_path =
+                ROOTS.iter().any(|root| path.starts_with(root)) || FILES.contains(&path.as_str());
+            let generated = path.contains('*')
+                || path.contains('<')
+                || path.contains(' ')
+                || path.starts_with("runner/.ovmf");
             (is_repo_path && !generated).then_some(path)
         })
         .collect()
@@ -143,13 +183,61 @@ pub fn link_targets(markdown: &str) -> Vec<String> {
 /// Explicit heading anchors `{#id}` defined in a page
 pub fn anchors(markdown: &str) -> Vec<String> {
     let mut ids = Vec::new();
-    for (start, _) in markdown.match_indices("{#") {
-        let rest = &markdown[start + 2..];
-        if let Some(end) = rest.find('}') {
-            ids.push(rest[..end].split_whitespace().next().unwrap_or("").to_string());
+    let mut in_fence = false;
+    for line in markdown.lines() {
+        let line = line.trim_start();
+        if line.starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence || !line.starts_with('#') {
+            continue;
+        }
+        for (start, _) in line.match_indices("{#") {
+            let rest = &line[start + 2..];
+            if let Some(end) = rest.find('}') {
+                ids.push(
+                    rest[..end]
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or("")
+                        .to_string(),
+                );
+            }
         }
     }
     ids
+}
+
+/// HTML-like angle brackets in prose, including unquoted Rust generics and placeholders.
+/// The full Markdown linter runs in CI; this catches accidental tags before that build.
+pub fn unquoted_tags(markdown: &str) -> Vec<(usize, String)> {
+    let mut found = Vec::new();
+    let mut in_fence = false;
+    for (number, line) in markdown.lines().enumerate() {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        for prose in line.split('`').step_by(2) {
+            for (start, _) in prose.match_indices('<') {
+                let rest = &prose[start + 1..];
+                let name = rest.trim_start_matches('/');
+                if !name.starts_with(|c: char| c.is_ascii_alphabetic()) {
+                    continue;
+                }
+                if let Some(end) = rest.find('>') {
+                    if !rest[..end].contains("://") {
+                        found.push((number + 1, prose[start..=start + end + 1].to_string()));
+                    }
+                }
+            }
+        }
+    }
+    found
 }
 
 #[cfg(test)]
@@ -166,7 +254,10 @@ mod tests {
     #[test]
     fn finds_string_arguments() {
         let text = r#"IrqSpinlock::new("WRITER", None); IrqSpinlock::new("PICS", x); IrqSpinlock::new("WRITER", y)"#;
-        assert_eq!(string_arguments(text, "IrqSpinlock::new(\""), ["WRITER", "PICS"]);
+        assert_eq!(
+            string_arguments(text, "IrqSpinlock::new(\""),
+            ["WRITER", "PICS"]
+        );
     }
 
     #[test]
@@ -184,8 +275,26 @@ mod tests {
     }
 
     #[test]
+    fn anchor_examples_do_not_define_sections() {
+        let page = "Text `{#inline}`\n```markdown\n## Example {#example}\n```\n## Real {#real}";
+        assert_eq!(anchors(page), ["real"]);
+    }
+
+    #[test]
+    fn unquoted_generics_and_paths_are_not_markdown_code() {
+        let page = "Use Arc<Process> and bin/<name>.\n`Arc<Process>` is code.\n```rust\nArc<Process>\n```\n<https://example.com>";
+        assert_eq!(
+            unquoted_tags(page),
+            [(1, "<Process>".to_string()), (1, "<name>".to_string())]
+        );
+    }
+
+    #[test]
     fn repo_paths_skip_generated_and_patterns() {
         let text = "`src/**` `runner/.ovmf` `osel-core/src/` `Cargo.toml` `cargo test` `<path>` `docs/a.md#part`";
-        assert_eq!(repo_paths(text), ["osel-core/src/", "Cargo.toml", "docs/a.md"]);
+        assert_eq!(
+            repo_paths(text),
+            ["osel-core/src/", "Cargo.toml", "docs/a.md"]
+        );
     }
 }
