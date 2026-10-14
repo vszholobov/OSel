@@ -6,7 +6,7 @@ description: Run network Tetris with a chosen server and inspect OSel Ethernet s
 
 **Audience:** users of OSel's networking stage.
 
-**Summary:** offline `tetris` behaves as before. Network play requires a running server and a supported Ethernet card. This version tests Intel 82574L in QEMU; networking on the owner's computer remains unverified.
+**Summary:** offline `tetris` behaves as before. Network play requires a running server and a supported Ethernet card. Intel 82574L and the Realtek C+ DMA path are tested in QEMU. A Realtek RTL8168 G/GU/H/M driver is included for [Acer Nitro](hardware/acer-nitro.md#network); PHY startup and connectivity on the laptop still require testing.
 
 ## Prepare a server {#server}
 
@@ -21,7 +21,7 @@ QEMU reaches its host server at `10.0.2.2:8080`. On hardware, use the server mac
 
 ## Check the adapter {#adapter}
 
-Enter `net` in the shell to see the adapter, link state, address and packet counters. DHCP provides the address. Hardware support is limited to Intel 82574L (`8086:10d3`) and an Ethernet cable. Wi-Fi, USB Ethernet and other models are unsupported.
+Enter `net` in the shell to see the adapter, link state, address and packet counters. DHCP provides the address. Drivers cover Intel 82574L (`8086:10d3`) and Realtek `10ec:8168` with G/GU/H/M MACs. Use an Ethernet cable; Wi-Fi and USB Ethernet remain unsupported. The adapter name and dropped-frame counter help diagnose the driver; detection alone does not establish DHCP connectivity.
 
 Attach the adapter explicitly when launching a ready BIOS image:
 

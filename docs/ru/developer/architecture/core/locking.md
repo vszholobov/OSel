@@ -68,6 +68,7 @@ description: Блокировки OSel — IrqSpinlock, отчёт о взаим
 | `EVENTFD`, `EPOLL_REGISTRATIONS` | `osel-core/src/poll.rs` | счётчик eventfd и список наблюдения epoll (`Spinlock`) | `EventFd`, `Epoll` |
 | `NETWORK` | `src/net.rs` | карта, DHCP/TCP и таблица сокетов | сетевой поток, операции сокетов; перед сном отпускается |
 | `PCI_CONFIG` | `src/drivers/pci.rs` | PCI address/data port pair | scan, command writes |
+| `PIT2` | `src/drivers/rtl8168.rs` | PIT channel 2, gate/speaker; аппаратные задержки Realtek | инициализация и остановка Realtek; IRQ выключены, вложенных блокировок нет |
 | `ROOT_FS` | `src/fs.rs` | корневая файловая система | `fs::init`, `fs::root`; держится только на время копирования `Arc` |
 
 Порядок вложения, который уже есть в коде: `DECODER`, затем `BUFFER` или `KEYBOARD_DIAGNOSTICS` (при декодировании клавиатуры); `SCHEDULER`, затем `ALLOCATOR` (таблица потоков растёт и сжимается под блокировкой планировщика). `MM`, затем `MEMORY` (отображение страницы под `MM` берёт `MEMORY`); так же их берёт обработчик page fault. Другие блокировки друг в друга не вкладываются.

@@ -1,7 +1,7 @@
 //! Ethernet + DHCP + IPv4/TCP. A kernel thread services the stack every timer tick.
 //! Socket descriptions own their handles; dropping the last reference releases buffers.
 use crate::{
-    drivers::{e1000e::E1000e, pci},
+    drivers::{ethernet::Ethernet, pci},
     poll, scheduler,
     sync::IrqSpinlock,
     time,
@@ -32,7 +32,7 @@ struct State {
     started_ns: u64,
 }
 struct Network {
-    device: E1000e,
+    device: Ethernet,
     interface: Interface,
     sockets: SocketSet<'static>,
     dhcp: SocketHandle,
@@ -140,19 +140,20 @@ pub fn init() {
             d.subclass
         );
     }
-    let Some(mut device) = devices.into_iter().find_map(E1000e::new) else {
-        crate::serial_println!("NET: no supported Ethernet card (Intel 82574L required)");
+    let Some(mut device) = devices.into_iter().find_map(Ethernet::new) else {
+        crate::serial_println!("NET: no supported Ethernet card (Intel 82574L or Realtek RTL8168 G/GU/H/M)");
         return;
     };
-    let mut config = Config::new(EthernetAddress(device.mac).into());
+    let mac = device.mac();
+    let mut config = Config::new(EthernetAddress(mac).into());
     config.random_seed = time::realtime_ns()
         ^ u64::from_le_bytes([
-            device.mac[0],
-            device.mac[1],
-            device.mac[2],
-            device.mac[3],
-            device.mac[4],
-            device.mac[5],
+            mac[0],
+            mac[1],
+            mac[2],
+            mac[3],
+            mac[4],
+            mac[5],
             0,
             0,
         ]);
@@ -162,7 +163,7 @@ pub fn init() {
         .collect::<Vec<_>>();
     let mut sockets = SocketSet::new(storage);
     let dhcp = sockets.add(dhcpv4::Socket::new());
-    crate::serial_println!("NET: Intel 82574L, MAC {:02x?}, DHCP", device.mac);
+    crate::serial_println!("NET: {}, MAC {:02x?}, DHCP", device.name(), mac);
     *NETWORK.lock() = Some(Network {
         device,
         interface,
@@ -205,20 +206,20 @@ pub fn status(out: &mut impl core::fmt::Write) {
     // Snapshot while locked; framebuffer output may be slow and take unrelated locks.
     let snapshot = NETWORK.lock().as_ref().map(|net| {
         (
+            net.device.name(),
             net.device.link(),
             net.interface.ip_addrs().to_vec(),
             net.states.len(),
-            net.device.received,
-            net.device.sent,
+            net.device.counters(),
         )
     });
-    if let Some((link, addresses, sockets, rx, tx)) = snapshot {
+    if let Some((name, link, addresses, sockets, (rx, tx, dropped))) = snapshot {
         let _ = writeln!(
             out,
-            "Ethernet Intel 82574L: link={link}, addresses={addresses:?}, sockets={sockets}, rx={rx}, tx={tx}"
+            "Ethernet {name}: link={link}, addresses={addresses:?}, sockets={sockets}, rx={rx}, tx={tx}, dropped={dropped}"
         );
     } else {
-        let _ = writeln!(out, "No supported Ethernet card (Intel 82574L 8086:10d3)");
+        let _ = writeln!(out, "No initialized Ethernet card: Intel 8086:10d3 or Realtek 10ec:8168 (G/GU/H/M); see NET boot diagnostics");
     }
 }
 pub fn socket() -> KResult<Arc<dyn FileLike>> {

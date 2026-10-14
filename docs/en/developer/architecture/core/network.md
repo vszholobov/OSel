@@ -6,7 +6,7 @@ description: Ethernet, DHCP, TCP, Linux sockets and end-to-end network Tetris te
 
 **Audience:** developers of the network stack, sockets and drivers.
 
-**Summary:** the Intel 82574L driver passes Ethernet frames to smoltcp 0.12. The kernel obtains an IPv4 address through DHCP and exposes outgoing TCP connections through Linux socket calls. Go implements HTTP and WebSocket. QEMU tests use the actual Tetris server handlers from the submodule without a public server.
+**Summary:** the Intel 82574L or Realtek driver passes Ethernet frames to smoltcp 0.12. The kernel obtains an IPv4 address through DHCP and exposes outgoing TCP connections through Linux socket calls. Go implements HTTP and WebSocket. QEMU tests use the actual Tetris server handlers from the submodule without a public server.
 
 ## How it works {#how}
 
@@ -24,7 +24,7 @@ Epoll keeps weak references to open descriptions: fd reuse never redirects an ea
 
 ## Code {#code}
 
-- `src/drivers/pci.rs`, `src/drivers/e1000e.rs`: PCI and [Ethernet driver](../drivers/ethernet.md).
+- `src/drivers/pci.rs`, `src/drivers/ethernet.rs`, `src/drivers/e1000e.rs`, `src/drivers/rtl8168.rs`: PCI and [Ethernet driver](../drivers/ethernet.md).
 - `src/net.rs`: `NETWORK`, service thread, DHCP, TCP and `SocketFile`.
 - `osel-core/src/net.rs`: Linux IPv4 addresses, PCI addresses and BAR decoding, host tested.
 - `src/syscall.rs`, `osel-core/src/syscall.rs`: Linux calls and user-buffer copying.
@@ -39,7 +39,7 @@ Epoll keeps weak references to open descriptions: fd reuse never redirects an ea
 
 ## Pitfalls {#pitfalls}
 
-- Only Intel 82574L (`8086:10d3`) is supported. QEMU emulates it; the owner's actual adapter remains unknown. Wi-Fi and USB Ethernet need other drivers.
+- Intel 82574L (`8086:10d3`) and Realtek RTL8168 G/GU/H/M (`10ec:8168`) have drivers. QEMU Realtek C+ tests shared DMA, not the laptop PHY. The owner confirmed the Acer PCI ID; physical connectivity is unverified. Wi-Fi and USB Ethernet require separate drivers.
 - The public server may be offline. Tests prove interoperability with the local repository server, not public-server availability.
 - HTTP/WebSocket uses no TLS. Hostnames require `/etc/hosts`; DNS is absent.
 - `SO_KEEPALIVE`, `TCP_KEEPIDLE` and `TCP_NODELAY` work. Separate keepalive intervals and probe counts return `ENOPROTOOPT`. Connection establishment is limited to 20 seconds; Go bounds a dial attempt to five seconds.
@@ -50,6 +50,8 @@ Epoll keeps weak references to open descriptions: fd reuse never redirects an ea
 `cargo test-core` checks addresses, BARs and epoll modes, including fd reuse, one-shot notifications and eventfd drain/refill between scans. `cargo test-runner` checks input scripts and local-server addresses.
 
 `tests/network.rs` obtains a DHCP lease and checks refusal, a large stream with backpressure, HTTP, two WebSocket clients, matching fields after movement, ping/pong and repeated launch. `tests/network_game.rs` runs the actual client and external `clear`, receives both fields, sends a key, waits for pong and exits with `x`. The runner starts the local server on an ephemeral port and always terminates it after QEMU. Both firmware modes run the same checks; the common framework verifies heap and frame cleanup.
+
+The same scenarios run through Realtek C+ in `tests/realtek_network.rs` and `tests/realtek_network_game.rs`; `tests/realtek_dma.rs` checks reinitialization and DMA teardown with page cleanup. The Acer PHY remains a hardware checkpoint.
 
 ## Decisions {#decisions}
 

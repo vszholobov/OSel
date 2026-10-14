@@ -22,7 +22,8 @@ OSel has not yet been tested on this laptop and the exact model is unknown. The 
 | Boot mode | UEFI; newer models often lack legacy BIOS mode | No |
 | Secure Boot | Enabled | No |
 | Keyboard | Built-in, probably PS/2; external USB needs firmware emulation | No |
-| Network adapter | Usually Realtek or Killer | No |
+| Wired adapter | Realtek Gaming GBE Family Controller; `PCI\VEN_10EC&DEV_8168&SUBSYS_13661025&REV_25` | Owner provided Windows 10 hardware ID |
+| Wi-Fi | Qualcomm Atheros QCA61x4A Wireless Network Adapter | Owner report; no OSel driver |
 
 ## Preparation {#prepare}
 
@@ -50,6 +51,14 @@ If BitLocker encryption is enabled, changing Secure Boot can make Windows requir
 1. Write `OSel.uefi.img` following [USB boot](../usb.md).
 2. Power on and press **F12**.
 3. Select the USB drive.
+
+## Wired networking {#network}
+
+The kernel includes a Realtek `10ec:8168` driver. It identifies G/GU/H/M MACs using the XID register; PCI `REV_25` alone does not identify the MAC. PHY startup on this Acer remains untested. Samsung is outside this hardware check.
+
+Connect an Ethernet cable to a router providing DHCP, boot an image built from the networking PR, and enter `net`. Expect Realtek, `link=true` and an IPv4 address. If boot reports `unknown MAC XID` or `PHY ... timed out`, record the `NET` line containing XID and the error: PCI discovery succeeded, initialization did not. An empty address list with `link=true` means DHCP is pending or unavailable.
+
+Once an address is assigned, run the server on another computer on the same network and use its IPv4 address; see [network Tetris](../network.md). `10.0.2.2` is specific to QEMU.
 
 ## Precautions {#risks}
 

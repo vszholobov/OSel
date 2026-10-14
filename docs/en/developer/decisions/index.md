@@ -27,3 +27,5 @@ description: OSel decisions — status, context, alternatives and consequences.
 - [0017. Child processes](0017-child-processes.md).
 
 - [0018 — Ethernet / TCP](0018-networking.md).
+
+- [0019 — Realtek for Acer](0019-realtek-acer.md).

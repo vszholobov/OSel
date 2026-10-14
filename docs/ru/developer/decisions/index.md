@@ -29,3 +29,5 @@ description: Список архитектурных решений OSel со с
 | 0017 | [Дочерние процессы и кооперативное завершение](0017-child-processes.md) | Принято | 2026-10-13 |
 
 - [0018 — Ethernet / TCP](0018-networking.md).
+
+- [0019 — Realtek для Acer](0019-realtek-acer.md).

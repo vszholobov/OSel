@@ -1,42 +1,15 @@
 //! Intel 82574L (8086:10d3), legacy DMA descriptors. No interrupt or offload dependency.
 //! The stack polls at 100 Hz. All waits are bounded; DMA memory survives while enabled.
 use super::pci;
+use super::dma::Dma;
 use crate::memory;
 use alloc::vec::Vec;
 use core::sync::atomic::{Ordering, fence};
 use smoltcp::phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken};
 use smoltcp::time::Instant;
-use x86_64::{
-    VirtAddr,
-    structures::paging::{FrameAllocator, FrameDeallocator, PhysFrame},
-};
+use x86_64::VirtAddr;
 const COUNT: usize = 32;
 const BUFFER: usize = 2048;
-struct Dma {
-    frame: PhysFrame,
-    ptr: *mut u8,
-}
-unsafe impl Send for Dma {}
-impl Dma {
-    fn new() -> Option<Self> {
-        let (frame, offset) =
-            memory::with_memory(|m| (m.frame_allocator.allocate_frame(), m.mapper.phys_offset()));
-        let frame = frame?;
-        let ptr = (offset + frame.start_address().as_u64()).as_mut_ptr::<u8>();
-        unsafe {
-            core::ptr::write_bytes(ptr, 0, 4096);
-        }
-        Some(Self { frame, ptr })
-    }
-    fn physical(&self) -> u64 {
-        self.frame.start_address().as_u64()
-    }
-}
-impl Drop for Dma {
-    fn drop(&mut self) {
-        memory::with_memory(|m| unsafe { m.frame_allocator.deallocate_frame(self.frame) });
-    }
-}
 
 pub struct E1000e {
     base: usize,

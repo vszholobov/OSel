@@ -91,6 +91,7 @@ items:
           - href: developer/decisions/0016-lazy-anonymous-memory.md
           - href: developer/decisions/0017-child-processes.md
           - href: developer/decisions/0018-networking.md
+          - href: developer/decisions/0019-realtek-acer.md
           - href: developer/decisions/index.md
       - name: Планы
         items:

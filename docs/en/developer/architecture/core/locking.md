@@ -54,6 +54,7 @@ Spinlock in `osel-core/src/sync.rs` tries lock up to DEFAULT_MAX_SPINS, recordin
 | `EVENTFD`, `EPOLL_REGISTRATIONS` | `osel-core/src/poll.rs` | Counter/watch list, plain Spinlock |
 | `NETWORK` | `src/net.rs` | adapter, DHCP/TCP and socket state | network thread and socket operations; released before sleep |
 | `PCI_CONFIG` | `src/drivers/pci.rs` | PCI address/data port pair | scan, command writes |
+| `PIT2` | `src/drivers/rtl8168.rs` | PIT channel 2 and gate/speaker; Realtek hardware delays | Realtek init and teardown; interrupts disabled, no nested locks |
 | `ROOT_FS` | `src/fs.rs` | Root filesystem, init/root; hold only to clone Arc |
 
 Existing nesting: DECODER → BUFFER or KEYBOARD_DIAGNOSTICS; SCHEDULER → ALLOCATOR when the thread table changes; MM → MEMORY when mapping pages, including user faults. Keep other locks separate.

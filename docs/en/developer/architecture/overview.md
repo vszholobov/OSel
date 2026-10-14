@@ -30,6 +30,9 @@ Existing kernel module names include wordplay; keep their names when changing co
 | `drivers` | `src/drivers/mod.rs` | hardware drivers; existing names are re-exported from the root | [Ethernet](drivers/ethernet.md) |
 | `pci` | `src/drivers/pci.rs` | PCI configuration, BAR, bus mastering | [Ethernet](drivers/ethernet.md) |
 | `e1000e` | `src/drivers/e1000e.rs` | Intel 82574L, RX/TX DMA | [Ethernet](drivers/ethernet.md) |
+| `dma` | `src/drivers/dma.rs` | shared DMA pages | [Ethernet](drivers/ethernet.md) |
+| `ethernet` | `src/drivers/ethernet.rs` | Intel/Realtek dispatch for smoltcp | [Ethernet](drivers/ethernet.md) |
+| `rtl8168` | `src/drivers/rtl8168.rs` | Realtek G/GU/H/M and C+, DMA and PHY | [Ethernet](drivers/ethernet.md) |
 | `net` | `src/net.rs` | DHCP, TCP, Linux sockets, service thread | [Networking](core/network.md) |
 | `avganec` | `src/drivers/avganec.rs` | Framebuffer console, print macros and panic screen | [Details](drivers/console.md) |
 | `cereal` | `src/drivers/cereal.rs` | COM1 serial and emergency output | [Details](drivers/serial.md) |
@@ -55,6 +58,7 @@ Existing kernel module names include wordplay; keep their names when changing co
 | `qemuno` | `src/qemuno.rs` | QEMU exit through isa-debug-exit | [Details](testing.md) |
 | `testosterone` | `src/testosterone.rs` | Kernel test framework, expected panic and leak checks | [Details](testing.md) |
 | `net` | `osel-core/src/net.rs` | Linux IPv4, PCI address / BAR parsing | [Ethernet](drivers/ethernet.md) |
+| `rtl8168` | `osel-core/src/rtl8168.rs` | Realtek XID, descriptors and bounded PHY initialization | [Ethernet](drivers/ethernet.md) |
 | `console` | `osel-core/src/console.rs` | Text rendering into byte buffers | [Details](drivers/console.md) |
 | `shell` | `osel-core/src/shell.rs` | Bounded line editor, command parsing, program launch and terminal restoration | [Details](shell.md) |
 | `font` | `osel-core/src/font.rs` | Built-in 8×16/16×32 rasters and glyph selection | [Details](drivers/console.md#font) |

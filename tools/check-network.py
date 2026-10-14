@@ -52,7 +52,8 @@ def main():
             start = len(transcript)
             send(b"net\n")
             result = wait(b"osel> ", start)
-            assert b"Intel 82574L" in result, result
+            expected_nic = b"Realtek RTL8139 C+" if env.get("OSEL_NIC") == "rtl8139" else b"Intel 82574L"
+            assert expected_nic in result, result
             for _ in range(2):
                 start = len(transcript)
                 send(f"tetris --network --server 10.0.2.2:{port} --create --trace\n".encode())

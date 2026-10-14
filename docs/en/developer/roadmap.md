@@ -67,11 +67,12 @@ Network Tetris is implemented and tested in QEMU with the repository's local ser
 
 - [x] PCI and adapter discovery; hardware drivers in `src/drivers/`.
 - [x] Intel 82574L (`e1000e`) in QEMU with RX/TX DMA rings.
+- [x] Realtek RTL8168 G/GU/H/M driver for Acer PCI ID `10ec:8168`, XID diagnostics; shared DMA, DHCP and gameplay tested through QEMU C+. Laptop PHY remains untested.
 - [x] smoltcp: DHCP, IPv4 and TCP.
 - [x] Outgoing Linux sockets and Go's required `epoll` modes.
 - [x] Ramdisk `/etc/hosts` and configurable client server address.
 - [x] Actual local Tetris server: two players, movement, fields, ping/pong, exit and repeated launch without leaks, UEFI and BIOS.
-- [ ] Hardware networking: identify the wired adapter and add a driver if necessary.
+- [ ] Physical Acer networking: PCI ID is known; XID, PHY startup and wired DHCP/gameplay still need checking. Samsung is outside the task.
 - [ ] Connect to the public server after the owner starts it.
 - [ ] Boot [Acer Nitro](../user/hardware/acer-nitro.md) through UEFI.
 

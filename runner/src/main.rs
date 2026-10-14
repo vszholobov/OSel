@@ -11,6 +11,7 @@
 //! - `OSEL_RAMDISK=<dir>`: directory packed into the ramdisk as a cpio archive
 //!   (default: ramdisk/ of the repository; relative paths start there too). The programs
 //!   of user/ are built and added as /bin/<name>.
+//! - `OSEL_NIC=e1000e|rtl8139|none`: QEMU NIC (default: e1000e; Realtek tests use rtl8139)
 
 use bootloader::{BootConfig, DiskImageBuilder};
 use bootloader_boot_config::LevelFilter;
@@ -67,8 +68,13 @@ fn main() -> ExitCode {
     let kernel = PathBuf::from(args.next().expect("usage: osel-runner <kernel-elf> [qemu args...]"));
     let mut extra_qemu_args: Vec<_> = args.collect();
 
-    let network_game = kernel.file_name().is_some_and(|name| name.to_string_lossy().starts_with("network_game-"));
-    let network_test = kernel.file_name().is_some_and(|name| name.to_string_lossy().starts_with("network-"));
+    let kernel_name = kernel.file_name().unwrap_or_default().to_string_lossy();
+    let realtek = kernel_name.starts_with("realtek_network");
+    let network_game = kernel_name.starts_with("network_game-") || kernel_name.starts_with("realtek_network_game-");
+    let network_test = kernel_name.starts_with("network-") || kernel_name.starts_with("realtek_network-");
+    let nic = match parse_nic(env::var("OSEL_NIC").ok().as_deref(), realtek) {
+        Ok(nic) => nic, Err(e) => { eprintln!("{e}"); return ExitCode::FAILURE; }
+    };
     let _network_server = if network_test || network_game {
         match network_fixture::Server::start(&repository(), network_game) { Ok(s) => Some(s), Err(e) => { eprintln!("{e}"); return ExitCode::FAILURE; } }
     } else { None };
@@ -128,7 +134,12 @@ fn main() -> ExitCode {
         ));
     }
     qemu.args(["-serial", "stdio", "-no-reboot"]);
-    qemu.args(["-netdev", "user,id=net0", "-device", "e1000e,netdev=net0"]);
+    if let Some(nic) = nic {
+        qemu.args(["-netdev", "user,id=net0", "-device", &format!("{nic},netdev=net0")]);
+    }
+    if kernel_name.starts_with("realtek_dma-") {
+        qemu.args(["-netdev", "user,id=net1", "-device", "rtl8139,netdev=net1"]);
+    }
     match mode {
         Mode::Run => {}
         Mode::Test => {
@@ -211,6 +222,16 @@ fn report(outcome: Result<(), String>) -> ExitCode {
             eprintln!("failed: {message}");
             ExitCode::FAILURE
         }
+    }
+}
+
+fn parse_nic(value: Option<&str>, realtek_test: bool) -> Result<Option<&'static str>, String> {
+    match value {
+        None | Some("") => Ok(Some(if realtek_test { "rtl8139" } else { "e1000e" })),
+        Some("e1000e") => Ok(Some("e1000e")),
+        Some("rtl8139") => Ok(Some("rtl8139")),
+        Some("none") => Ok(None),
+        Some(other) => Err(format!("invalid OSEL_NIC {other:?}: expected e1000e, rtl8139 or none")),
     }
 }
 
@@ -714,6 +735,17 @@ fn wait_with_timeout(child: &mut Child, timeout: Duration, stop: Option<&mpsc::R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selects_realtek_only_for_its_tests_and_rejects_unknown_nics() {
+        assert_eq!(parse_nic(None, false), Ok(Some("e1000e")));
+        assert_eq!(parse_nic(None, true), Ok(Some("rtl8139")));
+        assert_eq!(parse_nic(Some(""), true), Ok(Some("rtl8139")));
+        assert_eq!(parse_nic(Some("e1000e"), true), Ok(Some("e1000e")));
+        assert_eq!(parse_nic(Some("rtl8139"), false), Ok(Some("rtl8139")));
+        assert_eq!(parse_nic(Some("none"), false), Ok(None));
+        assert!(parse_nic(Some("rtl8168"), false).is_err());
+    }
     use std::io::Cursor;
 
     fn exit(code: i32) -> Option<ExitStatus> {
