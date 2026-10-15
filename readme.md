@@ -1,17 +1,9 @@
-<p align="center"><img src="docs/images/osel-logo.svg" width="160" alt="Логотип OSel: осёл в визоре с командной строкой"></p>
+<p align="center"><img src="docs/images/osel-logo.svg" width="160" alt="OSel logo"></p>
 
 # OSel
 
-Учебная операционная система на Rust для x86_64: загружается через UEFI и BIOS, работает в QEMU и на ноутбуках с флешки. Цель — запустить на ней консольный тетрис на Go.
+OSel is an x86_64 operating system written in Rust, created to explore how operating systems and PCs work: booting, memory management, interrupts, hardware drivers and user programs.
 
-**Документация:** [Русский](https://vszholobov.github.io/OSel/ru/) · [English](https://vszholobov.github.io/OSel/en/). [Пользователю](docs/ru/user/index.md) — готовые образы и игра; [разработчику](docs/ru/developer/index.md) — сборка, тесты и устройство ядра.
+It boots through UEFI or BIOS, runs in QEMU and on real hardware, and includes an interactive shell and Tetris written in Go.
 
-Код: [ядро](src/) · [аппаратные драйверы](src/drivers/) · [логика без железа](osel-core/) · [runner](runner/).
-
-```shell
-cargo run          # собрать и запустить в QEMU
-cargo test         # тесты ядра в QEMU
-cargo test-core    # тесты логики ядра на хосте, без QEMU
-```
-
-С чего начать: [быстрый старт](docs/ru/developer/guides/quickstart.md). ИИ-агентам: [`AGENTS.md`](AGENTS.md). История изменений: [`CHANGELOG.md`](CHANGELOG.md).
+[Documentation](https://vszholobov.github.io/OSel/en/)

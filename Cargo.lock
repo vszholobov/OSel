@@ -248,7 +248,7 @@ checksum = "f102c477fd4ec864c149803bf606ecc23bc9329602ec0f99073a728abf454abc"
 
 [[package]]
 name = "osel"
-version = "0.1.0"
+version = "0.11.0"
 dependencies = [
  "bootloader_api",
  "lazy_static",

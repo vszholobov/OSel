@@ -24,9 +24,13 @@ A UEFI image needs OVMF firmware. To build the kernel and use the runner, start 
 
 After `OSel ready to go!`, the `osel>` prompt appears. Type `help` for commands, `ls /bin` for programs, `cat /etc/motd` for the welcome message, or `clear` to clear the screen.
 
+**Up/Down** recall one of the last 64 commands; **Enter** runs the selection. Edit it before running if needed. Down past the newest entry restores the unfinished draft.
+
+**PageUp/PageDown** browse the last 1024 output lines. Without those keys, use **Ctrl+Shift+Up/Down**. **Escape** or ordinary input returns to the live screen; output continues to be recorded while browsing. Both histories last until reboot. On Mac, Fn+Up/Down work if the keyboard sends PageUp/PageDown; the alternative shortcut is tested in QEMU.
+
 ## Tetris {#tetris}
 
-Type `tetris`. Controls: `a` and `d` move left and right, `s` moves down, `q` and `e` rotate. `x`, Escape or Ctrl+C ends the game and returns to the prompt. Run it again with the same command. See [network play](network.md) for the networking stage.
+Type `tetris`. Controls: `a` and `d` move left and right, `s` moves down, `q` and `e` rotate. `x`, Escape or Ctrl+C ends the game and returns to the prompt. The previous shell screen returns after the game; game frames do not enter scrollback. Run it again with the same command. See [network play](network.md) for the networking stage.
 
 ## Exit {#exit}
 

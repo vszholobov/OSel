@@ -1,25 +1,41 @@
 # История изменений
 
-Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/), версии — [SemVer](https://semver.org/lang/ru/) с нулевой мажорной: пока совместимость не обещается. Каждый PR добавляет строку в раздел «Не выпущено», при выпуске раздел становится версией. Как выпустить версию — в `docs/ru/developer/guides/release.md`.
+Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/). Начиная с `0.11`, публичные версии имеют вид `X.Y`, а Cargo хранит `X.Y.0`; пока старшая цифра равна нулю, совместимость не обещается. Каждый PR добавляет строку в раздел «Не выпущено», при выпуске раздел становится версией. Как выпустить версию — в `docs/ru/developer/guides/release.md`.
 
 ## Не выпущено
 
-- Добавлен проверяемый автомат WPA2-PSK/CCMP: MIC, PTK/GTK, replay-защита и повторы EAPOL без переустановки ключей; программная криптография сохраняет XMM пользовательских программ. Добавлены аппаратная ассоциация, HTT RX/TX, скрытый ввод пароля `wifi connect N`, фоновое обслуживание, общий DHCP/TCP, отключение и очистка сетевой конфигурации. Добавлены срок HTT completion, отмена ожиданий при отключении и очистка DMA-буфера ключей; ошибочный ввод пароля поглощается целиком без эха. Связь на Acer ещё требует проверки.
+### Added
 
-### Добавлено
+- Experimental QCA6174 Wi-Fi for Acer: firmware and board data, bounded ROM/BMI/HTC/WMI initialization, passive 2.4 GHz scanning, WPA2-PSK/CCMP authentication and HTT data transfer through the shared DHCP/TCP stack. Firmware loading, scanning and connectivity still require validation on Acer hardware.
+- Network diagnostics: ICMP `ping`, `nslookup`, `tcpcheck`, `net ip/route/dns/tcp/dhcp`, `pci`, `diag` and Wi-Fi status reports.
 
-- Команды сетевой диагностики: настоящий ICMP `ping` с задержкой, потерями и отменой, `nslookup`, проверка TCP-порта `tcpcheck`, `net ip/route/dns/tcp/dhcp`, `pci` и общий отчёт `diag`. Начальный драйвер QCA6174 для Acer `168c:003e`, LiteOn `11ad:0807`, ревизия `32`: проверка встроенной прошивки и точной калибровки, PCI/D0/wake/reset/CE/BMI, снимок этапов `wifi regs`. Подключение Wi-Fi/WPA2 добавлено в этой ветке; на Acer подтверждены PCI/D0/wake/reset и ROM/BMI. Исправлен пропуск ранней конфигурации ROM через CE7 и сигнала CPU перед BMI; CE7 и BMI подтверждены на Acer. Команда `wifi load` проверяет запуск прошивки: PLL, калибровка платы/OTP, BMI upload, HTC services и WMI service-ready/INIT/ready, ограниченная непрерывная DMA-память прошивки с ограничением времени и остановкой карты после проверки. Пассивный `wifi scan` для 2,4 ГГц и `wifi results`, проверяемый разбор beacon/RSN и учёт HTC credits. Загрузка прошивки и сканирование ещё требуют аппаратной проверки.
+### Fixed
 
-- Драйвер проводной Realtek `10ec:8168` для Acer Nitro: определение MAC G/GU/H/M по XID, запуск PHY и DMA-кольца; PCI ID владельца `10ec:8168`, subsystem `1025:1366`, ревизия `25`. Общий путь DMA, DHCP и сетевой тетрис проверяются через Realtek C+ в QEMU; проверка на самом Acer ещё требуется.
-- Сетевой тетрис в QEMU: PCI, Intel 82574L (`e1000e`), smoltcp с DHCP/IPv4/TCP, исходящие сокеты Linux, режимы epoll для Go и команда `net`. Клиент принимает адрес сервера, рисует оба поля и возвращается в оболочку при выходе или ошибке; настоящие обработчики локального сервера проверяют игру без доступного публичного сервера. Сквозные проверки UEFI/BIOS покрывают большой поток, двух игроков, ping/pong и освобождение ресурсов.
+- Preserve user XMM registers during Wi-Fi cryptography; reject EAPOL replay without reinstalling keys, hide rejected password input, bound HTT completion waits and clear network configuration on disconnect.
 
+### Changed
 
-### Изменено
+- Restored the README logo and added a short explanation of OSel's purpose: learning how operating systems and PCs work.
+- All pull requests and releases must be written in English; the PR template and contributor instructions now reflect this rule.
+- Simplified the English README to the project name, description and documentation link.
 
-- Аппаратные драйверы собраны в `src/drivers/` с сохранением публичных имён; проверки документации обходят вложенные модули. Зафиксирована подтверждённая владельцем работа одиночного тетриса на реальном компьютере; модель и режим загрузки ещё не записаны.
+## 0.11 — 2026-10-15
 
-- Убраны дублирующие ссылки выбора языка из статей и меню документации; используется штатная кнопка Language в шапке сайта.
-- Документация разделена на пользовательскую и разработческую, добавлена английская версия и переключение языков. Убраны отсылки к учебным источникам; проверки охватывают обе локали, прежние адреса сайта перенаправляются на русскую версию.
+### Added
+
+- Command history: recall the last 64 commands with Up/Down and restore unfinished input.
+- Colored scrollback: browse 1,024 output lines with PageUp/PageDown or Ctrl+Shift+Up/Down; Escape or typing returns to live output.
+- Network Tetris with DHCP/IPv4/TCP and Intel 82574L and Realtek Ethernet support.
+
+### Fixed
+
+- Slow console scrolling: keep text in RAM, redraw changed cells without reading video memory, and batch `cat` output.
+
+### Changed
+
+- Tetris preserves the shell on an alternate screen and keeps game frames out of scrollback.
+- Hardware drivers are grouped under `src/drivers/`; documentation is available in Russian and English with a native language selector.
+- Releases use `X.Y` version numbers and concise English descriptions; Cargo stores `X.Y.0`.
 
 ## 0.1.0 — 2026-10-14
 

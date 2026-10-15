@@ -26,7 +26,7 @@ Spinlock in `osel-core/src/sync.rs` tries lock up to DEFAULT_MAX_SPINS, recordin
 | `SERIAL1` | `src/drivers/cereal.rs` | COM1; port/serial macros, panic force-unlock |
 | `PICS` | `src/interrupts.rs` | PIC pair; setup, timer/keyboard/spurious handlers |
 | `DECODER` | `src/drivers/keyboard.rs` | Scan-code state, keyboard input |
-| `BUFFER` | `src/drivers/keyboard.rs` | Character queue, IRQ/pop_char/dropped_chars |
+| `BUFFER` | `src/drivers/keyboard.rs` | Character/navigation queue, IRQ/pop_key/pop_char/has_input/dropped_chars |
 | `KEYBOARD_DIAGNOSTICS` | `src/drivers/keyboard.rs` | Setup report and runtime counters, IRQ/poll/snapshot |
 | `ALLOCATOR` | `src/allocator.rs` | Heap, global allocator/with_allocator |
 | `MEMORY` | `src/memory.rs` | Tables/frame pool, with_memory and user demand faults |
@@ -83,6 +83,6 @@ Core tests verify owner/wait reports, try_lock/force_unlock and invariants under
 
 [0003](../../decisions/0003-irq-spinlock.md).
 
-_Checked against code: 2026-10-13, branch fix-ps2-keyboard._
+_Checked against code: 2026-10-15, fix-console-scroll branch._
 
 `NETWORK` can nest `ALLOCATOR` for network buffers. `EPOLL_REGISTRATIONS` holds weak open-description references and can nest `NETWORK` or `PIPE` while scanning. No lock crosses a wait.

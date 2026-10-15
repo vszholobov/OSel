@@ -2,7 +2,7 @@
 
 use crate::sync::IrqSpinlock;
 use core::fmt::{self, Write};
-use osel_core::keyboard::{RingBuffer, ScancodeDecoder};
+use osel_core::keyboard::{Key, RingBuffer, ScancodeDecoder};
 use osel_core::ps2::{self, Io};
 use x86_64::instructions::{interrupts, port::Port};
 
@@ -10,9 +10,9 @@ pub const BUFFER_SIZE: usize = 64;
 
 static DECODER: IrqSpinlock<ScancodeDecoder> = IrqSpinlock::new("DECODER", ScancodeDecoder::new());
 
-/// Typed characters, filled by the keyboard interrupt handler
-static BUFFER: IrqSpinlock<RingBuffer<char, BUFFER_SIZE>> =
-    IrqSpinlock::new("BUFFER", RingBuffer::new('\0'));
+/// Characters and navigation events, filled by the keyboard interrupt handler
+static BUFFER: IrqSpinlock<RingBuffer<Key, BUFFER_SIZE>> =
+    IrqSpinlock::new("BUFFER", RingBuffer::new(Key::Character('\0')));
 
 #[derive(Clone, Copy)]
 pub struct Diagnostics {
@@ -165,7 +165,7 @@ pub fn poll() {
 
 /// Called from the keyboard interrupt handler with a raw scancode from port 0x60
 pub fn handle_scancode(scancode: u8) {
-    if let Some(c) = DECODER.lock().decode(scancode) {
+    if let Some(c) = DECODER.lock().decode_key(scancode) {
         // when nobody reads the input it is dropped
         BUFFER.lock().push(c);
         DIAGNOSTICS.lock().chars += 1;
@@ -174,11 +174,23 @@ pub fn handle_scancode(scancode: u8) {
 }
 
 /// Takes the oldest typed character, if any
-pub fn pop_char() -> Option<char> {
+pub fn pop_key() -> Option<Key> {
     BUFFER.lock().pop()
 }
 
-/// Number of characters lost because nobody read them in time
+pub fn has_input() -> bool {
+    !BUFFER.lock().is_empty()
+}
+
+/// Character-only inspection used by keyboard diagnostics/tests.
+pub fn pop_char() -> Option<char> {
+    while let Some(key) = pop_key() {
+        if let Key::Character(c) = key { return Some(c); }
+    }
+    None
+}
+
+/// Number of input events lost because nobody read them in time
 pub fn dropped_chars() -> usize {
     BUFFER.lock().dropped()
 }

@@ -5,6 +5,8 @@
 
 use bootloader_api::info::{FrameBufferInfo, PixelFormat};
 use core::fmt;
+use alloc::collections::TryReserveError;
+use alloc::vec::Vec;
 use crate::font::Font;
 
 /// Width of the small font's text cell in pixels.
@@ -13,6 +15,8 @@ pub const CHAR_WIDTH: usize = Font::Small.width();
 pub const LINE_HEIGHT: usize = Font::Small.height();
 /// Tab stops are every `TAB_WIDTH` columns
 pub const TAB_WIDTH: usize = 8;
+/// Scrolled-off rows retained in ordinary RAM.
+pub const SCROLLBACK_LINES: usize = 1024;
 /// Drawn for characters missing in the font
 pub const UNKNOWN_CHAR: char = '\u{FFFD}';
 
@@ -59,8 +63,45 @@ pub enum ConsoleError {
     BufferTooSmall,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Cell {
+    character: char,
+    foreground: Color,
+    background: Color,
+}
+
+impl Cell {
+    fn blank(background: Color) -> Self {
+        Self { character: ' ', foreground: background, background }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ScreenState {
+    row: usize,
+    column: usize,
+    foreground: Color,
+    background: Color,
+    cursor_visible: bool,
+    bottom_color: Color,
+}
+
+struct TextBuffer {
+    cells: Vec<Cell>,
+    displayed: Vec<Option<Cell>>,
+    bottom_color: Color,
+    bottom_dirty: bool,
+    history: Vec<Cell>,
+    history_head: usize,
+    history_len: usize,
+    view_offset: usize,
+    saved_cells: Vec<Cell>,
+    saved_state: Option<ScreenState>,
+}
+
 pub struct Console<'a> {
     buffer: &'a mut [u8],
+    text: Option<TextBuffer>,
     info: FrameBufferInfo,
     columns: usize,
     rows: usize,
@@ -135,6 +176,7 @@ impl<'a> Console<'a> {
 
         let mut console = Console {
             buffer,
+            text: None,
             info,
             columns,
             rows,
@@ -149,6 +191,150 @@ impl<'a> Console<'a> {
         };
         console.clear();
         Ok(console)
+    }
+
+    /// Switches to RAM text cells after heap initialization, clearing early output.
+    /// Allocation failure leaves the allocation-free early console usable.
+    /// Call `flush` to present the new screen. Repeated calls are harmless.
+    pub fn enable_buffering(&mut self) -> Result<(), TryReserveError> {
+        if self.text.is_some() {
+            return Ok(());
+        }
+        // One extra cell per row records the color of the right pixel margin.
+        let count = (self.columns + 1) * self.rows;
+        let mut cells = Vec::new();
+        let mut displayed = Vec::new();
+        let mut history = Vec::new();
+        let mut saved_cells = Vec::new();
+        let history_count = (self.columns + 1).saturating_mul(SCROLLBACK_LINES);
+        cells.try_reserve_exact(count)?;
+        displayed.try_reserve_exact(count)?;
+        history.try_reserve_exact(history_count)?;
+        saved_cells.try_reserve_exact(count)?;
+        cells.resize(count, Cell::blank(self.background));
+        displayed.resize(count, None);
+        history.resize(history_count, Cell::blank(self.background));
+        saved_cells.resize(count, Cell::blank(self.background));
+        self.text = Some(TextBuffer {
+            cells, displayed, bottom_color: self.background, bottom_dirty: true,
+            history, history_head: 0, history_len: 0, view_offset: 0,
+            saved_cells, saved_state: None,
+        });
+        self.clear();
+        Ok(())
+    }
+
+    pub fn is_buffered(&self) -> bool {
+        self.text.is_some()
+    }
+
+    pub fn history_lines(&self) -> usize {
+        self.text.as_ref().map_or(0, |text| text.history_len)
+    }
+
+    pub fn view_offset(&self) -> usize {
+        self.text.as_ref().map_or(0, |text| text.view_offset)
+    }
+
+    /// Positive pages look into history, negative pages approach the live screen.
+    /// New output keeps a historical viewport anchored until its oldest row expires.
+    pub fn scroll_pages(&mut self, pages: isize) {
+        let step = self.rows.saturating_sub(1).max(1);
+        if let Some(text) = self.text.as_mut() {
+            if text.saved_state.is_some() { return; }
+            let lines = pages.unsigned_abs().saturating_mul(step);
+            text.view_offset = if pages >= 0 {
+                text.view_offset.saturating_add(lines).min(text.history_len)
+            } else {
+                text.view_offset.saturating_sub(lines)
+            };
+        }
+    }
+
+    pub fn return_live(&mut self) {
+        if let Some(text) = self.text.as_mut() {
+            text.view_offset = 0;
+        }
+    }
+
+    pub fn alternate_screen_active(&self) -> bool {
+        self.text.as_ref().is_some_and(|text| text.saved_state.is_some())
+    }
+
+    /// DEC private mode 1049: preserve the shell screen and exclude game frames
+    /// from scrollback. Storage is reserved at initialization, never on entry.
+    pub fn set_alternate_screen(&mut self, enabled: bool) {
+        let Some(text) = self.text.as_mut() else { return };
+        text.view_offset = 0;
+        if enabled && text.saved_state.is_none() {
+            text.saved_cells.copy_from_slice(&text.cells);
+            text.saved_state = Some(ScreenState {
+                row: self.row, column: self.column, foreground: self.foreground,
+                background: self.background, cursor_visible: self.cursor_visible,
+                bottom_color: text.bottom_color,
+            });
+            text.cells.fill(Cell::blank(self.background));
+            text.bottom_color = self.background;
+            text.bottom_dirty = true;
+            self.row = 0;
+            self.column = 0;
+        } else if !enabled && let Some(saved) = text.saved_state.take() {
+            text.cells.copy_from_slice(&text.saved_cells);
+            self.row = saved.row;
+            self.column = saved.column;
+            self.foreground = saved.foreground;
+            self.background = saved.background;
+            self.cursor_visible = saved.cursor_visible;
+            text.bottom_color = saved.bottom_color;
+            text.bottom_dirty = true;
+        }
+    }
+
+    /// Presents one text row using only RAM reads and framebuffer writes.
+    /// Returns the number of changed cells (including the right margin).
+    /// The caller can release its IRQ lock between rows.
+    pub fn flush_row(&mut self, row: usize) -> usize {
+        if self.text.is_none() || row >= self.rows {
+            return 0;
+        }
+        let mut changed = 0;
+        for column in 0..=self.columns {
+            let index = row * (self.columns + 1) + column;
+            let text = self.text.as_ref().unwrap();
+            let source_row = text.history_len - text.view_offset + row;
+            let cell = if source_row < text.history_len {
+                let history_row = (text.history_head + SCROLLBACK_LINES - text.history_len + source_row) % SCROLLBACK_LINES;
+                text.history[history_row * (self.columns + 1) + column]
+            } else {
+                text.cells[(source_row - text.history_len) * (self.columns + 1) + column]
+            };
+            if text.displayed[index] == Some(cell) {
+                continue;
+            }
+            if column == self.columns {
+                let x = self.columns * self.cell_width();
+                self.fill_rect(x, row * self.line_height(), self.info.width - x, self.line_height(), cell.background);
+            } else {
+                self.paint_cell(row, column, cell);
+            }
+            self.text.as_mut().unwrap().displayed[index] = Some(cell);
+            changed += 1;
+        }
+        if row == self.rows - 1 {
+            let text = self.text.as_ref().unwrap();
+            if text.bottom_dirty {
+                let color = text.bottom_color;
+                let y = self.rows * self.line_height();
+                self.fill_rect(0, y, self.info.width, self.info.height - y, color);
+                self.text.as_mut().unwrap().bottom_dirty = false;
+            }
+        }
+        changed
+    }
+
+    /// Presents all pending cells; the early console already draws immediately.
+    pub fn flush(&mut self) -> usize {
+        (0..self.rows).map(|row| self.flush_row(row)).sum()
     }
 
     pub fn columns(&self) -> usize {
@@ -228,7 +414,9 @@ impl<'a> Console<'a> {
                 if c == ' ' {
                     self.clear_cell(self.row, self.column);
                 } else {
-                    self.draw_glyph(self.row, self.column, c);
+                    self.put_cell(self.row, self.column, Cell {
+                        character: c, foreground: self.foreground, background: self.background,
+                    });
                 }
                 self.column += 1;
             }
@@ -236,8 +424,15 @@ impl<'a> Console<'a> {
     }
 
     pub fn clear(&mut self) {
+        self.return_live();
         self.escape = Escape::Text;
-        self.fill_rect(0, 0, self.info.width, self.info.height, self.background);
+        if let Some(text) = self.text.as_mut() {
+            text.cells.fill(Cell::blank(self.background));
+            text.bottom_color = self.background;
+            text.bottom_dirty = true;
+        } else {
+            self.fill_rect(0, 0, self.info.width, self.info.height, self.background);
+        }
         self.row = 0;
         self.column = 0;
     }
@@ -304,6 +499,9 @@ impl<'a> Console<'a> {
     fn csi(&mut self, command: char, params: &[u16], private: bool) {
         let amount = (params[0] as usize).max(1);
         if private {
+            if params == [1049] && matches!(command, 'h' | 'l') {
+                self.set_alternate_screen(command == 'h');
+            }
             if params == [25] && matches!(command, 'h' | 'l') {
                 self.cursor_visible = command == 'h';
             }
@@ -322,6 +520,13 @@ impl<'a> Console<'a> {
                     .min(self.columns - 1);
             }
             'J' | 'K' => {
+                if command == 'J' && params[0] == 3 && let Some(text) = self.text.as_mut() {
+                    if text.saved_state.is_some() { return; }
+                    text.history_head = 0;
+                    text.history_len = 0;
+                    text.view_offset = 0;
+                    return;
+                }
                 let cursor = self.row * self.columns + self.column.min(self.columns - 1);
                 let (start, end) = if command == 'J' {
                     (0, self.rows * self.columns)
@@ -340,10 +545,15 @@ impl<'a> Console<'a> {
                 while cell < range.end {
                     let row = cell / self.columns;
                     let end = range.end.min((row + 1) * self.columns);
-                    self.fill_rect(
-                        (cell % self.columns) * self.cell_width(), row * self.line_height(),
-                        (end - cell) * self.cell_width(), self.line_height(), self.background,
-                    );
+                    if let Some(text) = self.text.as_mut() {
+                        let start = row * (self.columns + 1) + cell % self.columns;
+                        text.cells[start..start + end - cell].fill(Cell::blank(self.background));
+                    } else {
+                        self.fill_rect(
+                            (cell % self.columns) * self.cell_width(), row * self.line_height(),
+                            (end - cell) * self.cell_width(), self.line_height(), self.background,
+                        );
+                    }
                     cell = end;
                 }
             }
@@ -404,6 +614,22 @@ impl<'a> Console<'a> {
             self.row += 1;
             return;
         }
+        if let Some(text) = self.text.as_mut() {
+            let columns = self.columns + 1;
+            if text.saved_state.is_none() {
+                let start = text.history_head * columns;
+                text.history[start..start + columns].copy_from_slice(&text.cells[..columns]);
+                text.history_head = (text.history_head + 1) % SCROLLBACK_LINES;
+                text.history_len = (text.history_len + 1).min(SCROLLBACK_LINES);
+                if text.view_offset != 0 {
+                    text.view_offset = (text.view_offset + 1).min(text.history_len);
+                }
+            }
+            text.cells.copy_within(columns.., 0);
+            text.cells[(self.rows - 1) * columns..].fill(Cell::blank(self.background));
+            return;
+        }
+        // Early boot only: the heap and RAM text cells do not exist yet.
         let line_bytes = self.line_height() * self.info.stride * self.info.bytes_per_pixel;
         let text_bytes = self.rows * line_bytes;
         self.buffer.copy_within(line_bytes..text_bytes, 0);
@@ -411,7 +637,26 @@ impl<'a> Console<'a> {
     }
 
     fn clear_cell(&mut self, row: usize, col: usize) {
-        self.fill_rect(col * self.cell_width(), row * self.line_height(), self.cell_width(), self.line_height(), self.background);
+        self.put_cell(row, col, Cell::blank(self.background));
+    }
+
+    fn put_cell(&mut self, row: usize, column: usize, cell: Cell) {
+        if let Some(text) = self.text.as_mut() {
+            text.cells[row * (self.columns + 1) + column] = cell;
+        } else {
+            self.paint_cell(row, column, cell);
+        }
+    }
+
+    fn paint_cell(&mut self, row: usize, column: usize, cell: Cell) {
+        if cell.character == ' ' {
+            self.fill_rect(column * self.cell_width(), row * self.line_height(), self.cell_width(), self.line_height(), cell.background);
+        } else {
+            let colors = self.colors();
+            self.set_colors(cell.foreground, cell.background);
+            self.draw_glyph(row, column, cell.character);
+            self.set_colors(colors.0, colors.1);
+        }
     }
 
     fn fill_rect(&mut self, x: usize, y: usize, width: usize, height: usize, color: Color) {
@@ -434,24 +679,23 @@ impl<'a> Console<'a> {
 
     fn draw_glyph(&mut self, row: usize, col: usize, c: char) {
         let (x0, y0) = (col * self.cell_width(), row * self.line_height());
-        // Look up the font once per character, not once per pixel.
         let raster = self.font.glyph(c);
+        let (foreground, bpp) = self.encode(self.foreground);
+        let (background, _) = self.encode(self.background);
+        let line_bytes = self.cell_width() * bpp;
+        // Largest native raster, maximum supported scale and pixel size. Compose
+        // a scanline in RAM, then issue a contiguous write to video memory.
+        let mut line = [0; Font::Large.width() * 3 * 4];
         for (dy, &bits) in raster.iter().enumerate() {
-            for dx in 0..self.font.width() {
-                let color = if self.font.pixel(bits, dx) { self.foreground } else { self.background };
-                for sy in 0..self.scale {
-                    for sx in 0..self.scale {
-                        self.write_pixel(x0 + dx * self.scale + sx, y0 + dy * self.scale + sy, color);
-                    }
-                }
+            for (dx, pixel) in line[..line_bytes].chunks_exact_mut(bpp).enumerate() {
+                let bytes = if self.font.pixel(bits, dx / self.scale) { foreground } else { background };
+                pixel.copy_from_slice(&bytes[..bpp]);
+            }
+            for sy in 0..self.scale {
+                let offset = self.pixel_offset(x0, y0 + dy * self.scale + sy);
+                self.buffer[offset..offset + line_bytes].copy_from_slice(&line[..line_bytes]);
             }
         }
-    }
-
-    fn write_pixel(&mut self, x: usize, y: usize, color: Color) {
-        let offset = self.pixel_offset(x, y);
-        let (bytes, len) = self.encode(color);
-        self.buffer[offset..offset + len].copy_from_slice(&bytes[..len]);
     }
 
     fn pixel_offset(&self, x: usize, y: usize) -> usize {
@@ -537,6 +781,178 @@ mod tests {
 
     fn row_text_is(console: &Console, row: usize, text: &str) -> bool {
         text.chars().enumerate().all(|(col, c)| console.cell_shows(row, col, c))
+    }
+
+    #[test]
+    fn scrollback_preserves_colors_and_viewport_while_output_continues() {
+        let info = screen_info();
+        let mut bytes = buffer(&info);
+        let mut c = console(&mut bytes, info);
+        c.enable_buffering().unwrap();
+        c.write_string("\x1b[31;44ma\n\x1b[0mb\nc\nd\n");
+        assert_eq!(c.history_lines(), 1);
+        let cursor = c.cursor();
+        c.scroll_pages(1);
+        c.flush();
+        assert_eq!(c.view_offset(), 1);
+        assert_eq!(c.cursor(), cursor);
+        assert!(c.cell_shows_in(0, 0, 'a', Color::RED, Color::new(0, 0, 170)));
+        assert!(c.cell_shows(3, 0, 'd'));
+        c.write_string("e\n");
+        assert_eq!(c.view_offset(), 2);
+        assert_eq!(c.flush(), 0, "new output must not replace the historical viewport");
+        c.scroll_pages(-1);
+        c.flush();
+        assert_eq!(c.view_offset(), 0);
+        assert!(c.cell_shows(0, 0, 'c'));
+        assert!(c.cell_shows(2, 0, 'e'));
+        assert_eq!(c.cursor(), (3, 0));
+    }
+
+    #[test]
+    fn scrollback_wraps_at_capacity_and_page_navigation_clamps() {
+        let info = screen_info();
+        let mut bytes = buffer(&info);
+        let mut c = console(&mut bytes, info);
+        c.enable_buffering().unwrap();
+        let lines = SCROLLBACK_LINES + 8;
+        for i in 0..lines { writeln!(c, "{}", (b'a' + (i % 26) as u8) as char).unwrap(); }
+        assert_eq!(c.history_lines(), SCROLLBACK_LINES);
+        c.scroll_pages(isize::MAX);
+        c.flush();
+        let oldest = lines - (c.rows() - 1) - SCROLLBACK_LINES;
+        assert_eq!(c.view_offset(), SCROLLBACK_LINES);
+        assert!(c.cell_shows(0, 0, (b'a' + (oldest % 26) as u8) as char));
+        c.write_string("z\n");
+        c.flush();
+        assert!(c.cell_shows(0, 0, (b'a' + ((oldest + 1) % 26) as u8) as char));
+        c.scroll_pages(isize::MIN);
+        assert_eq!(c.view_offset(), 0);
+        c.scroll_pages(1);
+        c.return_live();
+        c.flush();
+        assert_eq!(c.view_offset(), 0);
+        assert!(c.cell_shows(2, 0, 'z'));
+        assert_guard_untouched(&bytes, &info);
+    }
+
+    #[test]
+    fn alternate_screen_restores_shell_and_does_not_record_game_frames() {
+        let info = screen_info();
+        let mut bytes = buffer(&info);
+        let mut c = console(&mut bytes, info);
+        c.enable_buffering().unwrap();
+        c.write_string("one\ntwo\nthree\nfour\nfive\x1b[31m");
+        c.flush();
+        let saved = c.buffer.to_vec();
+        let cursor = c.cursor();
+        let colors = c.colors();
+        let history = c.history_lines();
+        c.write_string("\x1b[?1049h\x1b[?1049h");
+        for _ in 0..SCROLLBACK_LINES + 5 { c.write_string("game\n"); }
+        c.scroll_pages(5);
+        c.write_string("\x1b[3J");
+        c.flush();
+        assert_eq!(c.history_lines(), history);
+        assert_eq!(c.view_offset(), 0);
+        c.write_string("\x1b[?1049l\x1b[?1049l");
+        c.flush();
+        assert_eq!(c.buffer, saved);
+        assert_eq!(c.cursor(), cursor);
+        assert_eq!(c.colors(), colors);
+        c.scroll_pages(1);
+        c.flush();
+        assert!(c.cell_shows_in(0, 0, 'o', Color::GREEN, Color::BLACK));
+        c.write_string("\x1b[3J");
+        c.flush();
+        assert_eq!(c.history_lines(), 0);
+        assert_eq!(c.view_offset(), 0);
+        assert!(c.cell_shows_in(0, 0, 't', Color::GREEN, Color::BLACK));
+    }
+
+    #[test]
+    fn buffered_output_matches_direct_pixels_across_formats_fonts_and_ansi() {
+        for (format, bpp) in [(PixelFormat::Rgb, 3), (PixelFormat::Rgb, 4),
+            (PixelFormat::Bgr, 3), (PixelFormat::Bgr, 4),
+            (PixelFormat::U8, 1), (PixelFormat::U8, 2), (PixelFormat::U8, 3), (PixelFormat::U8, 4)] {
+            for (font, scale) in [(Font::Small, 1), (Font::Small, 2), (Font::Small, 3), (Font::Large, 1)] {
+                let width = font.width() * scale * 10 + 3;
+                let height = font.height() * scale * 4 + 5;
+                let info = info(format, bpp, width, height, width + 7);
+                let mut a = buffer(&info);
+                let mut b = buffer(&info);
+                let mut direct = Console::with_font_and_scale(&mut a, info, font, scale).unwrap();
+                let mut buffered = Console::with_font_and_scale(&mut b, info, font, scale).unwrap();
+                buffered.enable_buffering().unwrap();
+                buffered.flush();
+                for _ in 0..3 {
+                    for text in ["one\ntwo\n", "\x1b[31;44mЖ\t!\n", "wrap over several rows of text\n\n",
+                        "\x1b[2;3H\x1b[", "1Kabc\x08Z", "\x1b[2J", "\x1b[3;1H\x1b[42m\n\n",
+                        "\x1b[0m\x1b[H0123456789\t!\rQ", "\x1b[1J\x1b[2K\x1b[?25l"] {
+                        direct.write_string(text);
+                        buffered.write_string(text);
+                        buffered.flush();
+                        assert_eq!(direct.cursor(), buffered.cursor());
+                        assert_eq!(direct.colors(), buffered.colors());
+                        assert_eq!(direct.cursor_visible(), buffered.cursor_visible());
+                        assert_eq!(direct.buffer, buffered.buffer, "format={format:?} bpp={bpp} scale={scale} text={text:?}");
+                        assert_eq!(buffered.flush(), 0, "unchanged screen must require no writes");
+                    }
+                    direct.set_colors(Color::WHITE, Color::RED);
+                    buffered.set_colors(Color::WHITE, Color::RED);
+                    direct.clear();
+                    buffered.clear();
+                    buffered.flush();
+                    assert_eq!(direct.buffer, buffered.buffer);
+                }
+                drop(direct);
+                drop(buffered);
+                assert_guard_untouched(&a, &info);
+                assert_guard_untouched(&b, &info);
+            }
+        }
+    }
+
+    #[test]
+    fn buffered_scroll_reconstructs_pixels_without_reading_framebuffer() {
+        let info = screen_info();
+        let mut bytes = buffer(&info);
+        let mut c = console(&mut bytes, info);
+        c.enable_buffering().unwrap();
+        c.write_string("a\n\x1b[31;44mb\n\x1b[0mc\nd");
+        c.flush();
+        // Simulate unreadable/meaningless video memory. Reconstruct the scrolled
+        // screen from text alone, including each glyph's original colors.
+        c.buffer[..info.byte_len].fill(0xdd);
+        c.text.as_mut().unwrap().displayed.fill(None);
+        c.write_char('\n');
+        c.flush();
+        assert!(c.cell_shows_in(0, 0, 'b', Color::RED, Color::new(0, 0, 170)));
+        assert!(c.cell_shows_in(1, 0, 'c', Color::GREEN, Color::BLACK));
+        assert!(c.cell_shows_in(2, 0, 'd', Color::GREEN, Color::BLACK));
+        assert!(c.cell_shows(3, 0, ' '));
+        assert_guard_untouched(&bytes, &info);
+    }
+
+    #[test]
+    fn buffered_scroll_skips_identical_cells_and_coalesces_intermediate_screens() {
+        let info = screen_info();
+        let mut bytes = buffer(&info);
+        let mut c = console(&mut bytes, info);
+        c.enable_buffering().unwrap();
+        c.flush();
+        c.write_string("same\nsame\nsame\n");
+        c.flush();
+        c.write_string("same\n");
+        assert_eq!(c.flush(), 0, "identical scrolled rows need no video writes");
+        for _ in 0..1000 {
+            c.write_string("transient\n");
+        }
+        c.write_string("\x1b[H\x1b[2Jsame\nsame\nsame\n");
+        assert_eq!(c.flush(), 0, "intermediate screens are never drawn");
+        c.write_string("\x1b[H\x1b[31mS");
+        assert_eq!(c.flush_row(0), 1);
+        assert_eq!(c.flush(), 0);
     }
 
     #[test]

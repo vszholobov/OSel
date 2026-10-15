@@ -40,7 +40,7 @@ description: Блокировки OSel — IrqSpinlock, отчёт о взаим
 | `SERIAL1` | `src/drivers/cereal.rs` | порт COM1 | `serial_print!` через `port()`; экран паники и `test_panic_handler` снимают силой |
 | `PICS` | `src/interrupts.rs` | два контроллера PIC | `init_pics`, `with_pics`; обработчики таймера, клавиатуры и ложных IRQ |
 | `DECODER` | `src/drivers/keyboard.rs` | состояние декодера скан-кодов | обработчик клавиатуры |
-| `BUFFER` | `src/drivers/keyboard.rs` | буфер введённых символов | обработчик клавиатуры, `pop_char`, `dropped_chars` |
+| `BUFFER` | `src/drivers/keyboard.rs` | очередь символов и навигационных событий | обработчик клавиатуры, `pop_key`, `pop_char`, `has_input`, `dropped_chars` |
 | `KEYBOARD_DIAGNOSTICS` | `src/drivers/keyboard.rs` | отчёт настройки PS/2 и счётчики IRQ/байтов/символов | инициализация, IRQ 1, резервный опрос, снимок для оболочки |
 | `ALLOCATOR` | `src/allocator.rs` | куча | глобальный аллокатор, `with_allocator` |
 | `MEMORY` | `src/memory.rs` | таблица страниц и аллокатор страниц | `with_memory`; page fault программы на нетронутой странице (`UserSpace::fault`), когда ядро не держит ни одной блокировки |
@@ -110,6 +110,6 @@ description: Блокировки OSel — IrqSpinlock, отчёт о взаим
 
 - [0003 — IrqSpinlock](../../decisions/0003-irq-spinlock.md)
 
-_Сверено с кодом: 2026-10-14, ветка stage-4-network-tetris._
+_Сверено с кодом: 2026-10-15, ветка fix-console-scroll._
 
 `NETWORK` может вложенно брать `ALLOCATOR` для сетевых буферов. `EPOLL_REGISTRATIONS` — список слабых ссылок на описания файлов; при сканировании берёт `NETWORK` или `PIPE`. Через ожидание блокировки не переносятся.
