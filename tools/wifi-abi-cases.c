@@ -107,9 +107,10 @@ static void scanning(void) {
     tlv(WMI_TLV_TAG_ARRAY_STRUCT, channels, sizeof(channels));
     save("scan-channels");
     struct wmi_tlv_start_scan_cmd scan = {
-        .common = {.scan_id = 0xa001, .scan_req_id = 0xa001, .notify_scan_events = 0x43,
-                   .dwell_time_active = 50, .dwell_time_passive = 150,
-                   .max_scan_time = 10000, .scan_ctrl_flags = 1},
+        .common = {.scan_id = 0xa001, .scan_req_id = 0xa001, .notify_scan_events = 0x14b,
+                   .dwell_time_active = 50, .dwell_time_passive = 200,
+                   .min_rest_time = 50, .max_rest_time = 500,
+                   .max_scan_time = 10000, .scan_ctrl_flags = 0x21},
         .num_channels = 2, .num_bssids = 1, .num_probes = 3,
     };
     struct wmi_mac_addr broadcast = {.addr = {255, 255, 255, 255, 255, 255}};
@@ -120,6 +121,15 @@ static void scanning(void) {
     tlv(WMI_TLV_TAG_ARRAY_FIXED_STRUCT, &broadcast, sizeof(broadcast));
     tlv(WMI_TLV_TAG_ARRAY_BYTE, NULL, 0);
     save("start-scan");
+    struct { struct tlv_header header; struct wmi_channel channel; } __packed receive5 = {
+        .header = {.tag = WMI_TLV_TAG_STRUCT_CHANNEL, .len = sizeof(struct wmi_channel)},
+        .channel = {.mhz = 5180, .band_center_freq1 = 5180, .flags = MODE_11A | (1U << 7)},
+    };
+    list.num_scan_chans = 1;
+    begin(WMI_TLV_SCAN_CHAN_LIST_CMDID);
+    tlv(WMI_TLV_TAG_STRUCT_SCAN_CHAN_LIST_CMD, &list, sizeof(list));
+    tlv(WMI_TLV_TAG_ARRAY_STRUCT, &receive5, sizeof(receive5));
+    save("scan-channel-5ghz");
 }
 
 static void station_commands(void) {

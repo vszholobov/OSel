@@ -52,6 +52,78 @@ fn passive_scan_wire_commands_match_c_structures_and_enum_tags() {
         wmi::start_scan(&[2412, 2437]).unwrap(),
         fixture!("start-scan")
     );
+    assert_eq!(
+        wmi::scan_channels(&[5180]).unwrap(),
+        fixture!("scan-channel-5ghz")
+    );
+}
+
+#[test]
+fn repeated_scans_accumulate_beacons_and_distinguish_empty_and_rejected_frames() {
+    let mut results = wmi::ScanResults::default();
+    assert!(results.event(fixture!("scan-completed"), 0xa001).unwrap());
+    assert!(results.networks.iter().all(Option::is_none));
+    assert!(!results.event(fixture!("beacon"), 0xa002).unwrap());
+    assert!(!results.event(fixture!("beacon"), 0xa002).unwrap());
+    let mut completed = fixture!("scan-completed").to_vec();
+    completed[24..28].copy_from_slice(&0xa002u32.to_le_bytes());
+    assert!(results.event(&completed, 0xa002).unwrap());
+    assert!(results.event(&completed, 0xa003).is_err());
+    completed[24..28].copy_from_slice(&0xa003u32.to_le_bytes());
+    assert!(results.event(&completed, 0xa003).unwrap());
+    assert_eq!(results.networks.iter().flatten().count(), 1);
+    assert_eq!(results.networks[0], Some(ap()));
+    assert_eq!(results.beacons, 2);
+    let mut bad = fixture!("beacon").to_vec();
+    bad[28] = 1; // CRC error in WMI metadata
+    results.event(&bad, 0xa003).unwrap();
+    let mut bad = fixture!("beacon").to_vec();
+    bad[52 + 37] = 255; // SSID overruns the management frame
+    results.event(&bad, 0xa003).unwrap();
+    assert_eq!(results.management, 4);
+    assert_eq!(results.bad_management, 1);
+    assert_eq!(results.bad_beacons, 1);
+    assert_eq!(results.networks[0], Some(ap()));
+}
+
+#[test]
+fn unsupported_networks_explain_security_band_and_rate_rejections_without_weakening_admission() {
+    let good = ap();
+    assert_eq!(station::unsupported_reason(&good), None);
+    let mut cases = Vec::new();
+    let mut network = good;
+    network.rsn = None;
+    cases.push((network, "no WPA2 RSN; WPA1/WEP unsupported"));
+    let mut network = good;
+    network.rsn.as_mut().unwrap().group_ccmp = false;
+    cases.push((network, "group cipher requires CCMP/AES"));
+    let mut network = good;
+    network.rsn.as_mut().unwrap().pairwise_ccmp = false;
+    cases.push((network, "pairwise cipher requires CCMP/AES"));
+    let mut network = good;
+    network.rsn.as_mut().unwrap().psk = false;
+    cases.push((network, "WPA2-Personal PSK required"));
+    let mut network = good;
+    network.rsn.as_mut().unwrap().pmf_required = true;
+    cases.push((network, "mandatory PMF unsupported"));
+    let mut network = good;
+    network.frequency = 5180;
+    cases.push((network, "connection requires channels 1-11"));
+    let mut network = good;
+    network.frequency = 2472;
+    cases.push((network, "connection requires channels 1-11"));
+    let mut network = good;
+    network.capabilities &= !0x10;
+    cases.push((network, "open network; WPA2 required"));
+    let mut network = good;
+    network.unsupported_basic_rate = true;
+    cases.push((network, "unsupported basic rates"));
+    for (network, reason) in cases {
+        assert_eq!(station::unsupported_reason(&network), Some(reason));
+        assert!(station::supported(&network).is_err());
+        assert!(wmi::station::start(&network).is_err());
+        assert!(station::associate(STA, &network, 0).is_err());
+    }
 }
 
 #[test]

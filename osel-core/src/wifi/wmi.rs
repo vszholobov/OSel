@@ -202,44 +202,62 @@ pub fn vdev_create(mac: [u8; 6]) -> KResult<Vec<u8>> {
     Ok(command)
 }
 pub fn passive_channels(service: &ServiceReady) -> Vec<u32> {
-    (1..=11)
+    passive_frequencies(service.channels_2ghz, service.channels_5ghz)
+}
+/// Receive-only discovery. Extra channels do not authorize station TX there.
+/// Avoid DFS channels; keep every frequency within the board's advertised limits.
+pub fn passive_frequencies(band2: [u32; 2], band5: [u32; 2]) -> Vec<u32> {
+    (1..=13)
         .map(|channel| 2407 + 5 * channel)
-        .filter(|frequency| {
-            *frequency >= service.channels_2ghz[0] && *frequency <= service.channels_2ghz[1]
-        })
+        .filter(|frequency| *frequency >= band2[0] && *frequency <= band2[1])
+        .chain(
+            [5180, 5200, 5220, 5240, 5745, 5765, 5785, 5805, 5825]
+                .into_iter()
+                .filter(|frequency| *frequency >= band5[0] && *frequency <= band5[1]),
+        )
         .collect()
 }
 pub fn scan_channels(frequencies: &[u32]) -> KResult<Vec<u8>> {
-    if frequencies.is_empty() || frequencies.len() > 11 {
+    if frequencies.is_empty() || frequencies.len() > 22 {
         return Err(Errno::EINVAL);
     }
     let mut command = 0x3003u32.to_le_bytes().to_vec();
     put_tlv(&mut command, 79, &words(&[frequencies.len() as u32]))?;
     let mut channels = Vec::new();
     for &frequency in frequencies {
-        if !(2412..=2462).contains(&frequency) || (frequency - 2412) % 5 != 0 {
+        let band2 = (2412..=2472).contains(&frequency) && (frequency - 2412) % 5 == 0;
+        let band5 = [5180, 5200, 5220, 5240, 5745, 5765, 5785, 5805, 5825].contains(&frequency);
+        if !band2 && !band5 {
             return Err(Errno::EINVAL);
         }
-        // Receive-only 11g/20 MHz channels. No TX power is requested for passive scanning.
+        // Receive-only 11g/11a, 20 MHz. No TX power is requested.
         put_tlv(
             &mut channels,
             80,
-            &words(&[frequency, frequency, 0, 1 | (1 << 7), 0, 0]),
+            &words(&[frequency, frequency, 0, u32::from(band2) | (1 << 7), 0, 0]),
         )?;
     }
     put_tlv(&mut command, 18, &channels)?;
     Ok(command)
 }
 pub fn start_scan(frequencies: &[u32]) -> KResult<Vec<u8>> {
+    start_scan_id(frequencies, 0xa001)
+}
+pub fn start_scan_id(frequencies: &[u32], id: u32) -> KResult<Vec<u8>> {
     let _ = scan_channels(frequencies)?;
+    if !(0xa001..=0xafff).contains(&id) {
+        return Err(Errno::EINVAL);
+    }
     let mut common = [0u32; 25];
-    common[0] = 0xa001;
+    common[0] = id;
     common[1] = 0xa001;
-    common[4] = 0x43; // started, completed, start failed
+    common[4] = 0x14b; // started, completed, foreign channel/exit, start failed
     common[5] = 50;
-    common[6] = 150;
+    common[6] = 200;
+    common[7] = 50;
+    common[8] = 500;
     common[12] = 10000;
-    common[14] = 1; // passive, TLV probe-filter polarity
+    common[14] = 0x21; // passive, ath10k TLV inverts FILTER_PROBE_REQ
     common[16] = frequencies.len() as u32;
     common[17] = 1;
     common[20] = 3;
@@ -297,7 +315,13 @@ pub fn management(data: &[u8]) -> KResult<Management<'_>> {
         rssi: (snr - 95).clamp(-127, 0),
     })
 }
-pub fn scan_complete(data: &[u8]) -> KResult<bool> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScanEvent {
+    pub kind: u32,
+    pub reason: u32,
+    pub frequency: u32,
+}
+pub fn scan_event(data: &[u8], id: u32) -> KResult<ScanEvent> {
     if word(data, 0)? & 0xffffff != 0x3001 {
         return Err(Errno::EIO);
     }
@@ -309,7 +333,7 @@ pub fn scan_complete(data: &[u8]) -> KResult<bool> {
         }
     }
     let scan = scan.filter(|data| data.len() >= 24).ok_or(Errno::EIO)?;
-    if word(scan, 3)? != 0xa001 || word(scan, 4)? != 0xa001 || word(scan, 5)? != 0 {
+    if word(scan, 3)? != 0xa001 || word(scan, 4)? != id || word(scan, 5)? != 0 {
         return Err(Errno::EIO);
     }
     let kind = word(scan, 0)?;
@@ -319,7 +343,67 @@ pub fn scan_complete(data: &[u8]) -> KResult<bool> {
     if kind & 2 != 0 && word(scan, 1)? != 0 {
         return Err(Errno::EIO);
     }
-    Ok(kind & 2 != 0)
+    Ok(ScanEvent {
+        kind,
+        reason: word(scan, 1)?,
+        frequency: word(scan, 2)?,
+    })
+}
+pub fn scan_complete(data: &[u8]) -> KResult<bool> {
+    Ok(scan_event(data, 0xa001)?.kind & 2 != 0)
+}
+/// Accumulate all passes without erasing APs missed in a later pass. Counters
+/// distinguish no radio frames from malformed metadata or rejected beacons.
+#[derive(Default)]
+pub struct ScanResults {
+    pub networks: [Option<super::ieee80211::AccessPoint>; 20],
+    pub events: u32,
+    pub channels: u32,
+    pub management: u32,
+    pub bad_management: u32,
+    pub bad_beacons: u32,
+    pub beacons: u32,
+}
+impl ScanResults {
+    pub fn event(&mut self, data: &[u8], id: u32) -> KResult<bool> {
+        self.events += 1;
+        match word(data, 0)? & 0xffffff {
+            0x3001 => {
+                let scan = scan_event(data, id)?;
+                self.channels += u32::from(scan.kind & 8 != 0);
+                return Ok(scan.kind & 2 != 0);
+            }
+            0x7001 => {
+                self.management += 1;
+                let frame = match management(data) {
+                    Ok(frame) => frame,
+                    Err(_) => {
+                        self.bad_management += 1;
+                        return Ok(false);
+                    }
+                };
+                if !matches!(frame.frame.first(), Some(0x80 | 0x50)) {
+                    return Ok(false);
+                }
+                match super::ieee80211::beacon(frame.frame, frame.frequency, frame.rssi) {
+                    Ok(ap) => {
+                        self.beacons += 1;
+                        let index = self
+                            .networks
+                            .iter()
+                            .position(|old| old.is_some_and(|old| old.bssid == ap.bssid))
+                            .or_else(|| self.networks.iter().position(Option::is_none));
+                        if let Some(index) = index {
+                            self.networks[index] = Some(ap);
+                        }
+                    }
+                    Err(_) => self.bad_beacons += 1,
+                }
+            }
+            _ => (),
+        }
+        Ok(false)
+    }
 }
 fn unique<'a>(slot: &mut Option<&'a [u8]>, value: &'a [u8]) -> KResult<()> {
     if slot.replace(value).is_some() {
@@ -662,16 +746,25 @@ mod tests {
     fn passive_scan_uses_factory_limits_and_never_enables_active_probes() {
         let service = service_ready(&event()).unwrap();
         let frequencies = passive_channels(&service);
-        assert_eq!(frequencies.len(), 11);
+        assert_eq!(frequencies.len(), 22);
+        assert!(frequencies.contains(&2472));
+        assert!(frequencies.contains(&5180));
+        assert!(!frequencies.contains(&5260)); // DFS is outside discovery policy.
+        assert_eq!(passive_frequencies([2412, 2462], [0, 0]).len(), 11);
+        assert!(passive_frequencies([2473, 2484], [5260, 5720]).is_empty());
         let packet = start_scan(&frequencies).unwrap();
         let mut elements = Elements::new(&packet[4..]);
         let (tag, scan) = elements.next().unwrap().unwrap();
         assert_eq!(tag, 77);
         assert_eq!(scan.len(), 100);
-        assert_eq!(word(scan, 14), Ok(1));
+        assert_eq!(word(scan, 14), Ok(0x21));
         assert_eq!(word(scan, 20), Ok(3));
         assert!(scan_channels(&[2484]).is_err());
+        assert!(scan_channels(&[5260]).is_err());
+        assert!(scan_channels(&[2413]).is_err());
         assert!(start_scan(&[]).is_err());
+        assert!(start_scan_id(&frequencies, 0xa000).is_err());
+        assert!(start_scan_id(&frequencies, 0xb000).is_err());
         assert!(vdev_create([0; 6]).is_err());
     }
     #[test]

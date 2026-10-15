@@ -6,9 +6,13 @@
 
 ### Added
 
+- Explain Wi-Fi connection rejection reasons and passively discover channels 12–13 and selected non-DFS 5 GHz channels within factory limits; station admission remains WPA2-CCMP on channels 1–11.
+
 - Independent QCA6174 wire fixtures generated from checksum-pinned ath10k v6.12 C declarations: boot, scan, station/key commands, HTT events and RX/TX layouts, plus mutation tests and a kernel DMA/event lifecycle scenario.
 
 ### Fixed
+
+- Buffer WMI receive bursts with 15 independent DMA slots, combine three bounded passive scan passes and retain scan/receive counters after intermittent empty results on Acer. Hardware reliability still needs verification.
 
 - Reject EAPOL relayed from other Ethernet sources even after Wi-Fi authorization, and validate HTC credit trailers on readiness/service replies as well as normal receive packets.
 - HTT startup waits through bounded credit notifications before version confirmation while retaining its shared deadline and version check.

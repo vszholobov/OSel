@@ -25,11 +25,7 @@ use core::{
 use osel_core::{
     errno::{Errno, KResult},
     file::FileLike,
-    wifi::{
-        self, Firmware, bmi, boot, htc, htt,
-        ieee80211::{self, AccessPoint},
-        wmi,
-    },
+    wifi::{self, Firmware, bmi, boot, htc, htt, ieee80211::AccessPoint, wmi},
 };
 use x86_64::{
     VirtAddr,
@@ -219,7 +215,10 @@ pub fn connect(index: usize, out: &mut impl Write) -> KResult<()> {
         .copied()
         .flatten()
         .ok_or(Errno::EINVAL)?;
-    wifi::station::supported(&ap)?;
+    if let Some(reason) = wifi::station::unsupported_reason(&ap) {
+        let _ = writeln!(out, "WiFi cannot connect: {reason}");
+        return Err(Errno::EOPNOTSUPP);
+    }
     let device = card().ok_or(Errno::ENODEV)?;
     if device.read(0x2c) != 0x080711ad || device.revision != 0x32 {
         return Err(Errno::EOPNOTSUPP);
@@ -337,7 +336,10 @@ fn connected_worker() {
 
 fn show_networks(out: &mut impl Write) {
     let networks = *SCAN_RESULTS.lock();
-    let _ = writeln!(out, "Last passive WiFi scan (2.4 GHz):");
+    let _ = writeln!(
+        out,
+        "Last passive WiFi scan (2.4/5 GHz; connect on channels 1-11):"
+    );
     for (index, ap) in networks
         .iter()
         .enumerate()
@@ -374,20 +376,71 @@ fn show_networks(out: &mut impl Write) {
             }
         }
         let _ = out.write_char('\n');
+        if let Some(reason) = wifi::station::unsupported_reason(ap) {
+            let _ = writeln!(out, "  Cannot connect: {reason}");
+        }
     }
     if networks.iter().all(Option::is_none) {
         let _ = writeln!(out, "No saved networks");
     }
 }
+/// Fifteen independent WMI buffers are published together, leaving one ring
+/// entry empty. A completed slot is copied and cleared before the producer
+/// wraps to it. The former single-buffer queue could drop bursty scan events.
+struct WmiReceive {
+    buffers: DmaRegion,
+    read: u32,
+    write: u32,
+}
+impl WmiReceive {
+    fn new(ring: &Dma, read: u32) -> KResult<Self> {
+        let buffers = DmaRegion::new(ENTRIES as usize * 2048).ok_or(Errno::ENOMEM)?;
+        for index in 0..ENTRIES {
+            unsafe { descriptor(ring.ptr, index, buffers.physical() as u32 + index * 2048, 0) };
+        }
+        fence(Ordering::SeqCst);
+        Ok(Self {
+            buffers,
+            read,
+            write: (read + ENTRIES - 1) & (ENTRIES - 1),
+        })
+    }
+    fn take(&mut self, ring: &Dma, count: u16) -> KResult<Vec<u8>> {
+        if !(8..=2048).contains(&count) {
+            return Err(Errno::EIO);
+        }
+        fence(Ordering::SeqCst);
+        let packet = unsafe {
+            core::slice::from_raw_parts(
+                self.buffers.ptr.add(self.read as usize * 2048),
+                count as usize,
+            )
+        }
+        .to_vec();
+        unsafe {
+            descriptor(
+                ring.ptr,
+                self.read,
+                self.buffers.physical() as u32 + self.read * 2048,
+                0,
+            )
+        };
+        fence(Ordering::SeqCst);
+        self.read = (self.read + 1) & (ENTRIES - 1);
+        self.write = (self.write + 1) & (ENTRIES - 1);
+        Ok(packet)
+    }
+}
 struct Controller {
     device: pci::Device,
     base: usize,
-    rings: Option<[Dma; 10]>, // CE0/1, BMI buffers, CE7, CE2 RX, CE3/4 TX, WMI buffer
+    rings: Option<[Dma; 9]>, // CE0/1, BMI buffers, CE7, CE2 RX, CE3/4 TX
     tx: u32,
     rx: u32,
     diag_tx: u32,
     diag_rx: u32,
     wmi_rx: u32,
+    wmi_receive: Option<WmiReceive>,
     host_memory: Vec<DmaRegion>,
     data: Option<data::Data>,
     wmi_endpoint: u8,
@@ -401,6 +454,7 @@ struct Controller {
     htt_events: VecDeque<Vec<u8>>,
     mac: [u8; 6],
     channel_limits: [u32; 2],
+    channel_limits_5ghz: [u32; 2],
     load_deadline: Option<u64>,
     reset_on_drop: bool,
 }
@@ -438,6 +492,7 @@ impl Controller {
             diag_tx: 0,
             diag_rx: 0,
             wmi_rx: 0,
+            wmi_receive: None,
             host_memory: Vec::new(),
             data: None,
             wmi_endpoint: 0,
@@ -451,6 +506,7 @@ impl Controller {
             htt_events: VecDeque::new(),
             mac: [0; 6],
             channel_limits: [0; 2],
+            channel_limits_5ghz: [0; 2],
             load_deadline: None,
             reset_on_drop: false,
         };
@@ -538,7 +594,6 @@ impl Controller {
             Ok(dma)
         };
         self.rings = Some([
-            low()?,
             low()?,
             low()?,
             low()?,
@@ -916,9 +971,11 @@ impl Controller {
     fn wmi_boot(&mut self, ready: &htc::Ready, report: &mut Report) -> KResult<()> {
         // CE2 can receive WMI as soon as control services are connected.
         let rings = self.rings.as_ref().unwrap();
-        unsafe { descriptor(rings[6].ptr, self.wmi_rx, rings[9].physical() as u32, 0) };
-        fence(Ordering::SeqCst);
-        self.put(CE + 2 * 0x400 + 0x40, (self.wmi_rx + 1) & (ENTRIES - 1));
+        let receive = WmiReceive::new(&rings[6], self.wmi_rx)?;
+        let write = receive.write;
+        self.wmi_receive = Some(receive);
+        self.put(CE + 2 * 0x400 + 0x40, write);
+        report.record("WMI RX posted buffers", ENTRIES - 1);
         let htt = self.htc_connect(0x300, 0, 0, report)?;
         let control = self.htc_connect(0x100, ready.credits, 1, report)?;
         if htt.endpoint == control.endpoint {
@@ -960,6 +1017,7 @@ impl Controller {
         for value in service.channels_2ghz {
             report.record("WMI 2GHz channel limit", value);
         }
+        self.channel_limits_5ghz = service.channels_5ghz;
         report.record("WMI memory requests", service.requests.len() as u32);
         for request in &service.requests {
             report.record("WMI memory request ID", request.id);
@@ -1059,7 +1117,10 @@ impl Controller {
         Ok(())
     }
     fn handle_htt(&mut self, event: &[u8], report: &mut Report) -> KResult<()> {
-        self.data.as_mut().ok_or(Errno::ENODEV)?.handle(event, report)
+        self.data
+            .as_mut()
+            .ok_or(Errno::ENODEV)?
+            .handle(event, report)
     }
     fn transmit_frame(
         &mut self,
@@ -1075,12 +1136,6 @@ impl Controller {
             .transmit(frame, management, encrypt)?;
         self.send_htt(&command, report)?;
         Ok(id)
-    }
-    fn post_wmi(&mut self) {
-        let rings = self.rings.as_ref().unwrap();
-        unsafe { descriptor(rings[6].ptr, self.wmi_rx, rings[9].physical() as u32, 0) };
-        fence(Ordering::SeqCst);
-        self.put(CE + 2 * 0x400 + 0x40, (self.wmi_rx + 1) & (ENTRIES - 1));
     }
     fn send_wmi(&mut self, endpoint: u8, command: &[u8], report: &mut Report) -> KResult<()> {
         self.check_operation()?;
@@ -1246,17 +1301,17 @@ impl Controller {
             .min(time::monotonic_ns().saturating_add(timeout.saturating_mul(1_000_000)));
         loop {
             self.check_operation()?;
-            let (count, buffer, wmi_ring) = if self.descriptor_length(6, self.wmi_rx) != 0 {
-                (self.descriptor_length(6, self.wmi_rx), 9, true)
+            let (count, wmi_ring) = if self.descriptor_length(6, self.wmi_rx) != 0 {
+                (self.descriptor_length(6, self.wmi_rx), true)
             } else if self.descriptor_length(1, self.rx) != 0 {
-                (self.descriptor_length(1, self.rx), 3, false)
+                (self.descriptor_length(1, self.rx), false)
             } else {
                 if time::monotonic_ns() >= deadline {
                     self.snapshot(report, CE + 2 * 0x400);
                     report.record("firmware receive timeout", 0);
                     return Err(Errno::ETIMEDOUT);
                 }
-                delay(10)?;
+                delay(1)?;
                 continue;
             };
             if count < 8 || count > 2048 {
@@ -1264,15 +1319,20 @@ impl Controller {
                 return Err(Errno::EIO);
             }
             let rings = self.rings.as_ref().unwrap();
-            let packet =
-                unsafe { core::slice::from_raw_parts(rings[buffer].ptr, count as usize) }.to_vec();
-            if wmi_ring {
-                self.wmi_rx = (self.wmi_rx + 1) & (ENTRIES - 1);
-                self.post_wmi();
+            let packet = if wmi_ring {
+                let receive = self.wmi_receive.as_mut().ok_or(Errno::EIO)?;
+                let packet = receive.take(&rings[6], count)?;
+                self.wmi_rx = receive.read;
+                let write = receive.write;
+                self.put(CE + 2 * 0x400 + 0x40, write);
+                packet
             } else {
+                let packet =
+                    unsafe { core::slice::from_raw_parts(rings[3].ptr, count as usize) }.to_vec();
                 self.rx = (self.rx + 1) & (ENTRIES - 1);
                 self.post_receive();
-            }
+                packet
+            };
             let returned = htc::credits(&packet, self.wmi_endpoint).map_err(|error| {
                 report.record("HTC rejected RX bytes", u32::from(count));
                 report.record("HTC rejected RX CE", if wmi_ring { 2 } else { 1 });
@@ -1321,12 +1381,7 @@ impl Controller {
         }
     }
     fn scan(&mut self, report: &mut Report) -> KResult<[Option<AccessPoint>; 20]> {
-        let frequencies: Vec<u32> = (1..=11)
-            .map(|channel| 2407 + 5 * channel)
-            .filter(|frequency| {
-                *frequency >= self.channel_limits[0] && *frequency <= self.channel_limits[1]
-            })
-            .collect();
+        let frequencies = wmi::passive_frequencies(self.channel_limits, self.channel_limits_5ghz);
         report.record("passive scan channel count", frequencies.len() as u32);
         self.send_wmi(self.wmi_endpoint, &wmi::vdev_create(self.mac)?, report)?;
         self.send_wmi(
@@ -1334,41 +1389,52 @@ impl Controller {
             &wmi::scan_channels(&frequencies)?,
             report,
         )?;
-        self.send_wmi(self.wmi_endpoint, &wmi::start_scan(&frequencies)?, report)?;
-        let deadline = time::monotonic_ns().saturating_add(15_000_000_000);
-        let mut networks: [Option<AccessPoint>; 20] = [None; 20];
-        for _ in 0..4096 {
-            let left = deadline.saturating_sub(time::monotonic_ns()) / 1_000_000;
-            if left == 0 {
-                return Err(Errno::ETIMEDOUT);
-            }
-            let event = self.next_wmi(left, report)?;
-            if event.len() < 4 {
-                continue;
-            }
-            let id = u32::from_le_bytes(event[..4].try_into().unwrap()) & 0xffffff;
-            if id == 0x3001 && wmi::scan_complete(&event)? {
-                report.record(
-                    "passive scan networks",
-                    networks.iter().flatten().count() as u32,
-                );
-                return Ok(networks);
-            }
-            if id == 0x7001 {
-                if let Ok(frame) = wmi::management(&event) {
-                    if let Ok(ap) = ieee80211::beacon(frame.frame, frame.frequency, frame.rssi) {
-                        let index = networks
-                            .iter()
-                            .position(|old| old.is_some_and(|old| old.bssid == ap.bssid))
-                            .or_else(|| networks.iter().position(Option::is_none));
-                        if let Some(index) = index {
-                            networks[index] = Some(ap);
-                        }
-                    }
+        let mut results = wmi::ScanResults::default();
+        for pass in 0..3 {
+            let scan_id = 0xa001 + pass;
+            report.record("passive scan pass", pass + 1);
+            self.send_wmi(
+                self.wmi_endpoint,
+                &wmi::start_scan_id(&frequencies, scan_id)?,
+                report,
+            )?;
+            let start = time::monotonic_ns();
+            let deadline = start.saturating_add(15_000_000_000);
+            let mut complete = false;
+            for _ in 0..4096 {
+                let left = deadline.saturating_sub(time::monotonic_ns()) / 1_000_000;
+                if left == 0 {
+                    return Err(Errno::ETIMEDOUT);
+                }
+                let event = self.next_wmi(left, report)?;
+                if results.event(&event, scan_id)? {
+                    complete = true;
+                    break;
                 }
             }
+            report.record(
+                "passive scan elapsed ms",
+                ((time::monotonic_ns() - start) / 1_000_000) as u32,
+            );
+            if !complete {
+                return Err(Errno::E2BIG);
+            }
         }
-        Err(Errno::E2BIG)
+        for (stage, value) in [
+            ("passive scan WMI events", results.events),
+            ("passive scan channel visits", results.channels),
+            ("passive scan management frames", results.management),
+            ("passive scan bad WMI frames", results.bad_management),
+            ("passive scan bad beacons", results.bad_beacons),
+            ("passive scan beacons", results.beacons),
+            (
+                "passive scan networks",
+                results.networks.iter().flatten().count() as u32,
+            ),
+        ] {
+            report.record(stage, value);
+        }
+        Ok(results.networks)
     }
 }
 struct Bmi<'a> {
@@ -1515,6 +1581,48 @@ fn probe(report: &mut Report, operation: &str) -> KResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test_case]
+    fn wmi_receive_preserves_bursts_across_ring_wrap_and_reuses_only_copied_slots() {
+        let ring = Dma::new().unwrap();
+        let mut queue = WmiReceive::new(&ring, 15).unwrap();
+        assert_eq!(queue.write, 14);
+        let mut firmware = 15;
+        for wave in 0..8u8 {
+            let first = firmware;
+            for n in 0..15u8 {
+                let slot = firmware as usize;
+                unsafe {
+                    // The real firmware may fill every published slot before polling.
+                    core::ptr::write_bytes(queue.buffers.ptr.add(slot * 2048), wave * 15 + n, 8);
+                    ring.ptr
+                        .add(slot * 8 + 4)
+                        .cast::<u16>()
+                        .write_volatile(8u16.to_le());
+                }
+                firmware = (firmware + 1) & 15;
+            }
+            for n in 0..15u8 {
+                assert_eq!(queue.read, (first + u32::from(n)) & 15);
+                let count = unsafe {
+                    u16::from_le(
+                        ring.ptr
+                            .add(queue.read as usize * 8 + 4)
+                            .cast::<u16>()
+                            .read_volatile(),
+                    )
+                };
+                let packet = queue.take(&ring, count).unwrap();
+                assert_eq!(packet, alloc::vec![wave * 15 + n; 8]);
+                // The producer is always one slot behind the consumer: depth 15.
+                assert_eq!((queue.write + 1) & 15, queue.read);
+            }
+        }
+        let before = (queue.read, queue.write);
+        for count in [0, 7, 2049, u16::MAX] {
+            assert_eq!(queue.take(&ring, count), Err(Errno::EIO));
+            assert_eq!((queue.read, queue.write), before);
+        }
+    }
     #[test_case]
     fn missing_card_diagnostics_release_resources() {
         assert!(card().is_none(), "QEMU has no QCA6174 model");
