@@ -9,6 +9,7 @@ use zeroize::Zeroizing;
 
 type HmacSha1 = Hmac<Sha1>;
 pub type Pmk = Zeroizing<[u8; 32]>;
+pub type Password = Zeroizing<Vec<u8>>;
 
 pub fn derive(password: &[u8], ssid: &[u8]) -> KResult<Pmk> {
     if ssid.is_empty() || ssid.len() > 32 {

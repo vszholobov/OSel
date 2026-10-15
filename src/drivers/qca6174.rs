@@ -7,13 +7,17 @@
 // See firmware/ath10k-driver-ISC.txt for the license.
 //! QCA6174 PCIe ROM bring-up and diagnostics, for the Acer LiteOn 11ad:0807 card.
 //! Register/CE/BMI protocol definitions follow Linux ath10k (ISC), v6.12.
-//! ROM probe and bounded firmware/HTC checkpoint, without Wi-Fi association.
+//! Bounded firmware bring-up, WPA2/CCMP station and shared Ethernet diagnostics.
+mod bridge;
+mod data;
+mod station;
 use super::{
     dma::{Dma, DmaRegion},
     pci,
 };
 use crate::{memory, sync::IrqSpinlock, time};
 use alloc::{collections::VecDeque, vec::Vec};
+pub use bridge::{Receive as WifiReceive, Transmit as WifiTransmit, Wireless};
 use core::{
     fmt::Write,
     sync::atomic::{AtomicBool, Ordering, fence},
@@ -22,7 +26,7 @@ use osel_core::{
     errno::{Errno, KResult},
     file::FileLike,
     wifi::{
-        self, Firmware, bmi, boot, htc,
+        self, Firmware, bmi, boot, htc, htt,
         ieee80211::{self, AccessPoint},
         wmi,
     },
@@ -43,6 +47,10 @@ const LOG_CAPACITY: usize = 64;
 static SCAN_RESULTS: IrqSpinlock<[Option<AccessPoint>; 20]> =
     IrqSpinlock::new("WIFI_SCAN", [None; 20]);
 static BUSY: AtomicBool = AtomicBool::new(false);
+static ACTIVE: AtomicBool = AtomicBool::new(false);
+static STOP: AtomicBool = AtomicBool::new(false);
+type Handoff = (Controller, Report, wifi::wpa2::Handshake, Wireless, Busy);
+static HANDOFF: IrqSpinlock<Option<Handoff>> = IrqSpinlock::new("WIFI_HANDOFF", None);
 static REPORT: IrqSpinlock<Report> = IrqSpinlock::new("WIFI_REPORT", Report::new());
 
 #[derive(Clone, Copy)]
@@ -123,19 +131,21 @@ pub fn command(command: &str, out: &mut impl Write) -> KResult<()> {
             let report = *REPORT.lock();
             let _ = writeln!(
                 out,
-                "WiFi stage={} error={:?} attempts={} busy={}\nWiFi association/WPA2/data path are not implemented yet",
+                "WiFi stage={} error={:?} attempts={} busy={} active={}",
                 report.stage,
                 report.error,
                 report.attempts,
-                BUSY.load(Ordering::Acquire)
+                BUSY.load(Ordering::Acquire),
+                ACTIVE.load(Ordering::Acquire)
             );
+            bridge::status(out);
         }
         "fw" => {
             let fw = Firmware::parse(wifi::FIRMWARE).map_err(|_| Errno::EIO)?;
             let board = wifi::board(wifi::BOARDS, wifi::ACER_BOARD).map_err(|_| Errno::EIO)?;
             let _ = writeln!(
                 out,
-                "WiFi firmware bundled, not running: {}\n  API=6 WMI={} HTT={} image={} OTP={} board={}\n  board match: LiteOn 11ad:0807, exact PCI identity\n  license: /usr/share/licenses/ath10k/LICENSE",
+                "WiFi bundled firmware: {}\n  API=6 WMI={} HTT={} image={} OTP={} board={}\n  board match: LiteOn 11ad:0807, exact PCI identity\n  license: /usr/share/licenses/ath10k/LICENSE",
                 fw.version,
                 fw.wmi,
                 fw.htt,
@@ -155,6 +165,17 @@ pub fn command(command: &str, out: &mut impl Write) -> KResult<()> {
             }
         }
         "results" => show_networks(out),
+        "disconnect" => {
+            STOP.store(true, Ordering::Release);
+            let deadline = time::monotonic_ns().saturating_add(5_000_000_000);
+            while ACTIVE.load(Ordering::Acquire) {
+                if time::monotonic_ns() >= deadline {
+                    return Err(Errno::ETIMEDOUT);
+                }
+                delay(10)?;
+            }
+            let _ = writeln!(out, "WiFi disconnected; see net for interface state");
+        }
         "probe" | "load" | "scan" => {
             let _busy = Busy::take()?;
             let attempts = REPORT.lock().attempts.saturating_add(1);
@@ -187,6 +208,140 @@ pub fn command(command: &str, out: &mut impl Write) -> KResult<()> {
         _ => return Err(Errno::EINVAL),
     }
     Ok(())
+}
+
+pub fn connect(index: usize, out: &mut impl Write) -> KResult<()> {
+    let busy = Busy::take()?;
+    crate::net::can_switch()?;
+    let ap = SCAN_RESULTS
+        .lock()
+        .get(index.wrapping_sub(1))
+        .copied()
+        .flatten()
+        .ok_or(Errno::EINVAL)?;
+    wifi::station::supported(&ap)?;
+    let device = card().ok_or(Errno::ENODEV)?;
+    if device.read(0x2c) != 0x080711ad || device.revision != 0x32 {
+        return Err(Errno::EOPNOTSUPP);
+    }
+    station::nonce(&mut [0; 32])?;
+    let _ = writeln!(
+        out,
+        "WiFi network {index}; WPA2 password (input hidden, Ctrl+C cancels):"
+    );
+    let tty = crate::tty::Tty::new(osel_core::vfs::Stat::default());
+    let mut password = wifi::wpa2::Password::new(Vec::with_capacity(64));
+    loop {
+        let mut byte = [0];
+        if tty.read(0, &mut byte, false)? != 1 {
+            continue;
+        }
+        match byte[0] {
+            3 => {
+                let _ = writeln!(out, "Cancelled");
+                return Err(Errno::EINTR);
+            }
+            b'\r' | b'\n' => break,
+            8 | 127 => {
+                password.pop();
+            }
+            0x20..=0xff if password.len() < 64 => password.push(byte[0]),
+            _ => return Err(Errno::EINVAL),
+        }
+    }
+    let _ = out.write_char('\n');
+    let pmk = wifi::wpa2::derive(&password, ap.ssid())?;
+    drop(password);
+    let mut report = Report::new();
+    report.attempts = REPORT.lock().attempts.saturating_add(1);
+    *REPORT.lock() = report;
+    let result = (|| {
+        let mut controller = initialize(&mut report)?;
+        controller.load(&mut report)?;
+        let handshake = controller.associate(&ap, pmk, &mut report)?;
+        controller.load_deadline = None; // connected operation has no human-input reader or load timeout
+        Ok((controller, handshake))
+    })();
+    let (controller, handshake) = match result {
+        Ok(value) => value,
+        Err(error) => {
+            report.error = Some(error);
+            *REPORT.lock() = report;
+            return Err(error);
+        }
+    };
+    let link = Wireless::new(controller.mac);
+    if let Err(error) = crate::net::use_wireless(link) {
+        link.down();
+        return Err(error);
+    }
+    STOP.store(false, Ordering::Release);
+    ACTIVE.store(true, Ordering::Release);
+    *HANDOFF.lock() = Some((controller, report, handshake, link, busy));
+    if let Err(error) = crate::scheduler::spawn_kernel(connected_worker) {
+        let handoff = HANDOFF.lock().take();
+        link.down();
+        drop(handoff);
+        ACTIVE.store(false, Ordering::Release);
+        crate::net::device_lost();
+        return Err(error);
+    }
+    let _ = writeln!(out, "WiFi WPA2 link ready; requesting DHCP");
+    if let Err(error) = crate::net::wait_ready() {
+        let _ = writeln!(
+            out,
+            "DHCP not ready; check net ip, net route, wifi status. WiFi worker remains active."
+        );
+        return Err(error);
+    }
+    let _ = writeln!(out, "WiFi DHCP ready; use net ip and ping gateway");
+    Ok(())
+}
+fn connected_worker() {
+    let Some((mut controller, mut report, mut handshake, link, busy)) = HANDOFF.lock().take()
+    else {
+        ACTIVE.store(false, Ordering::Release);
+        return;
+    };
+    let result = (|| {
+        while !STOP.load(Ordering::Acquire) {
+            controller.station_poll(&mut report)?;
+            controller.eapol(&mut handshake, &mut report)?;
+            link.dropped(core::mem::take(
+                &mut controller.data.as_mut().unwrap().drops,
+            ));
+            for _ in 0..8 {
+                let data = controller.data.as_mut().ok_or(Errno::ENODEV)?;
+                if let Some(frame) = data.received.pop_front() {
+                    link.received(frame);
+                }
+                if !data.can_transmit() {
+                    break;
+                }
+                let Some(frame) = link.take_tx() else {
+                    break;
+                };
+                controller.transmit_frame(&frame, false, true, &mut report)?;
+            }
+            // Drain RX independently of TX queue activity.
+            for _ in 0..64 {
+                let Some(frame) = controller.data.as_mut().unwrap().received.pop_front() else {
+                    break;
+                };
+                link.received(frame);
+            }
+            delay(10)?;
+        }
+        Ok(())
+    })();
+    link.down();
+    report.error = result.err();
+    report.record("WiFi worker stopped", u32::from(report.error.is_some()));
+    *REPORT.lock() = report;
+    drop(controller); // BME off/reset before DMA, then release the busy guard
+    crate::net::device_lost();
+    drop(busy);
+    ACTIVE.store(false, Ordering::Release);
 }
 
 fn show_networks(out: &mut impl Write) {
@@ -243,6 +398,7 @@ struct Controller {
     diag_rx: u32,
     wmi_rx: u32,
     host_memory: Vec<DmaRegion>,
+    data: Option<data::Data>,
     wmi_endpoint: u8,
     htt_endpoint: u8,
     wmi_credits: u16,
@@ -292,6 +448,7 @@ impl Controller {
             diag_rx: 0,
             wmi_rx: 0,
             host_memory: Vec::new(),
+            data: None,
             wmi_endpoint: 0,
             htt_endpoint: 0,
             wmi_credits: 0,
@@ -813,7 +970,135 @@ impl Controller {
         }
         report.record("WMI service ready", 1);
         self.wmi_initialize(&service, &control, ready, report)?;
+        self.htt_boot(service.supports(65), report)?;
         Ok(())
+    }
+    fn send_htt(&mut self, command: &[u8], report: &mut Report) -> KResult<()> {
+        self.check_operation()?;
+        if self.htt_endpoint == 0 || command.is_empty() || command.len() + 8 > 256 {
+            return Err(Errno::E2BIG);
+        }
+        let base = CE + 4 * 0x400;
+        let index = self.get(base + 0x3c) & (ENTRIES - 1);
+        let rings = self.rings.as_ref().unwrap();
+        let mut header = [0; 8];
+        header[0] = self.htt_endpoint;
+        header[2..4].copy_from_slice(&(command.len() as u16).to_le_bytes());
+        unsafe {
+            core::ptr::copy_nonoverlapping(header.as_ptr(), rings[2].ptr, 8);
+            core::ptr::copy_nonoverlapping(command.as_ptr(), rings[2].ptr.add(8), command.len());
+            descriptor(
+                rings[8].ptr,
+                index,
+                rings[2].physical() as u32,
+                (command.len() + 8) as u16,
+            );
+        }
+        fence(Ordering::SeqCst);
+        let next = (index + 1) & (ENTRIES - 1);
+        self.put(base + 0x3c, next);
+        if let Err(error) = self.wait(base + 0x44, ENTRIES - 1, next, 3000) {
+            self.snapshot(report, base);
+            report.record("HTT CE4 transmit timeout", index);
+            return Err(error);
+        }
+        Ok(())
+    }
+    fn next_htt(&mut self, timeout: u64, report: &mut Report) -> KResult<Vec<u8>> {
+        if let Some(event) = self.htt_events.pop_front() {
+            return Ok(event);
+        }
+        let deadline = time::monotonic_ns().saturating_add(timeout.saturating_mul(1_000_000));
+        loop {
+            let left = deadline.saturating_sub(time::monotonic_ns()) / 1_000_000;
+            if left == 0 {
+                return Err(Errno::ETIMEDOUT);
+            }
+            if let Some((endpoint, event)) = self.receive_event(left, report)? {
+                if endpoint == self.htt_endpoint {
+                    return Ok(event);
+                }
+                if self.wmi_events.len() >= 32 {
+                    return Err(Errno::EAGAIN);
+                }
+                self.wmi_events.push_back(event);
+            }
+        }
+    }
+    fn htt_boot(&mut self, full_reorder: bool, report: &mut Report) -> KResult<()> {
+        report.record("HTT full RX reorder service", u32::from(full_reorder));
+        if !full_reorder {
+            return Err(Errno::EOPNOTSUPP);
+        }
+        self.send_htt(&[0, 0, 0, 0], report)?;
+        report.record("HTT version wait", 0);
+        let event = self.next_htt(3000, report)?;
+        let htt::Event::Version { major, minor } = htt::event(&event)? else {
+            return Err(Errno::EIO);
+        };
+        report.record("HTT version major", u32::from(major));
+        report.record("HTT version minor", u32::from(minor));
+        if major != 3 {
+            return Err(Errno::EOPNOTSUPP);
+        }
+        let data = data::Data::new(self.mac)?;
+        let config = data.config()?;
+        self.data = Some(data); // owns the ring before the firmware can see it
+        self.send_htt(&config, report)?;
+        report.record("HTT RX ring posted buffers", htt::RX_POSTED as u32);
+        Ok(())
+    }
+    fn handle_htt(&mut self, event: &[u8], report: &mut Report) -> KResult<()> {
+        let data = self.data.as_mut().ok_or(Errno::ENODEV)?;
+        match htt::event(event)? {
+            htt::Event::Peer { id, vdev, mac } if vdev == 0 && mac == data.ap => {
+                data.peer = Some(id);
+                report.record("HTT AP peer mapped", u32::from(id));
+            }
+            htt::Event::Unmap(id) if data.peer == Some(id) => {
+                data.authorized = false;
+                data.peer = None;
+                return Err(Errno::ENETUNREACH);
+            }
+            htt::Event::Tx { status, ids } => {
+                for id in ids.chunks_exact(2) {
+                    data.complete(u16::from_le_bytes(id.try_into().unwrap()), status)?;
+                }
+            }
+            htt::Event::Rx {
+                peer,
+                vdev,
+                info,
+                descriptors,
+            } => data.receive(descriptors, peer, vdev, info)?,
+            htt::Event::Security { peer, flags } => {
+                report.record(
+                    "HTT security indication",
+                    u32::from(peer) << 8 | u32::from(flags),
+                );
+                if data.peer == Some(peer) && flags & 0x7f == 6 {
+                    data.security[(flags >> 7) as usize] += 1;
+                }
+            }
+            htt::Event::Other(1 | 10 | 0x11) => return Err(Errno::EOPNOTSUPP),
+            _ => (),
+        }
+        Ok(())
+    }
+    fn transmit_frame(
+        &mut self,
+        frame: &[u8],
+        management: bool,
+        encrypt: bool,
+        report: &mut Report,
+    ) -> KResult<u16> {
+        let (id, command) = self
+            .data
+            .as_mut()
+            .ok_or(Errno::ENODEV)?
+            .transmit(frame, management, encrypt)?;
+        self.send_htt(&command, report)?;
+        Ok(id)
     }
     fn post_wmi(&mut self) {
         let rings = self.rings.as_ref().unwrap();
@@ -1187,7 +1472,7 @@ impl Drop for Controller {
 fn delay(ms: u64) -> KResult<()> {
     time::sleep_until(time::monotonic_ns().saturating_add(ms * 1_000_000))
 }
-fn probe(report: &mut Report, operation: &str) -> KResult<()> {
+fn initialize(report: &mut Report) -> KResult<Controller> {
     report.record("PCI scan begin", 0);
     let device = card().ok_or(Errno::ENODEV)?;
     report.record("PCI subsystem", device.read(0x2c));
@@ -1216,6 +1501,10 @@ fn probe(report: &mut Report, operation: &str) -> KResult<()> {
     report.record("ROM early configuration complete", controller.get(CORE));
     controller.bmi_info(report)?;
     report.record("ROM ready; firmware not started", 0);
+    Ok(controller)
+}
+fn probe(report: &mut Report, operation: &str) -> KResult<()> {
+    let mut controller = initialize(report)?;
     if operation != "probe" {
         controller.load(report)?;
         if operation == "scan" {

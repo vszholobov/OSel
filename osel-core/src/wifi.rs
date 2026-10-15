@@ -2,7 +2,9 @@
 pub mod bmi;
 pub mod boot;
 pub mod htc;
+pub mod htt;
 pub mod ieee80211;
+pub mod station;
 pub mod wmi;
 pub mod wpa2;
 pub const ACER_BOARD: &[u8] =

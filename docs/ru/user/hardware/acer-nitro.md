@@ -10,7 +10,7 @@ description: Ноутбук Acer Nitro с Windows 10 — загрузка OSel �
 
 {% note warning %}
 
-На этом ноутбуке OSel ещё не запускали, точная модель неизвестна. Данные ниже — типичные для линейки Acer Nitro 5 и требуют проверки. Модель написана на наклейке снизу, например AN515-xx.
+Владелец подтвердил загрузку OSel и работу одиночного тетриса; фотографии подтверждают PS/2 и ROM/BMI Wi-Fi. Точная модель и настройки UEFI не записаны. Данные о настройках ниже — типичные для линейки и требуют проверки.
 
 {% endnote %}
 
@@ -21,9 +21,9 @@ description: Ноутбук Acer Nitro с Windows 10 — загрузка OSel �
 | Линейка | Acer Nitro (вероятно Nitro 5), Windows 10 | да, со слов владельца |
 | Режим загрузки | UEFI; старого режима BIOS на новых моделях часто нет | нет |
 | Secure Boot | включён | нет |
-| Клавиатура | встроенная, вероятно подключена как PS/2; внешняя USB без старого режима BIOS работать не будет | нет |
+| Клавиатура | встроенная PS/2; инициализация и ввод подтверждены фото диагностики | да |
 | Проводная карта | Realtek Gaming GBE Family Controller; `PCI\VEN_10EC&DEV_8168&SUBSYS_13661025&REV_25` | да, ИД оборудования Windows 10 от владельца |
-| Wi-Fi | Qualcomm Atheros QCA61x4A Wireless Network Adapter | да, со слов владельца; драйвера OSel нет |
+| Wi-Fi | Qualcomm Atheros QCA61x4A Wireless Network Adapter | да, Windows PCI ID и ответ ROM подтверждены; подключение ещё не проверено |
 
 ## Подготовка {#prepare}
 
@@ -76,4 +76,4 @@ description: Ноутбук Acer Nitro с Windows 10 — загрузка OSel �
 
 ## Wi-Fi {#wifi}
 
-Карта владельца: `PCI\VEN_168C&DEV_003E&SUBSYS_080711AD&REV_32`, QCA6174, LiteOn `11ad:0807`. Встроены прошивка hw3.0/API6 и точная запись платы. Пока реализован только ROM-пробник; подключения WPA2 нет. На Acer нужны `wifi probe` и `wifi regs`, см. [сбор отчёта](../diagnostics.md#report).
+Карта владельца: `PCI\VEN_168C&DEV_003E&SUBSYS_080711AD&REV_32`, QCA6174, LiteOn `11ad:0807`. Встроены прошивка hw3.0/API6 и точная запись платы. ROM/BMI подтверждён фотографиями образа `8a7c625`: target version `05030000`, type `8`, error=None. В новой ветке написаны загрузка прошивки, сканирование и `wifi connect N` с WPA2/CCMP, HTT и DHCP; аппаратная связь ещё не подтверждена. Начните с `wifi scan`, затем `wifi connect N` и `ping gateway`, см. [подключение и отчёт](../diagnostics.md#connect).

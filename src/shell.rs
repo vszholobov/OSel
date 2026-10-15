@@ -119,7 +119,7 @@ pub fn execute(line: &str, out: &mut impl Write) -> u8 {
     };
     let result = match command {
         "help" if args.len() == 1 => {
-            let _ = out.write_str("help             commands and limitations\nls [path]        list a directory (default /)\ncat path         print a file (up to 64 KiB)\nkbd              keyboard initialization and IRQ counters\nnet              interface and packet counters\nnet ip|route|dns|tcp  addresses, gateway, DNS, connections\nnet dhcp         restart DHCP discovery\nping IP [count]  ICMP echo; gateway alias, Ctrl+C stops\nnslookup name    DNS A records from DHCP servers\ntcpcheck IP port TCP connection test, timeout 3 seconds\npci              PCI IDs, subsystem, revision and BAR\ndiag             complete diagnostic report\nwifi status|fw|regs|probe|load|scan|results diagnostics\ntetris --network --server IP:port  network game\ntetris           play; x returns to the shell\nclear            run /bin/clear\nhello, gohello   example programs\n/bin/name args   run an executable; bare names use /bin\nPaths are relative to /. No quotes, pipes, redirects or background jobs.\n");
+            let _ = out.write_str("help             commands and limitations\nls [path]        list a directory (default /)\ncat path         print a file (up to 64 KiB)\nkbd              keyboard initialization and IRQ counters\nnet              interface and packet counters\nnet ip|route|dns|tcp  addresses, gateway, DNS, connections\nnet dhcp         restart DHCP discovery\nping IP [count]  ICMP echo; gateway alias, Ctrl+C stops\nnslookup name    DNS A records from DHCP servers\ntcpcheck IP port TCP connection test, timeout 3 seconds\npci              PCI IDs, subsystem, revision and BAR\ndiag             complete diagnostic report\nwifi status|fw|regs|probe|load|scan|results diagnostics\nwifi connect N   WPA2 network from scan; hidden password\nwifi disconnect  stop WiFi and invalidate network settings\ntetris --network --server IP:port  network game\ntetris           play; x returns to the shell\nclear            run /bin/clear\nhello, gohello   example programs\n/bin/name args   run an executable; bare names use /bin\nPaths are relative to /. No quotes, pipes, redirects or background jobs.\n");
             Ok(0)
         }
         "ls" if args.len() <= 2 => list(args.get(1).copied().unwrap_or("/"), out),
@@ -171,6 +171,9 @@ pub fn execute(line: &str, out: &mut impl Write) -> u8 {
         "diag" if args.len() == 1 => {
             crate::diagnostics::report(out);
             Ok(0)
+        }
+        "wifi" if args.len() == 3 && args[1] == "connect" => {
+            args[2].parse().map_err(|_|Errno::EINVAL).and_then(|index|crate::drivers::qca6174::connect(index,out)).map(|_|0)
         }
         "wifi" if args.len() <= 2 => {
             crate::drivers::qca6174::command(args.get(1).copied().unwrap_or("status"), out)

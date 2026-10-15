@@ -25,6 +25,7 @@ impl Dma {
 }
 impl Drop for Dma {
     fn drop(&mut self) {
+        unsafe { core::ptr::write_bytes(self.ptr, 0, 4096) };
         memory::with_memory(|m| unsafe { m.frame_allocator.deallocate_frame(self.frame) });
     }
 }

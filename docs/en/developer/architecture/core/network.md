@@ -66,3 +66,7 @@ The shell uses smoltcp ICMP and DNS directly, without new syscalls. DHCP retains
 `osel-core/src/icmp.rs` is host tested; `tests/support/network_diagnostics.rs` runs in Intel and Realtek network tests: real gateway Echo, unavailable destination, cancellation, invalid targets, repetition and memory cleanup. Commands: [user diagnostics](../../../user/diagnostics.md).
 
 `tcpcheck` uses a temporary TCP socket, existing nonblocking connect and a 3-second deadline. It verifies connection establishment without HTTP/WebSocket data and allows FIN to be sent before releasing buffers. Local server, refusal and timeout checks run in the same test and ready-image verification.
+
+## Adapter switching and link loss {#switch}
+
+Wi-Fi uses the same smoltcp stack through [driver queues](../drivers/wifi.md#station). `use_wireless` rejects switching while TCP, ICMP or DNS handles are live, rechecking under NETWORK before replacement. Socket IDs continue from the previous next_id. The old adapter and DMA are freed after releasing NETWORK. The network worker starts at boot even without an Ethernet card. A lost link clears addresses, gateway and DNS, resets DHCP and aborts TCP with ENETUNREACH, notifying epoll. A kernel test verifies switching refusal with a live socket, monotonic IDs and disconnect cleanup.

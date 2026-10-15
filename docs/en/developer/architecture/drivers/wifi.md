@@ -6,7 +6,7 @@ description: "Initial QCA6174 driver: PCI, power, reset, Copy Engine, BMI and di
 
 **Audience:** hardware and firmware bring-up developers.
 
-**Summary:** a hardware probe targets Acer `168c:003e`, subsystem `11ad:0807`, revision `32`. `wifi probe` attempts BMI Target Info after PCI/D0/wake, cold/warm reset and CE0/CE1/CE7 setup and ROM early configuration. `wifi load` also uploads firmware and checks HTC/WMI ready, then stops the target. `wifi scan` implements passive 2.4 GHz AP discovery; firmware/scanning still needs hardware validation. Association, the WPA2 handshake and the packet data path are not implemented.
+**Summary:** a hardware probe targets Acer `168c:003e`, subsystem `11ad:0807`, revision `32`. `wifi probe` attempts BMI Target Info after PCI/D0/wake, cold/warm reset and CE0/CE1/CE7 setup and ROM early configuration. `wifi load` also uploads firmware and checks HTC/WMI ready, then stops the target. `wifi scan` implements passive 2.4 GHz AP discovery; firmware/scanning still needs hardware validation. `wifi connect N` implements WPA2 association and HTT/Ethernet/DHCP; `wifi disconnect` stops the card. Acer connectivity is still unverified.
 
 ## How it works {#how}
 
@@ -22,11 +22,19 @@ Before freeing DMA, PCI bus mastering is disabled, events are masked, rings are 
 
 `wifi scan` creates a station vdev and passive channels 1–11 within factory limits, then requires a successful scan-completed event. WMI events use bounded queues; HTC trailers from both CE1 and CE2 replenish credits, and TX buffers are not reused before DMA completes. Beacon/probe-response parsing checks SSID/BSSID, IE/RSN lengths, CCMP/PSK and mandatory PMF. Malformed frames are skipped and AP storage is capped at 20. SSID control characters are escaped. Results are copied from WIFI_SCAN before output. No association occurs; the target stops after the command.
 
+## HTT and connection {#station}
+
+`wifi load` also verifies HTT version 3 and posts the RX ring: 128 entries, 63 buffers of 2048 bytes and a 300-byte v1 descriptor. The layout was checked against ath10k v6.12 `sizeof/offsetof`. TX buffers stay pinned until HTT completion, even after CE consumes their commands. Malformed/duplicate completion IDs and unknown RX DMA addresses are rejected. RX checks MSDU_DONE, lengths, BSSID, FCS/MIC/decrypt errors, Ethernet decap and per-key/TID CCMP PN. The initial STA does not negotiate HT/VHT/A-MSDU/802.11 fragmentation. Descriptor-less offload accepts only EAPOL for subsequent WPA2 verification, never application traffic.
+
+`wifi connect N` selects a saved AP, reads a password without echo and derives the PMK. A fresh firmware boot creates the station vdev and BSS peer, sets its channel, then performs open authentication and association with SSID/legacy rates/RSN. Start response, peer map, AP replies and AID are required. WMI installs PTK/GTK; HTT SEC_IND acknowledges installation. After M4 TX and peer authorization, a kernel worker owns the card. Supported APs have a visible WPA2-PSK/CCMP SSID on channels 1–11 without mandatory PMF; power is capped at 0 dBm, using 11g/20 MHz. CPUID gates RDRAND, with bounded retries and stuck-source checks and no pseudorandom fallback.
+
+`bridge.rs` exchanges Ethernet frames with smoltcp through queues capped at 64 packets; the driver retains EAPOL. Connection generations revoke stale TX tokens. Switching adapters requires no live TCP/ICMP/DNS handles and preserves monotonic socket IDs; the old device is freed outside NETWORK. AP loss, beacon miss/peer kickout, DMA errors or `wifi disconnect` clear link, IP, route and DNS and abort TCP. DMA pages are zeroed after stop/reset and returned to the allocator. The load deadline is disabled only for the connected worker, which never consumes shell input.
+
 ## WPA2 {#wpa2}
 
 `osel-core/src/wifi/wpa2.rs` provides a pure WPA2-PSK/CCMP state machine: PBKDF2-HMAC-SHA1, PTK derivation, MIC and AES key unwrap. Primitives come from RustCrypto; dependency licenses accompany every ramdisk at `/usr/share/licenses/WPA2-NOTICES`. Passwords accept 8–63 bytes or a 64-digit hexadecimal PSK; secrets use `Zeroizing`.
 
-The state machine checks replay counters, ANonce, MIC and RSN/GTK KDEs. It returns keys once and requires an explicit acknowledgement of hardware installation and M4 transmission before authorization. M3 retransmissions resend M4 without reinstalling keys. Group rekey follows the same rule; moving an unchanged GTK to a different index is rejected. SNonce requires a cryptographic random source with no timer-based fallback. Hardware association does not use this state machine yet.
+The state machine checks replay counters, ANonce, MIC and RSN/GTK KDEs. It returns keys once and requires an explicit acknowledgement of hardware installation and M4 transmission before authorization. M3 retransmissions resend M4 without reinstalling keys. Group rekey follows the same rule; moving an unchanged GTK to a different index is rejected. SNonce requires a cryptographic random source with no timer-based fallback. Hardware association and the background rekey handler use this state machine.
 
 The kernel target sets `aes_force_soft`; SHA1 uses `force-soft`. AES-NI/SHA intrinsics using XMM would corrupt user thread registers. A kernel test runs PBKDF2 and AES unwrap with patterns in all 16 XMM registers and verifies preserved state under UEFI and BIOS. Host tests cover known PMK/PTK and RFC3394 vectors, M1–M4, retransmissions, group rekey, invalid MICs, nonces and replay counters.
 

@@ -23,6 +23,9 @@ pub struct AccessPoint {
     pub capabilities: u16,
     pub beacon_interval: u16,
     pub dtim: u8,
+    pub rates: [u8; 12],
+    pub rates_len: u8,
+    pub unsupported_basic_rate: bool,
     pub rsn: Option<Rsn>,
 }
 impl AccessPoint {
@@ -107,6 +110,9 @@ pub fn beacon(frame: &[u8], frequency: u16, rssi: i32) -> KResult<AccessPoint> {
         capabilities: u16::from_le_bytes(frame[34..36].try_into().unwrap()),
         beacon_interval: u16::from_le_bytes(frame[32..34].try_into().unwrap()),
         dtim: 1,
+        rates: [0; 12],
+        rates_len: 0,
+        unsupported_basic_rate: false,
         rsn: None,
     };
     let mut input = Cursor(&frame[36..]);
@@ -115,6 +121,26 @@ pub fn beacon(frame: &[u8], frequency: u16, rssi: i32) -> KResult<AccessPoint> {
         let header = input.take(2)?;
         let element = input.take(header[1] as usize)?;
         match header[0] {
+            1 | 50 => {
+                if element.is_empty() || (header[0] == 1 && element.len() > 8) {
+                    return Err(Errno::EIO);
+                }
+                for &rate in element {
+                    if ![2, 4, 11, 22, 12, 18, 24, 36, 48, 72, 96, 108].contains(&(rate & 0x7f)) {
+                        result.unsupported_basic_rate |= rate & 0x80 != 0;
+                        continue;
+                    }
+                    if let Some(old) = result.rates[..result.rates_len as usize]
+                        .iter_mut()
+                        .find(|old| **old & 0x7f == rate & 0x7f)
+                    {
+                        *old |= rate & 0x80;
+                    } else if result.rates_len < 12 {
+                        result.rates[result.rates_len as usize] = rate;
+                        result.rates_len += 1;
+                    }
+                }
+            }
             0 => {
                 if ssid || element.len() > 32 {
                     return Err(Errno::EIO);

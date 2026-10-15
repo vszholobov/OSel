@@ -10,7 +10,7 @@ description: Acer Nitro UEFI boot, Secure Boot, BitLocker preparation and F12 bo
 
 {% note warning %}
 
-OSel has not yet been tested on this laptop and the exact model is unknown. The following are typical Nitro 5 details and require verification. Check the bottom label for a model such as AN515-xx.
+The owner confirmed OSel boot and single-player Tetris. Diagnostic photos confirm PS/2 and Wi-Fi ROM/BMI. The exact model and UEFI settings have not been recorded; the settings below remain typical guidance requiring verification.
 
 {% endnote %}
 
@@ -23,7 +23,7 @@ OSel has not yet been tested on this laptop and the exact model is unknown. The 
 | Secure Boot | Enabled | No |
 | Keyboard | Built-in, probably PS/2; external USB needs firmware emulation | No |
 | Wired adapter | Realtek Gaming GBE Family Controller; `PCI\VEN_10EC&DEV_8168&SUBSYS_13661025&REV_25` | Owner provided Windows 10 hardware ID |
-| Wi-Fi | Qualcomm Atheros QCA61x4A Wireless Network Adapter | Owner report; no OSel driver |
+| Wi-Fi | Qualcomm Atheros QCA61x4A Wireless Network Adapter | Windows PCI identity and ROM confirmed; connectivity unverified |
 
 ## Preparation {#prepare}
 
@@ -74,4 +74,4 @@ BitLocker may request the key again after restoring Secure Boot. See [recovery](
 
 ## Wi-Fi {#wifi}
 
-Owner card: `PCI\VEN_168C&DEV_003E&SUBSYS_080711AD&REV_32`, QCA6174, LiteOn `11ad:0807`. Firmware hw3.0/API6 and the exact board entry are bundled. Only the ROM probe is implemented; WPA2 connection is absent. Acer needs `wifi probe` and `wifi regs`; see [report collection](../diagnostics.md#report).
+Owner card: `PCI\VEN_168C&DEV_003E&SUBSYS_080711AD&REV_32`, QCA6174, LiteOn `11ad:0807`. The image bundles hw3.0/API6 firmware and the exact board record. Photos of image `8a7c625` confirm ROM/BMI target version `05030000`, type `8`, error=None. Firmware loading, scanning and `wifi connect N` with WPA2/CCMP, HTT and DHCP are implemented in the new branch; hardware connectivity remains unverified. Start with `wifi scan`, then `wifi connect N` and `ping gateway`; see [connection and reports](../diagnostics.md#connect).

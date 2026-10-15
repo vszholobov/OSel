@@ -6,7 +6,7 @@ description: OSel commands for network, PCI, memory and initial Acer Wi-Fi diagn
 
 **Audience:** users checking networking or reporting a failure.
 
-**Summary:** `diag` collects a general report. After DHCP, `ping gateway` checks the router and `ping IP` checks an IPv4 destination. Acer supports `wifi probe` and its saved `wifi regs` report; Wi-Fi connection is not implemented yet.
+**Summary:** `diag` collects a general report. After DHCP, `ping gateway` checks the router and `ping IP` checks an IPv4 destination. Acer supports `wifi probe` and its saved `wifi regs` report; WPA2 commands are implemented and still require hardware connectivity validation.
 
 ## Commands {#commands}
 
@@ -30,6 +30,8 @@ description: OSel commands for network, PCI, memory and initial Acer Wi-Fi diagn
 | `wifi load` | repeats the ROM check, uploads calibration/firmware and waits for HTC/WMI ready; stops the target after the check, without connecting |
 | `wifi scan` | loads firmware and passively scans 2.4 GHz; lists up to 20 APs with SSID, BSSID, frequency, signal and WPA2 compatibility, then stops the target |
 | `wifi results` | saved results of the last successful scan without accessing hardware |
+| `wifi connect N` | connects to WPA2 AP number N from wifi results; separate hidden password input, followed by DHCP |
+| `wifi disconnect` | stops Wi-Fi, clears network configuration and aborts connections |
 | `wifi regs` | last 22 saved stages and values from the probe, without rereading registers |
 | `kbd` | PS/2 initialization, IRQ and input counters |
 
@@ -43,10 +45,16 @@ description: OSel commands for network, PCI, memory and initial Acer Wi-Fi diagn
 2. For [Acer Wi-Fi](hardware/acer-nitro.md#wifi), run `wifi probe`, then `clear` and `wifi regs`; save that display too. The error and stage help even when probing fails.
 3. For Ethernet after DHCP, run `ping gateway 4`, then `ping SERVER_IP 4`. Check `tcpcheck SERVER_IP 8080`. For game failures include the error text and server address.
 
-`wifi load` has a 120-second deadline after the ROM check and supports Ctrl+C. Stages and uploaded byte counts appear on screen. `firmware check passed; target stopped` confirms firmware startup through HTC/WMI; passive scanning is implemented and needs hardware validation; connection is not implemented yet. Save `wifi regs` on failure.
+`wifi load` has a 120-second deadline after the ROM check and supports Ctrl+C. Stages and uploaded byte counts appear on screen. `firmware check passed; target stopped` confirms firmware startup through HTC/WMI; then run `wifi scan`, select an AP with `wifi connect N` and check `net ip` and `ping gateway`. Acer connectivity is still unverified. Save `wifi regs` on failure.
 
 Reports contain no Wi-Fi passwords or keys. All shell output is also sent to COM1. If the laptop freezes during `wifi probe`, preserve the last line: stages are shown on the display and sent to COM1 while executing. Probing does not run automatically at boot, so the shell remains available after reboot.
 
+## Connect Wi-Fi {#connect}
+
+In a new image run `wifi scan`, then `wifi connect N`, selecting a WPA2 network number. Enter the password on the laptop without echo; it is not needed in a report. Requirements: visible SSID, WPA2-Personal/CCMP, 2.4 GHz and channels 1–11. WPA3-only, Enterprise, mandatory PMF and hidden SSIDs are unsupported. Initial power is capped at 0 dBm: test near the router.
+
+After `WiFi DHCP ready`, run `net ip`, `ping gateway 4`, `tcpcheck SERVER_IP 8080`, then [Tetris](network.md). On failure run `clear`, `wifi regs`, `wifi status` and `diag`; include the last stage, errno and commit. A DHCP timeout leaves the worker active; retry `net dhcp` after fixing DHCP. Use `wifi disconnect` before reconnecting.
+
 ## Verified scope {#limits}
 
-QEMU verifies commands, missing QCA6174, actual ICMP and memory cleanup. QEMU does not emulate QCA6174. BMI responses, firmware loading, scanning, WPA2, DHCP and Wi-Fi gameplay require separate Acer verification. The current image contains initial bring-up diagnostics, not working Wi-Fi.
+QEMU verifies commands, missing QCA6174, actual ICMP, the WPA2 state machine, DMA ownership, adapter switching and link-loss cleanup. QEMU does not emulate QCA6174. ROM/BMI has been confirmed on Acer. Firmware loading, scanning, WPA2, DHCP and Wi-Fi gameplay still require separate hardware verification.

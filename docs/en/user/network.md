@@ -21,7 +21,7 @@ QEMU reaches its host server at `10.0.2.2:8080`. On hardware, use the server mac
 
 ## Check the adapter {#adapter}
 
-Enter `net` in the shell to see the adapter, link state, address and packet counters. DHCP provides the address. Drivers cover Intel 82574L (`8086:10d3`) and Realtek `10ec:8168` with G/GU/H/M MACs. Use an Ethernet cable; Wi-Fi and USB Ethernet remain unsupported. The adapter name and dropped-frame counter help diagnose the driver; detection alone does not establish DHCP connectivity.
+Enter `net` in the shell to see the adapter, link state, address and packet counters. DHCP provides the address. Drivers cover Intel 82574L (`8086:10d3`) and Realtek `10ec:8168` with G/GU/H/M MACs. For Ethernet, use a cable. QCA6174 Wi-Fi has a `wifi connect N` command and still requires hardware connectivity validation; see [Wi-Fi diagnostics](diagnostics.md#connect). USB Ethernet is unsupported. The adapter name and dropped-frame counter help diagnose the driver; detection alone does not establish DHCP connectivity.
 
 Attach the adapter explicitly when launching a ready BIOS image:
 

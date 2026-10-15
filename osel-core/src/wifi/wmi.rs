@@ -8,6 +8,7 @@
 //! Checked WMI boot events. Target-provided sizes are never allocation authority.
 use crate::errno::{Errno, KResult};
 use alloc::vec::Vec;
+pub mod station;
 
 pub const ABI: [u32; 6] = [0x01000000, 53, 0x5f414351, 0x4c4d, 0, 0];
 pub const VDEVS: u32 = 4;

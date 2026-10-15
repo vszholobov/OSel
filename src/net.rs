@@ -46,12 +46,34 @@ struct Network {
     next_ping: u16,
     pings: usize,
     lookups: usize,
+    link_up: bool,
 }
 fn now() -> Instant {
     Instant::from_millis((time::monotonic_ns() / 1_000_000) as i64)
 }
 impl Network {
     fn service(&mut self) {
+        let up = self.device.link();
+        if !up {
+            if self.link_up {
+                self.sockets.get_mut::<dhcpv4::Socket>(self.dhcp).reset();
+                self.gateway = None;
+                self.dns.clear();
+                self.configured = false;
+                self.interface
+                    .update_ip_addrs(|addresses| addresses.clear());
+                self.interface.routes_mut().remove_default_ipv4_route();
+                for state in self.states.values_mut() {
+                    self.sockets.get_mut::<tcp::Socket>(state.handle).abort();
+                    state.connecting = false;
+                    state.error = Some(Errno::ENETUNREACH);
+                    update(state, self.sockets.get_mut::<tcp::Socket>(state.handle));
+                }
+            }
+            self.link_up = false;
+            return;
+        }
+        self.link_up = true;
         // Bound the work even under an incoming packet flood.
         for _ in 0..32 {
             if self
@@ -139,6 +161,7 @@ fn update(state: &mut State, socket: &mut tcp::Socket) {
     state.flags = flags;
 }
 pub fn init() {
+    scheduler::spawn_kernel(worker).expect("network worker stack");
     let devices = pci::scan();
     for d in &devices {
         crate::serial_println!(
@@ -152,12 +175,15 @@ pub fn init() {
             d.subclass
         );
     }
-    let Some(mut device) = devices.into_iter().find_map(Ethernet::new) else {
+    let Some(device) = devices.into_iter().find_map(Ethernet::new) else {
         crate::serial_println!(
             "NET: no supported Ethernet card (Intel 82574L or Realtek RTL8168 G/GU/H/M)"
         );
         return;
     };
+    *NETWORK.lock() = Some(network(device));
+}
+fn network(mut device: Ethernet) -> Network {
     let mac = device.mac();
     let mut config = Config::new(EthernetAddress(mac).into());
     config.random_seed = time::realtime_ns()
@@ -169,7 +195,7 @@ pub fn init() {
     let mut sockets = SocketSet::new(storage);
     let dhcp = sockets.add(dhcpv4::Socket::new());
     crate::serial_println!("NET: {}, MAC {:02x?}, DHCP", device.name(), mac);
-    *NETWORK.lock() = Some(Network {
+    Network {
         device,
         interface,
         sockets,
@@ -184,8 +210,99 @@ pub fn init() {
         next_ping: 1,
         pings: 0,
         lookups: 0,
-    });
-    scheduler::spawn_kernel(worker).expect("network worker stack");
+        link_up: false,
+    }
+}
+/// Switching is allowed only with no live socket descriptions or diagnostic handles.
+pub fn can_switch() -> KResult<()> {
+    let net = NETWORK.lock();
+    if net
+        .as_ref()
+        .is_some_and(|net| !net.states.is_empty() || net.pings != 0 || net.lookups != 0)
+    {
+        return Err(Errno::EAGAIN);
+    }
+    Ok(())
+}
+pub fn use_wireless(device: crate::drivers::qca6174::Wireless) -> KResult<()> {
+    let mut candidate = network(Ethernet::Wireless(device));
+    let old = {
+        let mut guard = NETWORK.lock();
+        if let Some(old) = guard.as_ref() {
+            if !old.states.is_empty() || old.pings != 0 || old.lookups != 0 {
+                return Err(Errno::EAGAIN);
+            }
+            candidate.next_id = old.next_id;
+        }
+        guard.replace(candidate)
+    };
+    drop(old); // stop the old adapter and free its DMA with NETWORK released
+    Ok(())
+}
+pub fn device_lost() {
+    if let Some(net) = NETWORK.lock().as_mut() {
+        net.service();
+    }
+    poll::notify();
+}
+
+#[cfg(test)]
+mod wireless_tests {
+    use super::*;
+    use crate::drivers::qca6174::Wireless;
+    #[test_case]
+    fn changing_adapter_preserves_socket_identity_and_loss_clears_all_configuration() {
+        let original = NETWORK.lock().take();
+        let first = Wireless::new([2, 3, 4, 5, 6, 7]);
+        use_wireless(first).unwrap();
+        let socket = super::socket().unwrap();
+        let first_id = socket.stat().ino;
+        assert_eq!(can_switch(), Err(Errno::EAGAIN));
+        assert_eq!(use_wireless(first), Err(Errno::EAGAIN));
+        drop(socket);
+        can_switch().unwrap();
+        let second = Wireless::new([2, 3, 4, 5, 6, 8]);
+        use_wireless(second).unwrap();
+        let socket = super::socket().unwrap();
+        assert!(socket.stat().ino > first_id);
+        {
+            let mut guard = NETWORK.lock();
+            let net = guard.as_mut().unwrap();
+            net.configured = true;
+            net.link_up = true;
+            net.gateway = Some(Ipv4Address::new(192, 168, 1, 1));
+            net.dns.push(Ipv4Address::new(192, 168, 1, 1));
+            net.interface.update_ip_addrs(|addresses| {
+                addresses.clear();
+                addresses
+                    .push(IpCidr::new(
+                        IpAddress::Ipv4(Ipv4Address::new(192, 168, 1, 2)),
+                        24,
+                    ))
+                    .unwrap();
+            });
+            net.interface
+                .routes_mut()
+                .add_default_ipv4_route(Ipv4Address::new(192, 168, 1, 1))
+                .unwrap();
+        }
+        second.down();
+        device_lost();
+        {
+            let guard = NETWORK.lock();
+            let net = guard.as_ref().unwrap();
+            assert!(!net.configured);
+            assert!(net.interface.ip_addrs().is_empty());
+            assert!(net.gateway.is_none() && net.dns.is_empty());
+            assert_eq!(
+                net.states.values().next().unwrap().error,
+                Some(Errno::ENETUNREACH)
+            );
+        }
+        drop(socket);
+        let replaced = core::mem::replace(&mut *NETWORK.lock(), original);
+        drop(replaced);
+    }
 }
 fn worker() {
     loop {
