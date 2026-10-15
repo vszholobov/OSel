@@ -1593,7 +1593,10 @@ mod tests {
                 let slot = firmware as usize;
                 unsafe {
                     // The real firmware may fill every published slot before polling.
-                    core::ptr::write_bytes(queue.buffers.ptr.add(slot * 2048), wave * 15 + n, 8);
+                    let address = u32::from_le(ring.ptr.add(slot * 8).cast::<u32>().read_volatile());
+                    let offset = u64::from(address).checked_sub(queue.buffers.physical()).unwrap() as usize;
+                    assert_eq!(offset, slot * 2048, "DMA descriptors must not alias");
+                    core::ptr::write_bytes(queue.buffers.ptr.add(offset), wave * 15 + n, 8);
                     ring.ptr
                         .add(slot * 8 + 4)
                         .cast::<u16>()
