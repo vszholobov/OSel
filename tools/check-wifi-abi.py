@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Regenerate independent wire fixtures using pinned ISC ath10k C declarations.
 
-Download the five v6.12 headers listed in fixtures/ath10k-v6.12/sources.json
+Download the v6.12 headers listed in fixtures/ath10k-v6.12/sources.json
 into --reference-dir. No kernel headers, Rust output, network or installation
 are used by this generator. Ordinary cargo tests only read the saved fixtures.
 """
@@ -67,7 +67,7 @@ typedef uint16_t __le16; typedef uint32_t __le32; typedef uint64_t __le64;
 
     for name in ['wmi_tlv_grp_id', 'wmi_tlv_cmd_id', 'wmi_tlv_event_id',
                  'wmi_tlv_tag', 'wmi_tlv_vdev_param', 'wmi_tlv_peer_param', 'wmi_tlv_peer_flags',
-                 'wmi_phy_mode', 'wmi_cipher_suites']:
+                 'wmi_phy_mode', 'wmi_cipher_suites', 'wmi_peer_type', 'ath10k_hw_txrx_mode', 'htt_mgmt_tx_status']:
         emit('enum', name)
     for name in ['wmi_tlv', 'wmi_tlv_init_cmd', 'wmi_tlv_resource_config',
                  'host_memory_chunk_tlv', 'wlan_host_mem_req',
@@ -82,7 +82,7 @@ typedef uint16_t __le16; typedef uint32_t __le32; typedef uint64_t __le64;
                  'ath10k_ath10k_htc_record_hdr', 'ath10k_htc_credit_report',
                  'htt_cmd_hdr', 'htt_ver_resp', 'htt_rx_peer_map',
                  'htt_rx_peer_unmap', 'htt_data_tx_completion',
-                 'htt_security_indication', 'htt_rx_ring_setup_ring32',
+                 'htt_security_indication', 'htt_mgmt_tx_completion', 'htt_rx_ring_setup_ring32',
                  'htt_data_tx_desc', 'htt_rx_desc_v1']:
         emit('struct', name)
     return '\n'.join(output)

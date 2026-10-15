@@ -138,7 +138,7 @@ static void station_commands(void) {
     begin(WMI_TLV_VDEV_CREATE_CMDID);
     tlv(WMI_TLV_TAG_STRUCT_VDEV_CREATE_CMD, &create, sizeof(create));
     save("vdev-create");
-    struct wmi_vdev_set_param_cmd param = {.param_id = WMI_TLV_VDEV_PARAM_TX_ENCAP_TYPE, .param_value = 2};
+    struct wmi_vdev_set_param_cmd param = {.param_id = WMI_TLV_VDEV_PARAM_TX_ENCAP_TYPE, .param_value = ATH10K_HW_TXRX_NATIVE_WIFI};
     begin(WMI_TLV_VDEV_SET_PARAM_CMDID);
     tlv(WMI_TLV_TAG_STRUCT_VDEV_SET_PARAM_CMD, &param, sizeof(param));
     save("tx-encapsulation");
@@ -149,7 +149,7 @@ static void station_commands(void) {
     tlv(WMI_TLV_TAG_STRUCT_CHANNEL, &channel, sizeof(channel));
     tlv(WMI_TLV_TAG_ARRAY_STRUCT, NULL, 0);
     save("vdev-start");
-    struct wmi_tlv_peer_create_cmd peer = {.peer_type = 1};
+    struct wmi_tlv_peer_create_cmd peer = {.peer_type = WMI_PEER_TYPE_DEFAULT};
     memcpy(peer.peer_addr.addr, ap, 6);
     begin(WMI_TLV_PEER_CREATE_CMDID);
     tlv(WMI_TLV_TAG_STRUCT_PEER_CREATE_CMD, &peer, sizeof(peer));
@@ -257,6 +257,8 @@ static void transport(void) {
     struct htt_data_tx_completion complete = {.num_msdus = 1};
     length = 0; type = 7; append(&type, 1); append(&complete, sizeof(complete));
     u16 id = 0; append(&id, 2); id = 0xffff; append(&id, 2); save("tx-completed");
+    struct htt_mgmt_tx_completion mgmt = {.desc_id = 0, .status = HTT_MGMT_TX_STATUS_OK};
+    length = 0; type = 0xe; append(&type, 1); append(&mgmt, sizeof(mgmt)); save("management-completed");
     struct htt_rx_ring_setup_ring32 ring = {
         .fw_idx_shadow_reg_paddr = 0x1000, .rx_ring_base_paddr = 0x2000,
         .rx_ring_len = 128, .rx_ring_bufsize = 2048, .flags = 0xffff, .fw_idx_init_val = 63,

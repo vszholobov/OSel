@@ -61,6 +61,8 @@ For empty or intermittent results run `clear`, `wifi regs`: preserve `passive sc
 
 After `WiFi DHCP ready`, run `net ip`, `ping gateway 4`, `tcpcheck SERVER_IP 8080`, then [Tetris](network.md). On failure run `clear`, `wifi regs`, `wifi status` and `diag`; include the last stage, errno and commit. A DHCP timeout leaves the worker active; retry `net dhcp` after fixing DHCP. Use `wifi disconnect` before reconnecting.
 
+For a connection ETIMEDOUT preserve `wifi regs`. `STA HTT TX completion wait` means no transmission completion reached the driver; `STA authentication response wait` means TX completed but no matching AP response was accepted. Both precede WPA2 password verification. Reports include TX ID, completion status and receive counters, never the password.
+
 ## Verified scope {#limits}
 
-QEMU verifies commands, missing QCA6174, actual ICMP, the WPA2 state machine, DMA ownership, adapter switching and link-loss cleanup. QEMU does not emulate QCA6174. Acer photos confirm HTT 3.87 and one five-AP result. Repeated scanning is unreliable; WPA2, DHCP and Wi-Fi gameplay still require hardware verification; see the current [driver status](../developer/architecture/drivers/wifi.md#abi-audit).
+QEMU verifies commands, missing QCA6174, actual ICMP, the WPA2 state machine, DMA ownership, adapter switching and link-loss cleanup. QEMU does not emulate QCA6174. Acer photos confirm HTT 3.87 and an 18-AP result with Galaxy S23. Repeated scanning is unreliable; WPA2, DHCP and Wi-Fi gameplay still require hardware verification; see the current [driver status](../developer/architecture/drivers/wifi.md#abi-audit).

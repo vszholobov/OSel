@@ -61,6 +61,8 @@ description: Команды OSel для диагностики сети, PCI, п
 
 После `WiFi DHCP ready` выполните `net ip`, `ping gateway 4`, `tcpcheck SERVER_IP 8080`, затем запустите [тетрис](network.md). При ошибке — `clear`, `wifi regs`, `wifi status` и `diag`; нужны последний этап, errno и commit. При тайм-ауте DHCP worker остаётся активен; после исправления DHCP можно повторить `net dhcp`. Для повторного подключения сначала `wifi disconnect`.
 
+При ETIMEDOUT во время подключения сохраните `wifi regs`. `STA HTT TX completion wait` означает отсутствие завершения передачи; `STA authentication response wait` — TX завершён, но подходящий ответ AP не принят. Оба этапа идут до проверки пароля WPA2. Отчёт содержит TX ID, completion status и счётчики приёма, но не пароль.
+
 ## Что подтверждено {#limits}
 
-В QEMU проверяются команды, отсутствие QCA6174, настоящий ICMP, автомат WPA2, владение DMA, смена адаптера и очистка при потере связи. QEMU не эмулирует QCA6174. На Acer подтверждены HTT 3.87 и один список из пяти AP. Повторный поиск нестабилен; WPA2, DHCP и игра по Wi-Fi требуют отдельной аппаратной проверки; текущий статус — в [описании драйвера](../developer/architecture/drivers/wifi.md#abi-audit).
+В QEMU проверяются команды, отсутствие QCA6174, настоящий ICMP, автомат WPA2, владение DMA, смена адаптера и очистка при потере связи. QEMU не эмулирует QCA6174. На Acer подтверждены HTT 3.87 и список из 18 AP с Galaxy S23. Повторный поиск нестабилен; WPA2, DHCP и игра по Wi-Fi требуют отдельной аппаратной проверки; текущий статус — в [описании драйвера](../developer/architecture/drivers/wifi.md#abi-audit).

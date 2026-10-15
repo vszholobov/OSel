@@ -13,6 +13,32 @@ pub const RX_DESCRIPTOR: usize = 300;
 pub const RX_ENTRIES: usize = 128;
 pub const RX_POSTED: usize = RX_ENTRIES / 2 - 1;
 pub const TX_LIMIT: usize = 64;
+pub const PEER_ID_LIMIT: usize = 2048; // ath10k core.h, RX descriptor peer-ID space
+#[derive(Debug, Default)]
+pub struct PeerIds([u64; PEER_ID_LIMIT / 64]);
+impl PeerIds {
+    pub fn insert(&mut self, id: u16) -> KResult<()> {
+        let id = usize::from(id);
+        let word = self.0.get_mut(id / 64).ok_or(Errno::EIO)?;
+        *word |= 1 << (id % 64);
+        Ok(())
+    }
+    pub fn contains(&self, id: u16) -> bool {
+        let id = usize::from(id);
+        self.0
+            .get(id / 64)
+            .is_some_and(|word| word & (1 << (id % 64)) != 0)
+    }
+    pub fn remove(&mut self, id: u16) {
+        let id = usize::from(id);
+        if let Some(word) = self.0.get_mut(id / 64) {
+            *word &= !(1 << (id % 64));
+        }
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.iter().all(|word| *word == 0)
+    }
+}
 fn u16_at(data: &[u8], at: usize) -> KResult<u16> {
     Ok(u16::from_le_bytes(
         data.get(at..at + 2).ok_or(Errno::EIO)?.try_into().unwrap(),
@@ -65,6 +91,10 @@ pub enum Event<'a> {
         status: u8,
         ids: &'a [u8],
     },
+    ManagementTx {
+        id: u16,
+        status: u8,
+    },
     Rx {
         peer: u16,
         vdev: u8,
@@ -109,6 +139,18 @@ pub fn event(data: &[u8]) -> KResult<Event<'_>> {
                 ids,
             }
         }
+        0xe if data.len() >= 20 => {
+            let id = u32_at(data, 4)?;
+            let status = u32_at(data, 8)?;
+            if id as usize >= TX_LIMIT || status > 2 {
+                return Err(Errno::EIO);
+            }
+            // HTT_MGMT_TX_STATUS_RETRY maps to NOACK; DROP maps to DISCARD.
+            Event::ManagementTx {
+                id: id as u16,
+                status: [0, 2, 1][status as usize],
+            }
+        }
         0x12 if data.len() >= 8 => {
             let count = u16_at(data, 6)? as usize;
             if count == 0 || count > RX_POSTED {
@@ -143,7 +185,7 @@ pub fn event(data: &[u8]) -> KResult<Event<'_>> {
             let delta = (value >> 16) as i32;
             Event::Credits(if value & (1 << 8) != 0 { -delta } else { delta })
         }
-        0 | 3 | 4 | 7 | 0xb | 0xf | 0x12 => return Err(Errno::EIO),
+        0 | 3 | 4 | 7 | 0xb | 0xe | 0xf | 0x12 => return Err(Errno::EIO),
         other => Event::Other(other),
     })
 }

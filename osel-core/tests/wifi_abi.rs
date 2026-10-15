@@ -172,7 +172,7 @@ fn legacy_station_commands_match_c_structures_and_parameter_ids() {
     let ap = ap();
     assert_eq!(wmi::vdev_create(STA).unwrap(), fixture!("vdev-create"));
     assert_eq!(
-        wmi::station::ethernet_tx().unwrap(),
+        wmi::station::tx_encapsulation().unwrap(),
         fixture!("tx-encapsulation")
     );
     assert_eq!(wmi::station::start(&ap).unwrap(), fixture!("vdev-start"));
@@ -223,6 +223,54 @@ fn htc_credit_records_and_htt_events_match_c_layouts() {
             flags: 0x86
         })
     ));
+}
+
+#[test]
+fn management_completions_match_c_and_reject_truncation_ids_and_status() {
+    let packet = fixture!("management-completed");
+    assert!(matches!(
+        htt::event(packet),
+        Ok(htt::Event::ManagementTx { id: 0, status: 0 })
+    ));
+    for end in 0..packet.len() {
+        assert!(htt::event(&packet[..end]).is_err());
+    }
+    for (status, expected) in [(1u32, 2), (2, 1)] {
+        let mut changed = *packet;
+        changed[8..12].copy_from_slice(&status.to_le_bytes());
+        assert!(
+            matches!(htt::event(&changed), Ok(htt::Event::ManagementTx { id: 0, status }) if status == expected)
+        );
+    }
+    let mut changed = *packet;
+    changed[4..8].copy_from_slice(&64u32.to_le_bytes());
+    assert!(htt::event(&changed).is_err());
+    changed = *packet;
+    changed[8..12].copy_from_slice(&3u32.to_le_bytes());
+    assert!(htt::event(&changed).is_err());
+}
+
+#[test]
+fn peer_alias_bitmap_accepts_the_acer_ids_and_never_overwrites_an_earlier_mapping() {
+    let mut ids = htt::PeerIds::default();
+    assert!(ids.is_empty());
+    for id in [15, 127, 0, 2047, 15] {
+        ids.insert(id).unwrap();
+    }
+    for id in [0, 15, 127, 2047] {
+        assert!(ids.contains(id));
+    }
+    assert!(ids.insert(2048).is_err());
+    assert!(ids.insert(u16::MAX).is_err());
+    for id in [0, 15, 127] {
+        ids.remove(id);
+        assert!(!ids.is_empty());
+    }
+    assert!(ids.contains(2047));
+    ids.remove(2047);
+    ids.remove(2048);
+    ids.remove(u16::MAX);
+    assert!(ids.is_empty());
 }
 
 #[test]

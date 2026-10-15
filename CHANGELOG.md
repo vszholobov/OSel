@@ -12,6 +12,10 @@
 
 ### Fixed
 
+- Match ath10k STA setup with DEFAULT peers and Native WiFi vdev encapsulation while HTT descriptors select management or Ethernet format.
+- Retain all selected-AP peer IDs for RX and key acknowledgements; only the last unmap revokes authorization.
+- Parse HTT management completions without releasing unrelated/stale DMA slots, and distinguish TX-completion from AP-response timeouts with receive counters.
+
 - Buffer WMI receive bursts with 15 independent DMA slots, combine three bounded passive scan passes and retain scan/receive counters after intermittent empty results on Acer. Hardware reliability still needs verification.
 
 - Reject EAPOL relayed from other Ethernet sources even after Wi-Fi authorization, and validate HTC credit trailers on readiness/service replies as well as normal receive packets.

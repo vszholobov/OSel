@@ -24,8 +24,10 @@ fn mac(bytes: [u8; 6]) -> Vec<u8> {
 pub fn vdev_param(id: u32, value: u32) -> KResult<Vec<u8>> {
     command(0x5008, 95, &words(&[0, id, value]))
 }
-pub fn ethernet_tx() -> KResult<Vec<u8>> {
-    vdev_param(48, 2)
+pub fn tx_encapsulation() -> KResult<Vec<u8>> {
+    // ath10k keeps the vdev default in Native WiFi mode even with Ethernet
+    // offload. Each HTT descriptor chooses Ethernet or management separately.
+    vdev_param(48, 1)
 }
 pub fn authorize(ap: [u8; 6]) -> KResult<Vec<u8>> {
     peer_param(ap, 3, 1)
@@ -42,7 +44,7 @@ pub fn peer_param(ap: [u8; 6], id: u32, value: u32) -> KResult<Vec<u8>> {
 pub fn create_peer(ap: [u8; 6]) -> KResult<Vec<u8>> {
     let mut body = words(&[0]);
     body.extend_from_slice(&mac(ap));
-    body.extend_from_slice(&words(&[1]));
+    body.extend_from_slice(&words(&[0])); // WMI_PEER_TYPE_DEFAULT, as STA_NONE in ath10k
     command(0x6001, 97, &body)
 }
 pub fn start(ap: &AccessPoint) -> KResult<Vec<u8>> {
