@@ -6,7 +6,7 @@ description: Maintain CHANGELOG.md and release verified UEFI/BIOS images through
 
 **Audience:** developers opening PRs or releasing OSel.
 
-**Summary:** every PR adds an entry to `CHANGELOG.md` under «Не выпущено» (Unreleased). A release numbers that section and tags the commit `vX.Y.Z`. CI builds and verifies both images and publishes them with checksums. Documentation tracks master; history belongs in the changelog.
+**Summary:** every PR adds an entry to `CHANGELOG.md` under «Не выпущено» (Unreleased). A release numbers that section and tags the commit `vX.Y`. CI builds and verifies both images and publishes them with checksums. Documentation tracks master; history belongs in the changelog.
 
 ## Changelog {#changelog}
 
@@ -14,20 +14,22 @@ Keep Unreleased at the top, followed by releases newest first. Every PR, includi
 
 ## Version numbers {#versions}
 
-Use X.Y.Z with major zero while compatibility is not promised. The middle number grows for completed roadmap stages; the last grows for fixes between them. `Cargo.toml` contains `version`; the kernel prints version and commit at boot and on panic.
+Starting with `0.11`, public versions use `X.Y`, such as `0.11`, with tags such as `v0.11`. While the major version is zero, compatibility is not promised. Increment `Y` for each release; release numbers are no longer tied to roadmap stages.
+
+Cargo requires three components, so `version` in `Cargo.toml` stores `X.Y.0`: release `0.11` uses `0.11.0`. The last component is always zero. The kernel prints this build version and commit at boot and on panic; release notes identify both version forms. The previous `v0.1.0` release and changelog entry stay unchanged.
 
 ## Release procedure {#release}
 
 1. Ensure master CI is green.
-2. Rename Unreleased to `## X.Y.Z — YYYY-MM-DD`, without square brackets, and add a new empty Unreleased section above it.
-3. Set `version = "X.Y.Z"` in `Cargo.toml`; update the root package in `Cargo.lock` with `cargo check`. Commit pinned dependencies and the `apps/tetris` gitlink.
+2. Rename Unreleased to `## X.Y — YYYY-MM-DD`, without square brackets, and add a new empty Unreleased section above it. Prepare a concise English changelog for the released version; it becomes the public GitHub Release description.
+3. Set `version = "X.Y.0"` in `Cargo.toml`; update the root package in `Cargo.lock` with `cargo check`. Commit pinned dependencies and the `apps/tetris` gitlink.
 4. Merge a PR, then tag the merge commit:
 
    ```shell
    git switch master
    git pull --ff-only origin master
-   git tag vX.Y.Z
-   git push origin vX.Y.Z
+   git tag vX.Y
+   git push origin vX.Y
    ```
 
 5. Wait for **release images**. [GitHub Releases](https://github.com/vszholobov/OSel/releases) must contain `OSel.uefi.img`, `OSel.bios.img` and `SHA256SUMS`, plus version and commit. Images are uncompressed; users follow [USB boot](../../user/usb.md#image).
@@ -35,7 +37,7 @@ Use X.Y.Z with major zero while compatibility is not promised. The middle number
 
 ## Image verification and publication {#images}
 
-`.github/workflows/release.yml` runs for `v*` tags. `tools/release.py` accepts only `vX.Y.Z`, checks the Cargo version, tagged commit and a nonempty dated changelog section, and uses that section as release text.
+`.github/workflows/release.yml` runs for `v*` tags. `tools/release.py` accepts only `vX.Y`, checks its `X.Y.0` Cargo version, tagged commit and a nonempty dated `X.Y` changelog section, and uses its concise English changelog as release text. The generated version/source metadata and image download instructions are also in English.
 
 Both release-profile images come from one checkout and kernel ELF. Rust is pinned in `rust-toolchain.toml`; Go is pinned in the workflow. Every Cargo build, including nested runner/program builds, uses `--locked`; Go uses `-mod=readonly`, module versions/checksums and the fixed Tetris submodule. Tools are installed on GitHub Actions machines.
 
@@ -53,7 +55,7 @@ python3 tools/check-shell.py --image /tmp/OSel.uefi.img --boot uefi --require-te
   --ovmf-code runner/.ovmf/x64/code.fd --ovmf-vars runner/.ovmf/x64/vars.fd
 ```
 
-Use your image paths. Python 3, QEMU and OVMF for UEFI are sufficient; image verification does not invoke Rust or Go. Runner fetches OVMF on its first UEFI run. Add `--expected-version X.Y.Z --expected-commit <short-hash>` from the release description to verify the banner.
+Use your image paths. Python 3, QEMU and OVMF for UEFI are sufficient; image verification does not invoke Rust or Go. Runner fetches OVMF on its first UEFI run. Add `--expected-version X.Y.0 --expected-commit <short-hash>` from the release description to verify the banner.
 
 ## Release failures {#errors}
 
