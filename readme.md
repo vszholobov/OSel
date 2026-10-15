@@ -1,17 +1,23 @@
-<p align="center"><img src="docs/images/osel-logo.svg" width="160" alt="Логотип OSel: осёл в визоре с командной строкой"></p>
+<p align="center"><img src="docs/images/osel-logo.svg" width="160" alt="OSel logo: a donkey wearing a command-line visor"></p>
 
 # OSel
 
-Учебная операционная система на Rust для x86_64: загружается через UEFI и BIOS, работает в QEMU и на ноутбуках с флешки. Цель — запустить на ней консольный тетрис на Go.
+OSel — вайбовая операционная система.
 
-**Документация:** [Русский](https://vszholobov.github.io/OSel/ru/) · [English](https://vszholobov.github.io/OSel/en/). [Пользователю](docs/ru/user/index.md) — готовые образы и игра; [разработчику](docs/ru/developer/index.md) — сборка, тесты и устройство ядра.
+OSel — a vibey operating system.
 
-Код: [ядро](src/) · [аппаратные драйверы](src/drivers/) · [логика без железа](osel-core/) · [runner](runner/).
+**Русский:** [документация](https://vszholobov.github.io/OSel/ru/) · [пользователю](docs/ru/user/index.md) · [разработчику](docs/ru/developer/index.md) · [быстрый старт](docs/ru/developer/guides/quickstart.md).
+
+**English:** [documentation](https://vszholobov.github.io/OSel/en/) · [user guide](docs/en/user/index.md) · [developer guide](docs/en/developer/index.md) · [quick start](docs/en/developer/guides/quickstart.md).
+
+[Скачать / Downloads](https://github.com/vszholobov/OSel/releases/latest) · [История изменений / Changelog](CHANGELOG.md) · [Правила / Contributing](AGENTS.md).
+
+Код / Code: [ядро / kernel](src/) · [драйверы / drivers](src/drivers/) · [логика / core logic](osel-core/) · [runner](runner/).
 
 ```shell
-cargo run          # собрать и запустить в QEMU
-cargo test         # тесты ядра в QEMU
-cargo test-core    # тесты логики ядра на хосте, без QEMU
+cargo run          # build and run in QEMU
+cargo test         # kernel tests in QEMU
+cargo test-core    # core logic tests on the host
 ```
 
-С чего начать: [быстрый старт](docs/ru/developer/guides/quickstart.md). ИИ-агентам: [`AGENTS.md`](AGENTS.md). История изменений: [`CHANGELOG.md`](CHANGELOG.md).
+Все PR и релизы — на английском. All pull requests and releases must be written in English.

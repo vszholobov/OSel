@@ -1,6 +1,6 @@
-## Что сделано
+## What changed
 
-## Проверка
+## Validation
 
-- [ ] Тесты на нужном уровне (osel-core, ядро, интеграционные) и оба режима загрузки
-- [ ] Документация обновлена (или не нужна: почему), строка в `CHANGELOG.md` в разделе «Не выпущено»
+- [ ] Tests at the appropriate level (osel-core, kernel, integration) and both boot modes
+- [ ] Documentation updated (or explain why unnecessary), entry added to `CHANGELOG.md` under Unreleased
