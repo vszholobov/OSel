@@ -75,6 +75,7 @@ pub enum Event<'a> {
         peer: u16,
         flags: u8,
     },
+    Credits(i32),
     Other(u8),
 }
 pub fn event(data: &[u8]) -> KResult<Event<'_>> {
@@ -137,9 +138,29 @@ pub fn event(data: &[u8]) -> KResult<Event<'_>> {
             peer: u16_at(data, 2)?,
             flags: data[1],
         },
-        0 | 3 | 4 | 7 | 0xb | 0x12 => return Err(Errno::EIO),
+        0xf if data.len() >= 4 => {
+            let value = u32_at(data, 0)?;
+            let delta = (value >> 16) as i32;
+            Event::Credits(if value & (1 << 8) != 0 { -delta } else { delta })
+        }
+        0 | 3 | 4 | 7 | 0xb | 0xf | 0x12 => return Err(Errno::EIO),
         other => Event::Other(other),
     })
+}
+
+/// HTT credit notifications may precede the version confirmation. This driver
+/// uses TX completions rather than HTT credit flow control, so no update is needed.
+/// The transport must enforce one deadline across all receive calls.
+pub fn wait_version(mut receive: impl FnMut() -> KResult<Vec<u8>>) -> KResult<(u8, u8)> {
+    for _ in 0..32 {
+        let data = receive()?;
+        match event(&data)? {
+            Event::Version { major, minor } => return Ok((major, minor)),
+            Event::Credits(_) => (),
+            _ => return Err(Errno::EIO),
+        }
+    }
+    Err(Errno::ETIMEDOUT)
 }
 
 /// CE completion consumes this command, while HTT completion owns the frame's lifetime.
@@ -337,6 +358,31 @@ impl Replay {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn version_wait_allows_credit_updates_without_treating_them_as_readiness() {
+        let mut packets = [vec![0xf, 0, 64, 0], vec![0xf, 1, 2, 0], vec![0, 1, 3, 0]].into_iter();
+        assert!(matches!(event(&[0xf, 0, 64, 0]), Ok(Event::Credits(64))));
+        assert!(matches!(event(&[0xf, 1, 2, 0]), Ok(Event::Credits(-2))));
+        assert_eq!(wait_version(|| Ok(packets.next().unwrap())), Ok((3, 1)));
+        assert_eq!(wait_version(|| Ok(vec![0, 0, 2, 0])), Ok((2, 0)));
+    }
+    #[test]
+    fn version_wait_rejects_malformed_unexpected_and_unending_notifications() {
+        for bad in [vec![], vec![0], vec![0xf, 0, 1], vec![0x15, 0, 0, 0]] {
+            assert_eq!(wait_version(|| Ok(bad.clone())), Err(Errno::EIO));
+        }
+        let mut received = 0;
+        assert_eq!(
+            wait_version(|| {
+                received += 1;
+                Ok(vec![0xf, 0, 1, 0])
+            }),
+            Err(Errno::ETIMEDOUT)
+        );
+        assert_eq!(received, 32);
+        let mut packets = [Ok(vec![0xf, 0, 1, 0]), Err(Errno::EINTR)].into_iter();
+        assert_eq!(wait_version(|| packets.next().unwrap()), Err(Errno::EINTR));
+    }
     #[test]
     fn qca6174_layout_matches_v612_c_offsets_and_preserves_all_rx_fields() {
         let command = rx_config(0x1000, 0x2000).unwrap();

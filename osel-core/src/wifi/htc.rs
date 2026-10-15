@@ -21,7 +21,7 @@ pub fn payload(packet: &[u8]) -> KResult<&[u8]> {
     } else {
         0
     };
-    if trailer > length || (packet[1] & 2 != 0 && trailer < 2) {
+    if trailer > length || (packet[1] & 2 != 0 && trailer < 4) {
         return Err(Errno::EIO);
     }
     Ok(&packet[8..8 + length - trailer])
@@ -36,15 +36,16 @@ pub fn credits(packet: &[u8], endpoint: u8) -> KResult<u16> {
     let mut data = &packet[8 + length - trailer..8 + length];
     let mut total = 0u16;
     while !data.is_empty() {
-        if data.len() < 2 {
+        if data.len() < 4 {
             return Err(Errno::EIO);
         }
-        let record = data.get(2..2 + data[1] as usize).ok_or(Errno::EIO)?;
+        // Both the record header and each credit report have two pad bytes.
+        let record = data.get(4..4 + data[1] as usize).ok_or(Errno::EIO)?;
         if data[0] == 1 {
-            if record.len() % 2 != 0 {
+            if record.is_empty() || record.len() % 4 != 0 {
                 return Err(Errno::EIO);
             }
-            for credit in record.chunks_exact(2) {
+            for credit in record.chunks_exact(4) {
                 if credit[0] >= 9 {
                     return Err(Errno::EIO);
                 }
@@ -53,7 +54,7 @@ pub fn credits(packet: &[u8], endpoint: u8) -> KResult<u16> {
                 }
             }
         }
-        data = &data[2 + record.len()..];
+        data = &data[4 + record.len()..];
     }
     Ok(total)
 }
@@ -117,7 +118,7 @@ pub fn ready(packet: &[u8]) -> KResult<Ready> {
     } else {
         0
     };
-    if trailer > length || (packet[1] & 2 != 0 && trailer < 2) || length - trailer < 8 {
+    if trailer > length || (packet[1] & 2 != 0 && trailer < 4) || length - trailer < 8 {
         return Err(Errno::EIO);
     }
     let data = &packet[8..8 + length - trailer];
@@ -194,12 +195,55 @@ mod tests {
     }
     #[test]
     fn credit_updates_are_bounded_and_do_not_become_event_payload() {
-        let packet = [2, 2, 10, 0, 6, 0, 0, 0, 1, 2, 3, 4, 1, 4, 2, 3, 1, 8];
+        let packet = [
+            2, 2, 16, 0, 12, 0, 0, 0, 1, 2, 3, 4, 1, 8, 0xa5, 0x5a, 2, 3, 0xaa, 0xbb, 1, 8, 0xcc,
+            0xdd,
+        ];
         assert_eq!(payload(&packet).unwrap(), [1, 2, 3, 4]);
         assert_eq!(credits(&packet, 2), Ok(3));
         assert_eq!(credits(&packet, 1), Ok(8));
         let mut bad = packet;
-        bad[13] = 7;
+        bad[13] = 12;
         assert!(credits(&bad, 2).is_err());
+    }
+    #[test]
+    fn credit_only_and_version_packets_use_four_byte_credit_records() {
+        let mut credit_only = [0, 2, 8, 0, 8, 0, 0, 0, 1, 4, 0, 0, 2, 1, 0, 0];
+        assert_eq!(payload(&credit_only), Ok(&[][..]));
+        assert_eq!(credits(&credit_only, 2), Ok(1));
+        credit_only[0] = 1;
+        assert_eq!(credits(&credit_only, 2), Ok(1));
+        let version = [1, 2, 12, 0, 8, 0, 0, 0, 0, 1, 3, 0, 1, 4, 0, 0, 2, 1, 0, 0];
+        assert_eq!(credits(&version, 2), Ok(1));
+        assert!(matches!(
+            crate::wifi::htt::event(payload(&version).unwrap()),
+            Ok(crate::wifi::htt::Event::Version { major: 3, minor: 1 })
+        ));
+        for end in 0..version.len() {
+            assert!(credits(&version[..end], 2).is_err(), "end={end}");
+        }
+    }
+    #[test]
+    fn multiple_trailer_records_skip_padding_and_unknown_records() {
+        let packet = [
+            2, 2, 20, 0, 20, 0, 0, 0, 1, 4, 0, 0, 2, 1, 0, 0, 99, 0, 0xa5, 0x5a, 1, 4, 0, 0, 2, 2,
+            0, 0,
+        ];
+        assert_eq!(credits(&packet, 2), Ok(3));
+        assert_eq!(payload(&packet), Ok(&[][..]));
+        let mut bad = packet;
+        bad[24] = 9;
+        assert_eq!(credits(&bad, 2), Err(Errno::EIO));
+    }
+    #[test]
+    fn invalid_trailer_record_and_report_lengths_are_rejected() {
+        for length in [0, 1, 2, 3, 5, 6, 7, 8] {
+            let mut packet = [2, 2, 8, 0, 8, 0, 0, 0, 1, 4, 0, 0, 2, 1, 0, 0];
+            packet[9] = length;
+            assert_eq!(credits(&packet, 2), Err(Errno::EIO), "length={length}");
+        }
+        // A record header is four bytes, including its two pad bytes.
+        let short_header = [2, 2, 2, 0, 2, 0, 0, 0, 1, 0];
+        assert_eq!(payload(&short_header), Err(Errno::EIO));
     }
 }

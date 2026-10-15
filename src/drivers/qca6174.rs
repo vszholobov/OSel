@@ -1031,10 +1031,21 @@ impl Controller {
         }
         self.send_htt(&[0, 0, 0, 0], report)?;
         report.record("HTT version wait", 0);
-        let event = self.next_htt(3000, report)?;
-        let htt::Event::Version { major, minor } = htt::event(&event)? else {
-            return Err(Errno::EIO);
-        };
+        let deadline = time::monotonic_ns().saturating_add(3_000_000_000);
+        let (major, minor) = htt::wait_version(|| {
+            let left = deadline.saturating_sub(time::monotonic_ns()) / 1_000_000;
+            if left == 0 {
+                return Err(Errno::ETIMEDOUT);
+            }
+            let event = self.next_htt(left, report)?;
+            report.record("HTT version packet bytes", event.len() as u32);
+            for word in event.chunks(4).take(4) {
+                let mut bytes = [0; 4];
+                bytes[..word.len()].copy_from_slice(word);
+                report.record("HTT version packet word", u32::from_le_bytes(bytes));
+            }
+            Ok(event)
+        })?;
         report.record("HTT version major", u32::from(major));
         report.record("HTT version minor", u32::from(minor));
         if major != 3 {
@@ -1283,6 +1294,7 @@ impl Controller {
                 continue;
             };
             if count < 8 || count > 2048 {
+                report.record("firmware RX descriptor bytes", u32::from(count));
                 return Err(Errno::EIO);
             }
             let rings = self.rings.as_ref().unwrap();
@@ -1295,7 +1307,17 @@ impl Controller {
                 self.rx = (self.rx + 1) & (ENTRIES - 1);
                 self.post_receive();
             }
-            let returned = htc::credits(&packet, self.wmi_endpoint)?;
+            let returned = htc::credits(&packet, self.wmi_endpoint).map_err(|error| {
+                report.record("HTC rejected RX bytes", u32::from(count));
+                report.record("HTC rejected RX CE", if wmi_ring { 2 } else { 1 });
+                for word in packet[..8].chunks_exact(4) {
+                    report.record(
+                        "HTC rejected RX header",
+                        u32::from_le_bytes(word.try_into().unwrap()),
+                    );
+                }
+                error
+            })?;
             self.wmi_credits = self
                 .wmi_credits
                 .saturating_add(returned)
@@ -1305,6 +1327,7 @@ impl Controller {
                 return Ok(None);
             }
             if packet[0] != self.wmi_endpoint && packet[0] != self.htt_endpoint {
+                report.record("HTC unexpected RX endpoint", u32::from(packet[0]));
                 return Err(Errno::EIO);
             }
             return Ok(Some((packet[0], body.to_vec())));
