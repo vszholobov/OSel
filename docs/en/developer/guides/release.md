@@ -8,6 +8,8 @@ description: Maintain CHANGELOG.md and release verified UEFI/BIOS images through
 
 **Summary:** every PR adds an entry to `CHANGELOG.md` under «Не выпущено» (Unreleased). A release numbers that section and tags the commit `vX.Y`. CI builds and verifies both images and publishes them with checksums. Documentation tracks master; history belongs in the changelog.
 
+Write all pull request titles, descriptions and comments, and all release titles and descriptions, in English. Project documentation remains available in Russian and English.
+
 ## Changelog {#changelog}
 
 Keep Unreleased at the top, followed by releases newest first. Every PR, including documentation or tests, adds a reader-facing entry to one group: «Добавлено» (Added), «Изменено» (Changed), «Исправлено» (Fixed), or «Удалено» (Removed). Describe the effect on users or developers.
