@@ -7,7 +7,7 @@
 ### Changed
 
 - All pull requests and releases must be written in English; the PR template and contributor instructions now reflect this rule.
-- Updated the README in Russian and English: OSel is a vibey operating system.
+- Simplified the English README to the project name, description and documentation link.
 
 ## 0.11 — 2026-10-15
 
