@@ -4,8 +4,13 @@
 
 ## Не выпущено
 
+### Added
+
+- Independent QCA6174 wire fixtures generated from checksum-pinned ath10k v6.12 C declarations: boot, scan, station/key commands, HTT events and RX/TX layouts, plus mutation tests and a kernel DMA/event lifecycle scenario.
+
 ### Fixed
 
+- Reject EAPOL relayed from other Ethernet sources even after Wi-Fi authorization, and validate HTC credit trailers on readiness/service replies as well as normal receive packets.
 - HTT startup waits through bounded credit notifications before version confirmation while retaining its shared deadline and version check.
 - HTC credit trailers use the four-byte record headers and padded credit reports required by ath10k; receive failures and HTT version replies now retain diagnostic headers.
 - QCA6174 firmware startup accepts the preliminary WMI SERVICE_AVAILABLE event before SERVICE_READY, avoiding the EIO observed on Acer while keeping a shared timeout and strict readiness validation.

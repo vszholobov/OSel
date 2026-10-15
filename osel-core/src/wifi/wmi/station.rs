@@ -24,6 +24,15 @@ fn mac(bytes: [u8; 6]) -> Vec<u8> {
 pub fn vdev_param(id: u32, value: u32) -> KResult<Vec<u8>> {
     command(0x5008, 95, &words(&[0, id, value]))
 }
+pub fn ethernet_tx() -> KResult<Vec<u8>> {
+    vdev_param(48, 2)
+}
+pub fn authorize(ap: [u8; 6]) -> KResult<Vec<u8>> {
+    peer_param(ap, 3, 1)
+}
+pub fn wake(ap: [u8; 6]) -> KResult<Vec<u8>> {
+    peer_param(ap, 0xff, 1)
+}
 pub fn peer_param(ap: [u8; 6], id: u32, value: u32) -> KResult<Vec<u8>> {
     let mut body = words(&[0]);
     body.extend_from_slice(&mac(ap));

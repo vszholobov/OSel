@@ -6,7 +6,7 @@ description: "Initial QCA6174 driver: PCI, power, reset, Copy Engine, BMI and di
 
 **Audience:** hardware and firmware bring-up developers.
 
-**Summary:** a hardware probe targets Acer `168c:003e`, subsystem `11ad:0807`, revision `32`. `wifi probe` attempts BMI Target Info after PCI/D0/wake, cold/warm reset and CE0/CE1/CE7 setup and ROM early configuration. `wifi load` also uploads firmware and checks HTC/WMI ready, then stops the target. `wifi scan` implements passive 2.4 GHz AP discovery; firmware/scanning still needs hardware validation. `wifi connect N` implements WPA2 association and HTT/Ethernet/DHCP; `wifi disconnect` stops the card. Acer connectivity is still unverified.
+**Summary:** a hardware probe targets Acer `168c:003e`, subsystem `11ad:0807`, revision `32`. `wifi probe` attempts BMI Target Info after PCI/D0/wake, cold/warm reset and CE0/CE1/CE7 setup and ROM early configuration. `wifi load` also uploads firmware and checks HTC/WMI ready, then stops the target. `wifi scan` implements passive 2.4 GHz AP discovery; startup is confirmed through WMI ready; HTT readiness and scanning still need hardware validation. `wifi connect N` implements WPA2 association and HTT/Ethernet/DHCP; `wifi disconnect` stops the card. Acer connectivity is still unverified.
 
 ## How it works {#how}
 
@@ -29,6 +29,8 @@ Before freeing DMA, PCI bus mastering is disabled, events are masked, rings are 
 `wifi load` also verifies HTT version 3 and posts the RX ring: 128 entries, 63 buffers of 2048 bytes and a 300-byte v1 descriptor. The layout was checked against ath10k v6.12 `sizeof/offsetof`. TX buffers stay pinned until HTT completion, even after CE consumes their commands. HTT TX_CREDIT_UPDATE notifications (ID `0x0f`, at least four bytes) may precede the version response: they are validated and skipped because the driver uses TX completions without HTT credit flow control. `htt::wait_version` allows at most 32 packets under one three-second deadline; other events and malformed messages fail. The major version must still be 3. Malformed/duplicate completion IDs and unknown RX DMA addresses are rejected. RX checks MSDU_DONE, lengths, BSSID, FCS/MIC/decrypt errors, Ethernet decap and per-key/TID CCMP PN. The initial STA does not negotiate HT/VHT/A-MSDU/802.11 fragmentation. Descriptor-less offload accepts only EAPOL for subsequent WPA2 verification, never application traffic.
 
 `wifi connect N` selects a saved AP, reads a password without echo and derives the PMK. A fresh firmware boot creates the station vdev and BSS peer, sets its channel, then performs open authentication and association with SSID/legacy rates/RSN. Start response, peer map, AP replies and AID are required. WMI installs PTK/GTK; HTT SEC_IND acknowledges installation. After M4 TX and peer authorization, a kernel worker owns the card. Supported APs have a visible WPA2-PSK/CCMP SSID on channels 1–11 without mandatory PMF; power is capped at 0 dBm, using 11g/20 MHz. CPUID gates RDRAND, with bounded retries and stuck-source checks and no pseudorandom fallback.
+
+Before EAPOL enters WPA2, its Ethernet source must be the selected AP and its destination must be this station, including after authorization. An encrypted frame relayed by the AP from another Ethernet source cannot initiate a key exchange. Other application frames require an installed key, authorization and PN checks.
 
 `bridge.rs` exchanges Ethernet frames with smoltcp through queues capped at 64 packets; the driver retains EAPOL. Connection generations revoke stale TX tokens. Switching adapters requires no live TCP/ICMP/DNS handles and preserves monotonic socket IDs; the old device is freed outside NETWORK. AP loss, beacon miss/peer kickout, DMA errors or `wifi disconnect` clear link, IP, route and DNS and abort TCP. DMA pages are zeroed after stop/reset and returned to the allocator. The load deadline is disabled only for the connected worker, which never consumes shell input.
 
@@ -85,4 +87,27 @@ Each attempt clears the report first. The last completed stage and errno remain 
 
 The BMI model covers real firmware/OTP/board bytes, command order, all eight reference clocks, preserved PLL bits, chunk boundaries/padding, timeouts, short replies and duplicate BMI_DONE rejection. HTC/WMI tests cover truncated/duplicate TLVs, ABI, endpoint/service/status, request sizes and ready events. INIT tests check that resources and supplied memory agree. The WMI regression uses the SERVICE_AVAILABLE prefix visible in the photo and checks it before SERVICE_READY, absent and repeated preliminary events, malformed/duplicate TLVs, retained ABI checks, transport errors and the 32-event limit. HTC tests use four-byte record headers and reports with nonzero padding, multiple records, trailer-only and HTT version packets; truncations, invalid lengths and endpoints are rejected.
 
-Next steps: [Wi-Fi design](../../design/wifi.md). Checked against code: 2026-10-15, branch `wifi-qca6174-diagnostics`.
+## ABI audit {#abi-audit}
+
+The official [Qualcomm product brief](https://www.qualcomm.com/content/dam/qcomm-martech/dm-assets/documents/qca6174a-product-brief_87-yb799-1-c.pdf) describes QCA6174A capabilities, but not its firmware programming protocol. The software reference is the ISC-licensed [ath10k v6.12](https://github.com/torvalds/linux/tree/v6.12/drivers/net/wireless/ath/ath10k) declarations. Board data contains board-specific calibration rather than an ABI specification; the exact LiteOn `11ad:0807` selection and hashes in `firmware/manifest.json` are preserved.
+
+| Checked | Reference and automated coverage |
+|---|---|
+| PCI/ROM, CE and BMI upload | `pci.c`, `hw.h`, `bmi.h`; existing ROM model and tests using actual firmware/board data |
+| HTC and HTT startup | `htc.h`, `htt.h`; preliminary events, four-byte credit records, control/ready trailers, shared deadlines and event limits |
+| WMI boot, scan, station and keys | `wmi.h`, `wmi-tlv.h/c`; complete binary commands, sizes, TLV tags, enum IDs, field order and zero padding |
+| HTT RX/TX | `htt.h`, `rx_desc.h`; TX descriptors/prefetch, RX sizeof/offsetof, peer map/unmap, SEC_IND and TX completion |
+| DMA ownership | UEFI/BIOS kernel scenario with real pages: RX buffer recycling, unknown addresses, duplicate completion, distinct PTK/GTK acknowledgements and peer loss |
+| Radio input | Truncations, single-bit mutations of valid events and deterministic malformed packets; EAPOL bound to the selected AP, MIC/replay and known cryptographic vectors |
+
+`osel-core/tests/wifi_abi.rs` reads fixtures in `osel-core/tests/fixtures/ath10k-v6.12/`. A C compiler generated them from original structures and enums, independently of the Rust encoders. `sources.json` pins the SHA256 of five source headers. To reproduce independently, download the listed headers from pinned v6.12 into one directory and run:
+
+```shell
+python3 tools/check-wifi-abi.py --reference-dir /tmp/ath10k-v6.12
+```
+
+`tools/wifi-abi-cases.c` defines synthetic examples; Python extracts declarations from verified headers, compiles them in a temporary directory and compares the bytes. `--update` regenerates fixtures after intentional scenario changes without bypassing source hashes. Ordinary `cargo test-core` requires no C compiler, network or Linux header installation.
+
+These checks detect software ABI mismatches and event-handling errors. They do not model radio behavior, analog timing, RF-kill or internal state of the closed firmware. Photos confirm WMI ready; HTT readiness, scanning, WPA2 and DHCP on Acer remain hardware checkpoints.
+
+Next steps: [Wi-Fi design](../../design/wifi.md). Checked against code: 2026-10-15, branch `fix-wifi-wmi-startup`.

@@ -213,6 +213,25 @@ pub struct Received<'a> {
     pub tid: u8,
     pub pn: u64,
 }
+/// Only the associated authenticator may feed EAPOL into the WPA2 state machine.
+/// After authorization the AP can relay other stations' data, but those sources
+/// must never gain the authenticator's privilege to restart a key exchange.
+pub fn ethernet_allowed(
+    frame: &Received<'_>,
+    station: [u8; 6],
+    ap: [u8; 6],
+    authorized: bool,
+) -> bool {
+    let bytes = frame.ethernet;
+    if bytes.len() < 14 {
+        return false;
+    }
+    if bytes[12..14] == [0x88, 0x8e] {
+        bytes[..6] == station && bytes[6..12] == ap
+    } else {
+        authorized && frame.encrypted
+    }
+}
 /// Firmware offload lacks the normal descriptor/PN. Only MIC-verified EAPOL
 /// may use this path; application packets must pass the full RX checks.
 pub fn offload_eapol(buffer: &[u8], peer: u16, station: [u8; 6], ap: [u8; 6]) -> KResult<Vec<u8>> {

@@ -11,7 +11,7 @@ description: План подключения Acer QCA6174 по WPA2 от апп�
 ## Этапы {#stages}
 
 1. **PCI и ROM.** Подтверждены на Acer образами `a53f703` и `8a7c625`: D0/wake/reset, CE7, ранняя конфигурация и BMI Target Info `05030000`, type `8`, error=None.
-2. **Прошивка.** Написаны BMI host-interest, PLL по EFUSE, точная плата/OTP и SGMT upload, BMI_DONE и проверка HTC/WMI ready. Команда `wifi load` проверяет запуск и останавливает target. HTC/WMI и HTT boot написаны; нужен аппаратный результат.
+2. **Прошивка.** Написаны BMI host-interest, PLL по EFUSE, точная плата/OTP и SGMT upload, BMI_DONE и проверка HTC/WMI ready. Команда `wifi load` проверяет запуск и останавливает target. Загрузка и WMI ready подтверждены фотографиями; HTT boot и последующие этапы ещё требуют аппаратного результата, см. [аудит ABI](../architecture/drivers/wifi.md#abi-audit).
 3. **Сети.** Пассивные `wifi scan/results`, WMI TLV, каналы 2,4 ГГц, scan events, BSSID/SSID/канал/RSSI. Парсер 802.11 и RSN проверяет длины. Начальная цель — видимый SSID и WPA2-Personal с CCMP, без WPA3/Enterprise/роуминга. Регион и доступные каналы нельзя угадывать по PCI ID.
 4. **Подключение.** Аутентификация/ассоциация, EAPOL 4-way handshake, replay/MIC, установка PTK/GTK; пароль вводится отдельно без эха, не хранится в репозитории и не попадает в диагностический отчёт. Источник nonce должен давать достаточную случайность, а не только PIT или MAC.
 5. **Данные.** HTT RX/TX и перевод кадров в существующий Ethernet-интерфейс smoltcp. После ассоциации — DHCP, маршрут, DNS, `ping gateway`, подключение тетриса. Потеря связи отменяет конфигурацию и соединения; смена адаптера не сохраняет старые SocketHandle.
@@ -19,6 +19,6 @@ description: План подключения Acer QCA6174 по WPA2 от апп�
 
 ## Аппаратная проверка {#hardware}
 
-Команды и сбор отчёта — [диагностика](../../user/diagnostics.md#report). На Acer подтверждён ROM/BMI; готовность Wi-Fi требует DHCP/ping и игры. PR остаётся черновиком аппаратного этапа: наличие прошивки и зелёный CI не закрывают подключение.
+Команды и сбор отчёта — [диагностика](../../user/diagnostics.md#report). На Acer подтверждён запуск до WMI ready; готовность Wi-Fi требует HTT, DHCP/ping и игры. Текущие программные проверки описаны в [аудите ABI](../architecture/drivers/wifi.md#abi-audit); наличие прошивки и зелёный CI не закрывают подключение.
 
 Код этапов 2–5 и его ограничения — [архитектура драйвера](../architecture/drivers/wifi.md#station). Пароль вводится командой `wifi connect N` на ноутбуке; nonce берётся из проверяемого RDRAND. Аппаратные пункты этапа 6 остаются открыты.

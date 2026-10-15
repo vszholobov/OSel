@@ -146,7 +146,7 @@ impl Controller {
         data.ap = ap.bssid;
         data.frequency = ap.frequency;
         self.send_wmi(self.wmi_endpoint, &wmi::vdev_create(self.mac)?, report)?;
-        self.send_wmi(self.wmi_endpoint, &wmi::station::vdev_param(48, 2)?, report)?; // Ethernet TX
+        self.send_wmi(self.wmi_endpoint, &wmi::station::ethernet_tx()?, report)?;
         report.record("STA vdev start channel", u32::from(ap.frequency));
         self.send_wmi(self.wmi_endpoint, &wmi::station::start(ap)?, report)?;
         self.wait_station(3000, report, |data| Ok(data.started))?;
@@ -198,7 +198,7 @@ impl Controller {
         self.send_wmi(self.wmi_endpoint, &wmi::station::up(ap.bssid, aid)?, report)?;
         self.send_wmi(
             self.wmi_endpoint,
-            &wmi::station::peer_param(ap.bssid, 0xff, 1)?,
+            &wmi::station::wake(ap.bssid)?,
             report,
         )?; // QCA6174 powersave workaround
         let mut handshake = wpa2::Handshake::new(pmk, self.mac, ap.bssid)?;
@@ -290,7 +290,7 @@ impl Controller {
                 handshake.installed()?;
                 self.send_wmi(
                     self.wmi_endpoint,
-                    &wmi::station::peer_param(ap, 3, 1)?,
+                    &wmi::station::authorize(ap)?,
                     report,
                 )?;
                 self.data.as_mut().unwrap().authorized = true;

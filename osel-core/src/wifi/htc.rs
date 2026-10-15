@@ -79,6 +79,7 @@ pub fn connect(service: u16, credits: u16, sequence: u8) -> KResult<[u8; 16]> {
 }
 pub fn connected(packet: &[u8], service: u16) -> KResult<Service> {
     let data = payload(packet)?;
+    credits(packet, 0)?;
     if packet[0] != 0
         || data.len() < 8
         || data[..2] != [3, 0]
@@ -106,22 +107,11 @@ pub fn setup(sequence: u8) -> [u8; 20] {
     packet
 }
 pub fn ready(packet: &[u8]) -> KResult<Ready> {
-    if packet.len() < 16 || packet[0] != 0 {
+    let data = payload(packet)?;
+    credits(packet, 0)?;
+    if packet[0] != 0 || data.len() < 8 {
         return Err(Errno::EIO);
     }
-    let length = u16::from_le_bytes([packet[2], packet[3]]) as usize;
-    if length < 8 || length + 8 > packet.len() {
-        return Err(Errno::EIO);
-    }
-    let trailer = if packet[1] & 2 != 0 {
-        packet[4] as usize
-    } else {
-        0
-    };
-    if trailer > length || (packet[1] & 2 != 0 && trailer < 4) || length - trailer < 8 {
-        return Err(Errno::EIO);
-    }
-    let data = &packet[8..8 + length - trailer];
     if u16::from_le_bytes([data[0], data[1]]) != 1 {
         return Err(Errno::EIO);
     }
@@ -245,5 +235,18 @@ mod tests {
         // A record header is four bytes, including its two pad bytes.
         let short_header = [2, 2, 2, 0, 2, 0, 0, 0, 1, 0];
         assert_eq!(payload(&short_header), Err(Errno::EIO));
+    }
+    #[test]
+    fn readiness_and_service_replies_do_not_bypass_trailer_validation() {
+        let mut packet = [
+            0, 2, 16, 0, 8, 0, 0, 0, 1, 0, 2, 0, 0, 7, 4, 0, 1, 4, 0, 0, 2, 1, 0, 0,
+        ];
+        assert!(ready(&packet).is_ok());
+        packet[17] = 8;
+        assert_eq!(ready(&packet), Err(Errno::EIO));
+        packet[8..16].copy_from_slice(&[3, 0, 0, 1, 0, 2, 0, 7]);
+        assert_eq!(connected(&packet, 0x100), Err(Errno::EIO));
+        packet[17] = 4;
+        assert!(connected(&packet, 0x100).is_ok());
     }
 }

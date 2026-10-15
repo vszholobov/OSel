@@ -1059,41 +1059,7 @@ impl Controller {
         Ok(())
     }
     fn handle_htt(&mut self, event: &[u8], report: &mut Report) -> KResult<()> {
-        let data = self.data.as_mut().ok_or(Errno::ENODEV)?;
-        match htt::event(event)? {
-            htt::Event::Peer { id, vdev, mac } if vdev == 0 && mac == data.ap => {
-                data.peer = Some(id);
-                report.record("HTT AP peer mapped", u32::from(id));
-            }
-            htt::Event::Unmap(id) if data.peer == Some(id) => {
-                data.authorized = false;
-                data.peer = None;
-                return Err(Errno::ENETUNREACH);
-            }
-            htt::Event::Tx { status, ids } => {
-                for id in ids.chunks_exact(2) {
-                    data.complete(u16::from_le_bytes(id.try_into().unwrap()), status)?;
-                }
-            }
-            htt::Event::Rx {
-                peer,
-                vdev,
-                info,
-                descriptors,
-            } => data.receive(descriptors, peer, vdev, info)?,
-            htt::Event::Security { peer, flags } => {
-                report.record(
-                    "HTT security indication",
-                    u32::from(peer) << 8 | u32::from(flags),
-                );
-                if data.peer == Some(peer) && flags & 0x7f == 6 {
-                    data.security[(flags >> 7) as usize] += 1;
-                }
-            }
-            htt::Event::Other(1 | 10 | 0x11) => return Err(Errno::EOPNOTSUPP),
-            _ => (),
-        }
-        Ok(())
+        self.data.as_mut().ok_or(Errno::ENODEV)?.handle(event, report)
     }
     fn transmit_frame(
         &mut self,

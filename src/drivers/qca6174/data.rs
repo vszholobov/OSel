@@ -1,5 +1,5 @@
 //! Firmware-owned HTT buffers. Controller stops/reset DMA before these are dropped.
-use super::{Dma, Errno, KResult};
+use super::{Dma, Errno, KResult, Report};
 use alloc::{collections::VecDeque, vec::Vec};
 use core::sync::atomic::{Ordering, fence};
 use osel_core::wifi::htt;
@@ -81,6 +81,42 @@ impl Data {
     }
     pub(super) fn config(&self) -> KResult<Vec<u8>> {
         htt::rx_config(self.index.physical() as u32, self.ring.physical() as u32)
+    }
+    pub(super) fn handle(&mut self, event: &[u8], report: &mut Report) -> KResult<()> {
+        match htt::event(event)? {
+            htt::Event::Peer { id, vdev, mac } if vdev == 0 && mac == self.ap => {
+                self.peer = Some(id);
+                report.record("HTT AP peer mapped", u32::from(id));
+            }
+            htt::Event::Unmap(id) if self.peer == Some(id) => {
+                self.authorized = false;
+                self.peer = None;
+                return Err(Errno::ENETUNREACH);
+            }
+            htt::Event::Tx { status, ids } => {
+                for id in ids.chunks_exact(2) {
+                    self.complete(u16::from_le_bytes(id.try_into().unwrap()), status)?;
+                }
+            }
+            htt::Event::Rx {
+                peer,
+                vdev,
+                info,
+                descriptors,
+            } => self.receive(descriptors, peer, vdev, info)?,
+            htt::Event::Security { peer, flags } => {
+                report.record(
+                    "HTT security indication",
+                    u32::from(peer) << 8 | u32::from(flags),
+                );
+                if self.peer == Some(peer) && flags & 0x7f == 6 {
+                    self.security[(flags >> 7) as usize] += 1;
+                }
+            }
+            htt::Event::Other(1 | 10 | 0x11) => return Err(Errno::EOPNOTSUPP),
+            _ => (),
+        }
+        Ok(())
     }
     pub(super) fn transmit(
         &mut self,
@@ -170,11 +206,13 @@ impl Data {
             } else {
                 match htt::receive(bytes, length, self.station, self.ap) {
                     Ok(frame) => {
-                        let eapol = frame.ethernet[12..14] == [0x88, 0x8e]
-                            && frame.ethernet[6..12] == self.ap
-                            && frame.ethernet[..6] == self.station;
                         let permitted = (!frame.encrypted || self.replay.accept(&frame).is_ok())
-                            && (eapol || (self.authorized && frame.encrypted));
+                            && htt::ethernet_allowed(
+                                &frame,
+                                self.station,
+                                self.ap,
+                                self.authorized,
+                            );
                         if permitted && self.received.len() < 64 {
                             self.received.push_back(frame.ethernet.to_vec());
                         } else {
@@ -197,6 +235,86 @@ impl Data {
 mod tests {
     use super::*;
     use osel_core::frames::FrameSource;
+    #[test_case]
+    fn reference_events_preserve_peer_key_dma_and_receive_ownership() {
+        const STA: [u8; 6] = [2, 3, 4, 5, 6, 8];
+        const AP: [u8; 6] = [2, 3, 4, 5, 6, 7];
+        let mut data = Data::new(STA).unwrap();
+        data.ap = AP;
+        let mut report = Report::new();
+        data.handle(
+            include_bytes!("../../../osel-core/tests/fixtures/ath10k-v6.12/peer-map.bin"),
+            &mut report,
+        )
+        .unwrap();
+        assert_eq!(data.peer, Some(7));
+        data.handle(
+            include_bytes!("../../../osel-core/tests/fixtures/ath10k-v6.12/security.bin"),
+            &mut report,
+        )
+        .unwrap();
+        assert_eq!(
+            data.security,
+            [0, 1],
+            "unicast acknowledgement is distinct from GTK"
+        );
+        data.handle(
+            include_bytes!("../../../osel-core/tests/fixtures/ath10k-v6.12/group-security.bin"),
+            &mut report,
+        )
+        .unwrap();
+        assert_eq!(data.security, [1, 1]);
+        let mut wrong_peer =
+            *include_bytes!("../../../osel-core/tests/fixtures/ath10k-v6.12/security.bin");
+        wrong_peer[2] = 8;
+        data.handle(&wrong_peer, &mut report).unwrap();
+        assert_eq!(data.security, [1, 1]);
+
+        let (id, _) = data.transmit(&[0xaa; 60], false, true).unwrap();
+        assert_eq!(id, 0);
+        let completed =
+            include_bytes!("../../../osel-core/tests/fixtures/ath10k-v6.12/tx-completed.bin");
+        data.handle(completed, &mut report).unwrap();
+        assert_eq!(data.completion(id), Some(0));
+        assert_eq!(data.handle(completed, &mut report), Err(Errno::EIO));
+
+        data.authorized = true;
+        let original =
+            include_bytes!("../../../osel-core/tests/fixtures/ath10k-v6.12/encrypted-ethernet.bin");
+        for forged in [false, true] {
+            let page = &data.buffers[0];
+            unsafe {
+                core::ptr::copy_nonoverlapping(original.as_ptr(), page.ptr, original.len());
+            }
+            if forged {
+                unsafe {
+                    // Valid encrypted traffic relayed from another Ethernet source
+                    // must not enter the authenticator's EAPOL state machine.
+                    page.ptr.add(16).write_volatile(8);
+                    page.ptr.add(252).write_volatile(4);
+                    page.ptr.add(306).write_volatile(4);
+                    page.ptr.add(312).write_volatile(0x88);
+                    page.ptr.add(313).write_volatile(0x8e);
+                }
+            }
+            let mut event = alloc::vec![0x12, 0, 7, 0, 0, 0, 1, 0];
+            event.extend_from_slice(&(page.physical() as u32).to_le_bytes());
+            event.extend_from_slice(&[14, 0, 0, 0]);
+            data.handle(&event, &mut report).unwrap();
+            assert_eq!(data.buffers.len(), htt::RX_POSTED);
+            assert_eq!(data.received.len(), 1);
+        }
+        assert_eq!(data.drops, 1);
+        let mut bad_address = alloc::vec![0x12, 0, 7, 0, 0, 0, 1, 0];
+        bad_address.extend_from_slice(&(data.index.physical() as u32).to_le_bytes());
+        bad_address.extend_from_slice(&[14, 0, 0, 0]);
+        assert_eq!(data.handle(&bad_address, &mut report), Err(Errno::EIO));
+        assert_eq!(data.buffers.len(), htt::RX_POSTED);
+        let unmap = include_bytes!("../../../osel-core/tests/fixtures/ath10k-v6.12/peer-unmap.bin");
+        assert_eq!(data.handle(unmap, &mut report), Err(Errno::ENETUNREACH));
+        assert_eq!(data.peer, None);
+        assert!(!data.authorized);
+    }
     #[test_case]
     fn htt_buffers_remain_pinned_until_firmware_completion() {
         let before = crate::memory::with_memory(|m| m.frame_allocator.used_frames());

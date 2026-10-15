@@ -57,4 +57,4 @@ After `WiFi DHCP ready`, run `net ip`, `ping gateway 4`, `tcpcheck SERVER_IP 808
 
 ## Verified scope {#limits}
 
-QEMU verifies commands, missing QCA6174, actual ICMP, the WPA2 state machine, DMA ownership, adapter switching and link-loss cleanup. QEMU does not emulate QCA6174. ROM/BMI has been confirmed on Acer. Firmware loading, scanning, WPA2, DHCP and Wi-Fi gameplay still require separate hardware verification.
+QEMU verifies commands, missing QCA6174, actual ICMP, the WPA2 state machine, DMA ownership, adapter switching and link-loss cleanup. QEMU does not emulate QCA6174. Firmware startup through WMI ready is confirmed on Acer. HTT readiness, scanning, WPA2, DHCP and Wi-Fi gameplay still require hardware verification; see the current [driver status](../developer/architecture/drivers/wifi.md#abi-audit).
