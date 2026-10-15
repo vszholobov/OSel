@@ -22,6 +22,14 @@ Before freeing DMA, PCI bus mastering is disabled, events are masked, rings are 
 
 `wifi scan` creates a station vdev and passive channels 1–11 within factory limits, then requires a successful scan-completed event. WMI events use bounded queues; HTC trailers from both CE1 and CE2 replenish credits, and TX buffers are not reused before DMA completes. Beacon/probe-response parsing checks SSID/BSSID, IE/RSN lengths, CCMP/PSK and mandatory PMF. Malformed frames are skipped and AP storage is capped at 20. SSID control characters are escaped. Results are copied from WIFI_SCAN before output. No association occurs; the target stops after the command.
 
+## WPA2 {#wpa2}
+
+`osel-core/src/wifi/wpa2.rs` provides a pure WPA2-PSK/CCMP state machine: PBKDF2-HMAC-SHA1, PTK derivation, MIC and AES key unwrap. Primitives come from RustCrypto; dependency licenses accompany every ramdisk at `/usr/share/licenses/WPA2-NOTICES`. Passwords accept 8–63 bytes or a 64-digit hexadecimal PSK; secrets use `Zeroizing`.
+
+The state machine checks replay counters, ANonce, MIC and RSN/GTK KDEs. It returns keys once and requires an explicit acknowledgement of hardware installation and M4 transmission before authorization. M3 retransmissions resend M4 without reinstalling keys. Group rekey follows the same rule; moving an unchanged GTK to a different index is rejected. SNonce requires a cryptographic random source with no timer-based fallback. Hardware association does not use this state machine yet.
+
+The kernel target sets `aes_force_soft`; SHA1 uses `force-soft`. AES-NI/SHA intrinsics using XMM would corrupt user thread registers. A kernel test runs PBKDF2 and AES unwrap with patterns in all 16 XMM registers and verifies preserved state under UEFI and BIOS. Host tests cover known PMK/PTK and RFC3394 vectors, M1–M4, retransmissions, group rekey, invalid MICs, nonces and replay counters.
+
 ## Firmware and board {#firmware}
 
 `firmware/` contains unmodified `firmware-6.bin`, `board-2.bin`, license and required notice. `firmware/manifest.json` records source, date and SHA256; `tools/check-firmware.py` verifies exact bytes in CI. Board selection requires the exact LiteOn `11ad:0807` PCI entry and 8124 bytes, without fallback to another board's calibration.

@@ -3,6 +3,8 @@ target = "x86_64-unknown-none"
 
 [target.x86_64-unknown-none]
 runner = "runner/run.sh"
+# Kernel threads must not clobber user XMM state through AES-NI intrinsics.
+rustflags = ["--cfg", "aes_force_soft"]
 
 [alias]
 # host unit tests, no QEMU needed

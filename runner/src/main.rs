@@ -442,6 +442,7 @@ fn pack_ramdisk(dir: &Path, programs: &[(String, Vec<u8>)]) -> Result<Vec<u8>, S
         ("usr/share/licenses/ath10k/LICENSE", include_bytes!("../../firmware/LICENSE.QualcommAtheros_ath10k").as_slice()),
         ("usr/share/licenses/ath10k/NOTICE", include_bytes!("../../firmware/ath10k/QCA6174/hw3.0/notice_ath10k_firmware-6.txt").as_slice()),
         ("usr/share/licenses/ath10k/DRIVER-ISC", include_bytes!("../../firmware/ath10k-driver-ISC.txt").as_slice()),
+        ("usr/share/licenses/WPA2-NOTICES", include_bytes!("../../firmware/wpa2-dependencies-NOTICES.txt").as_slice()),
     ] {
         if packed.contains(&path.to_string()) {
             return Err(format!("{path} is reserved for the embedded firmware license"));
@@ -959,9 +960,11 @@ mod tests {
 
     #[test]
     fn empty_directory_still_bundles_firmware_notices() {
+        use osel_core::vfs::FileSystem;
         let dir = TempDir::new("empty");
         let fs = mount(pack_ramdisk(&dir.0, &[]).unwrap());
-        assert_eq!(fs.node_count(), 8);
+        assert_eq!(fs.node_count(), 9);
+        assert!(osel_core::vfs::resolve_absolute(&fs.root(), "/usr/share/licenses/WPA2-NOTICES").is_ok());
     }
     #[test]
     fn custom_ramdisk_cannot_replace_required_firmware_notices() {

@@ -44,6 +44,8 @@ An address outside the lower half must be rejected before either return instruct
 
 `FpuState` in `osel-core/src/fpu.rs` stores 512-byte fxsave64 state. Switching saves/restores it and final process results retain it. run_with accepts/returns custom state; run uses FCW 0x037F, MXCSR 0x1F80, empty x87 stack and zero XMM. Kernel SSE is disabled so traps/calls do not overwrite user registers. See [0013](../../decisions/0013-fpu-state.md) and [0015](../../decisions/0015-threads.md).
 
+WPA2 cryptography must also preserve XMM: `.cargo/config.toml` sets `aes_force_soft` for `x86_64-unknown-none`, while SHA1 uses `force-soft`. The `wifi_crypto_preserves_every_user_xmm_register` test covers PBKDF2 and AES unwrap with all 16 registers.
+
 ### user/ programs {#user-programs}
 
 Independent no_std crates in `user/<name>/` use global_asm! and _start. [Runner](../../reference/runner.md#user-programs) builds /bin programs. Normal boot runs /bin/hello through program::run and prints Hello from ring 3!.

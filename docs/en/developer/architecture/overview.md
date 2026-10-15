@@ -66,6 +66,7 @@ Existing kernel module names include wordplay; keep their names when changing co
 | `htc` | `osel-core/src/wifi/htc.rs` | checked HTC ready message | [Wi-Fi](drivers/wifi.md) |
 | `wmi` | `osel-core/src/wifi/wmi.rs` | WMI TLVs, memory requests, INIT/ready | [Wi-Fi](drivers/wifi.md) |
 | `ieee80211` | `osel-core/src/wifi/ieee80211.rs` | beacon/SSID/RSN parsing and WPA2 compatibility | [Wi-Fi](drivers/wifi.md) |
+| `wpa2` | `osel-core/src/wifi/wpa2.rs` | WPA2-PSK/CCMP, EAPOL and key reinstallation protection | [Wi-Fi](drivers/wifi.md) |
 | `net` | `osel-core/src/net.rs` | Linux IPv4, PCI address / BAR parsing | [Ethernet](drivers/ethernet.md) |
 | `rtl8168` | `osel-core/src/rtl8168.rs` | Realtek XID, descriptors and bounded PHY initialization | [Ethernet](drivers/ethernet.md) |
 | `console` | `osel-core/src/console.rs` | Text rendering into byte buffers | [Details](drivers/console.md) |

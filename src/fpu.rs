@@ -139,6 +139,186 @@ mod tests {
     }
 
     #[test_case]
+    fn wifi_crypto_preserves_every_user_xmm_register() {
+        let mut original = FpuState::initial();
+        save(&mut original);
+        let mut pattern = FpuState::initial();
+        for register in 0..16 {
+            pattern.0[160 + register * 16..176 + register * 16].fill(register as u8 + 1);
+        }
+        restore(&pattern);
+        let pmk = osel_core::wifi::wpa2::derive(b"password", b"IEEE").unwrap();
+        let key = core::array::from_fn(|i| i as u8);
+        let encrypted = [
+            0x1f, 0xa6, 0x8b, 0x0a, 0x81, 0x12, 0xb4, 0x47, 0xae, 0xf3, 0x4b, 0xd8, 0xfb, 0x5a,
+            0x7b, 0x82, 0x9d, 0x3e, 0x86, 0x23, 0x71, 0xd2, 0xcf, 0xe5,
+        ];
+        let decrypted = osel_core::wifi::wpa2::unwrap_key_data(&key, &encrypted).unwrap();
+        let mut after = FpuState::initial();
+        save(&mut after);
+        restore(&original);
+        assert_eq!(&pmk[..4], &[0xf4, 0x2c, 0x6f, 0xc5]);
+        assert_eq!(
+            &decrypted[..],
+            &[
+                0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
+                0xee, 0xff
+            ]
+        );
+        for register in 0..16 {
+            assert_eq!(after.xmm(register), pattern.xmm(register));
+        }
+        assert_eq!(after.fcw(), pattern.fcw());
+        assert_eq!(after.mxcsr(), pattern.mxcsr());
+    }
+
+    global_asm!(
+        ".pushsection .rodata.osel_fpu_programs, \"a\"",
+        // every XMM register gets a pattern (SSE2 only: QEMU's default CPU has no SSE4.1),
+        // one x87 register is pushed, then a fault
+        ".global osel_xmm_patterns",
+        "osel_xmm_patterns:",
+        "mov rax, 0x101010101010101",
+        "movq xmm0, rax",
+        "punpcklqdq xmm0, xmm0",
+        "mov rax, 0x202020202020202",
+        "movq xmm1, rax",
+        "punpcklqdq xmm1, xmm1",
+        "mov rax, 0x303030303030303",
+        "movq xmm2, rax",
+        "punpcklqdq xmm2, xmm2",
+        "mov rax, 0x404040404040404",
+        "movq xmm3, rax",
+        "punpcklqdq xmm3, xmm3",
+        "mov rax, 0x505050505050505",
+        "movq xmm4, rax",
+        "punpcklqdq xmm4, xmm4",
+        "mov rax, 0x606060606060606",
+        "movq xmm5, rax",
+        "punpcklqdq xmm5, xmm5",
+        "mov rax, 0x707070707070707",
+        "movq xmm6, rax",
+        "punpcklqdq xmm6, xmm6",
+        "mov rax, 0x808080808080808",
+        "movq xmm7, rax",
+        "punpcklqdq xmm7, xmm7",
+        "mov rax, 0x909090909090909",
+        "movq xmm8, rax",
+        "punpcklqdq xmm8, xmm8",
+        "mov rax, 0xa0a0a0a0a0a0a0a",
+        "movq xmm9, rax",
+        "punpcklqdq xmm9, xmm9",
+        "mov rax, 0xb0b0b0b0b0b0b0b",
+        "movq xmm10, rax",
+        "punpcklqdq xmm10, xmm10",
+        "mov rax, 0xc0c0c0c0c0c0c0c",
+        "movq xmm11, rax",
+        "punpcklqdq xmm11, xmm11",
+        "mov rax, 0xd0d0d0d0d0d0d0d",
+        "movq xmm12, rax",
+        "punpcklqdq xmm12, xmm12",
+        "mov rax, 0xe0e0e0e0e0e0e0e",
+        "movq xmm13, rax",
+        "punpcklqdq xmm13, xmm13",
+        "mov rax, 0xf0f0f0f0f0f0f0f",
+        "movq xmm14, rax",
+        "punpcklqdq xmm14, xmm14",
+        "mov rax, 0x1010101010101010",
+        "movq xmm15, rax",
+        "punpcklqdq xmm15, xmm15",
+        "fld1",
+        "mov qword ptr [0], rax",
+        ".global osel_xmm_patterns_end",
+        "osel_xmm_patterns_end:",
+        // what a new program finds: MXCSR in rax, FCW in rbx, xmm5 in rcx, FSW in rdx
+        ".global osel_fresh_state",
+        "osel_fresh_state:",
+        "sub rsp, 16",
+        "stmxcsr [rsp]",
+        "mov eax, [rsp]",
+        "fnstcw [rsp + 4]",
+        "movzx ebx, word ptr [rsp + 4]",
+        "fnstsw [rsp + 8]",
+        "movzx edx, word ptr [rsp + 8]",
+        "movq rcx, xmm5",
+        "mov qword ptr [0], rax",
+        ".global osel_fresh_state_end",
+        "osel_fresh_state_end:",
+        // SSE division by zero with the exception unmasked
+        ".global osel_simd_divide",
+        "osel_simd_divide:",
+        "sub rsp, 8",
+        "stmxcsr [rsp]",
+        "and dword ptr [rsp], 0xfffffdff",
+        "ldmxcsr [rsp]",
+        "mov eax, 1",
+        "cvtsi2ss xmm0, eax",
+        "xorps xmm1, xmm1",
+        ".global osel_simd_divide_at",
+        "osel_simd_divide_at:",
+        "divss xmm0, xmm1",
+        ".global osel_simd_divide_next",
+        "osel_simd_divide_next:",
+        "mov qword ptr [0], rax",
+        ".global osel_simd_divide_end",
+        "osel_simd_divide_end:",
+        // x87 division by zero with the exception unmasked: reported at the next fwait
+        ".global osel_x87_divide",
+        "osel_x87_divide:",
+        "sub rsp, 8",
+        "fnstcw [rsp]",
+        "and word ptr [rsp], 0xfffb",
+        "fldcw [rsp]",
+        "fld1",
+        "fldz",
+        "fdivp",
+        ".global osel_x87_divide_wait",
+        "osel_x87_divide_wait:",
+        "fwait",
+        ".global osel_x87_divide_end",
+        "osel_x87_divide_end:",
+        // the same, but a system call between the division and fwait: the pending
+        // exception must reach the program, not the kernel
+        ".global osel_x87_pending",
+        "osel_x87_pending:",
+        "sub rsp, 8",
+        "fnstcw [rsp]",
+        "and word ptr [rsp], 0xfffb",
+        "fldcw [rsp]",
+        "fld1",
+        "fldz",
+        "fdivp",
+        "mov eax, 39",
+        "syscall",
+        "fwait",
+        ".global osel_x87_pending_end",
+        "osel_x87_pending_end:",
+        // xmm3 survives a system call and timer interrupts
+        ".global osel_xmm_kept",
+        "osel_xmm_kept:",
+        "mov rax, 0x3333333333333333",
+        "movq xmm3, rax",
+        "punpcklqdq xmm3, xmm3",
+        "mov eax, 39",
+        "syscall",
+        "mov ecx, 200000000",
+        "2:",
+        "dec ecx",
+        "jnz 2b",
+        "mov qword ptr [0], rax",
+        ".global osel_xmm_kept_end",
+        "osel_xmm_kept_end:",
+        ".popsection",
+    );
+
+    fn run_code(code: &[u8], fpu: &mut FpuState) -> (TrapFrame, Stop) {
+        let mut loaded = load(code);
+        let mut frame = initial_frame(loaded.entry, loaded.rsp);
+        let stop = run_with(&mut loaded.space, &mut standard_files(), &mut frame, fpu);
+        (frame, stop)
+    }
+
+    #[test_case]
     fn test_a_program_keeps_its_xmm_registers() {
         let mut fpu = FpuState::initial();
         let (_frame, stop) = run_code(code!(osel_xmm_patterns, osel_xmm_patterns_end), &mut fpu);

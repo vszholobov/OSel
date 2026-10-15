@@ -10,3 +10,10 @@ x86_64 = { version = "0.15.5", default-features = false }
 bootloader_api = "0.11.17"
 pc-keyboard = "0.9"
 linked_list_allocator = "0.10"
+# WPA2 uses these protocol-mandated primitives; keep the kernel paths scalar.
+hmac = { version = "=0.12.1", default-features = false }
+sha1 = { version = "0.10.6", default-features = false, features = ["force-soft"] }
+pbkdf2 = { version = "=0.12.2", default-features = false, features = ["hmac"] }
+aes = { version = "=0.8.4", default-features = false, features = ["zeroize"] }
+aes-kw = { version = "=0.2.1", default-features = false, features = ["alloc"] }
+zeroize = { version = "1.8.2", default-features = false, features = ["alloc"] }
