@@ -8,8 +8,12 @@
 //! QCA6174 PCIe ROM bring-up and diagnostics, for the Acer LiteOn 11ad:0807 card.
 //! Register/CE/BMI protocol definitions follow Linux ath10k (ISC), v6.12.
 //! ROM probe and bounded firmware/HTC checkpoint, without Wi-Fi association.
-use super::{dma::Dma, pci};
+use super::{
+    dma::{Dma, DmaRegion},
+    pci,
+};
 use crate::{memory, sync::IrqSpinlock, time};
+use alloc::vec::Vec;
 use core::{
     fmt::Write,
     sync::atomic::{AtomicBool, Ordering, fence},
@@ -17,7 +21,7 @@ use core::{
 use osel_core::{
     errno::{Errno, KResult},
     file::FileLike,
-    wifi::{self, Firmware, bmi, boot, htc},
+    wifi::{self, Firmware, bmi, boot, htc, wmi},
 };
 use x86_64::{
     VirtAddr,
@@ -178,11 +182,13 @@ pub fn command(command: &str, out: &mut impl Write) -> KResult<()> {
 struct Controller {
     device: pci::Device,
     base: usize,
-    rings: Option<[Dma; 6]>, // CE0 src, CE1 dst, request, response, CE7 src/dst
+    rings: Option<[Dma; 10]>, // CE0/1, BMI buffers, CE7, CE2 RX, CE3/4 TX, WMI buffer
     tx: u32,
     rx: u32,
     diag_tx: u32,
     diag_rx: u32,
+    wmi_rx: u32,
+    host_memory: Vec<DmaRegion>,
     load_deadline: Option<u64>,
     reset_on_drop: bool,
 }
@@ -219,6 +225,8 @@ impl Controller {
             rx: 0,
             diag_tx: 0,
             diag_rx: 0,
+            wmi_rx: 0,
+            host_memory: Vec::new(),
             load_deadline: None,
             reset_on_drop: false,
         };
@@ -304,16 +312,27 @@ impl Controller {
             }
             Ok(dma)
         };
-        self.rings = Some([low()?, low()?, low()?, low()?, low()?, low()?]);
+        self.rings = Some([
+            low()?,
+            low()?,
+            low()?,
+            low()?,
+            low()?,
+            low()?,
+            low()?,
+            low()?,
+            low()?,
+            low()?,
+        ]);
         Ok(())
     }
     fn pipes(&mut self) {
         self.mask();
         let rings = self.rings.as_ref().unwrap();
-        for i in [0, 1, 4, 5] {
+        for i in [0, 1, 4, 5, 6, 7, 8] {
             unsafe { core::ptr::write_bytes(rings[i].ptr, 0, 4096) };
         }
-        let addresses = [0, 1, 4, 5].map(|i| rings[i].physical() as u32);
+        let addresses = [0, 1, 4, 5, 6, 7, 8].map(|i| rings[i].physical() as u32);
         // Only initialize host-owned halves. The ROM owns CE0 destination and CE1
         // source; clearing those sizes after target initialization stalls BMI.
         for (base, source, address, size) in [
@@ -321,13 +340,21 @@ impl Controller {
             (CE + 0x400, false, addresses[1], ENTRIES),
             (DIAG, true, addresses[2], 2),
             (DIAG, false, addresses[3], 2),
+            (CE + 2 * 0x400, false, addresses[4], ENTRIES),
+            (CE + 3 * 0x400, true, addresses[5], ENTRIES),
+            (CE + 4 * 0x400, true, addresses[6], ENTRIES),
         ] {
             let offset = if source { 0 } else { 8 };
             self.put(base + offset, address);
             self.put(base + offset + 4, size);
             let control = self.get(base + 0x10);
             let control = if source {
-                (control & !0x1ffff) | if base == CE { 256 } else { 2048 }
+                (control & !0x1ffff)
+                    | if base == CE || base == CE + 4 * 0x400 {
+                        256
+                    } else {
+                        2048
+                    }
             } else {
                 control & !(1 << 17)
             };
@@ -338,6 +365,7 @@ impl Controller {
         self.rx = self.get(CE + 0x400 + 0x40) & (ENTRIES - 1);
         self.diag_tx = self.get(DIAG + 0x3c) & 1;
         self.diag_rx = self.get(DIAG + 0x40) & 1;
+        self.wmi_rx = self.get(CE + 2 * 0x400 + 0x40) & (ENTRIES - 1);
         fence(Ordering::SeqCst);
     }
     fn snapshot(&self, report: &mut Report, base: usize) {
@@ -639,8 +667,202 @@ impl Controller {
         report.record("HTC transmit credits", u32::from(ready.credits));
         report.record("HTC credit size", u32::from(ready.credit_size));
         report.record("HTC endpoints", u32::from(ready.endpoints));
-        report.record("HTC ready; checkpoint complete", 1);
+        report.record("HTC ready", 1);
+        self.wmi_boot(&ready, report)?;
         Ok(())
+    }
+    fn htc_connect(
+        &mut self,
+        service: u16,
+        credits: u16,
+        sequence: u8,
+        report: &mut Report,
+    ) -> KResult<htc::Service> {
+        report.record("HTC connect service", u32::from(service));
+        let request = htc::connect(service, credits, sequence)?;
+        let mut reply = [0u8; 256];
+        let count = self.bmi_exchange(&request, &mut reply, report)?;
+        report.record("HTC connect reply bytes", count as u32);
+        let result = htc::connected(&reply[..count], service)?;
+        report.record("HTC assigned endpoint", u32::from(result.endpoint));
+        report.record("HTC maximum message", u32::from(result.max_message));
+        Ok(result)
+    }
+    fn wmi_boot(&mut self, ready: &htc::Ready, report: &mut Report) -> KResult<()> {
+        // CE2 can receive WMI as soon as control services are connected.
+        let rings = self.rings.as_ref().unwrap();
+        unsafe { descriptor(rings[6].ptr, self.wmi_rx, rings[9].physical() as u32, 0) };
+        fence(Ordering::SeqCst);
+        self.put(CE + 2 * 0x400 + 0x40, (self.wmi_rx + 1) & (ENTRIES - 1));
+        let htt = self.htc_connect(0x300, 0, 0, report)?;
+        let control = self.htc_connect(0x100, ready.credits, 1, report)?;
+        if htt.endpoint == control.endpoint {
+            return Err(Errno::EIO);
+        }
+        report.record("HTC setup complete begin", 5);
+        self.bmi_exchange(&htc::setup(2), &mut [], report)?;
+        report.record("WMI service ready wait", 0);
+        let count = match self.wait_descriptor(6, self.wmi_rx, 5000) {
+            Ok(count) if count <= 2048 => count as usize,
+            Ok(count) => {
+                report.record("WMI packet too long", u32::from(count));
+                return Err(Errno::EIO);
+            }
+            Err(error) => {
+                self.snapshot(report, CE + 2 * 0x400);
+                report.record("WMI service ready timeout", 0);
+                return Err(error);
+            }
+        };
+        let rings = self.rings.as_ref().unwrap();
+        let mut packet = [0u8; 2048];
+        unsafe { core::ptr::copy_nonoverlapping(rings[9].ptr, packet.as_mut_ptr(), count) };
+        report.record("WMI packet bytes", count as u32);
+        report.record("WMI endpoint", u32::from(packet[0]));
+        if packet[0] != control.endpoint {
+            return Err(Errno::EIO);
+        }
+        let data = htc::payload(&packet[..count])?;
+        for i in 0..(data.len() / 4).min(4) {
+            report.record(
+                "WMI event header",
+                u32::from_le_bytes(data[i * 4..i * 4 + 4].try_into().unwrap()),
+            );
+        }
+        let service = wmi::service_ready(data)?;
+        report.record("WMI firmware build", service.build);
+        for value in service.abi {
+            report.record("WMI ABI", value);
+        }
+        report.record("WMI RF chains", service.chains);
+        report.record("WMI EEPROM domain", service.eeprom_domain);
+        for value in service.channels_2ghz {
+            report.record("WMI 2GHz channel limit", value);
+        }
+        report.record("WMI memory requests", service.requests.len() as u32);
+        for request in &service.requests {
+            report.record("WMI memory request ID", request.id);
+            report.record("WMI memory unit size", request.unit_size);
+            report.record("WMI memory flags", request.flags);
+            report.record("WMI memory units", request.units);
+        }
+        report.record("WMI service ready", 1);
+        self.wmi_initialize(&service, &control, ready, report)?;
+        Ok(())
+    }
+    fn post_wmi(&mut self) {
+        let rings = self.rings.as_ref().unwrap();
+        unsafe { descriptor(rings[6].ptr, self.wmi_rx, rings[9].physical() as u32, 0) };
+        fence(Ordering::SeqCst);
+        self.put(CE + 2 * 0x400 + 0x40, (self.wmi_rx + 1) & (ENTRIES - 1));
+    }
+    fn send_wmi(&mut self, endpoint: u8, command: &[u8], report: &mut Report) -> KResult<()> {
+        if command.len() + 8 > 2048 {
+            return Err(Errno::E2BIG);
+        }
+        let base = CE + 3 * 0x400;
+        let index = self.get(base + 0x3c) & (ENTRIES - 1);
+        let rings = self.rings.as_ref().unwrap();
+        let mut header = [0u8; 8];
+        header[0] = endpoint;
+        header[1] = 1; // request credit updates
+        header[2..4].copy_from_slice(&(command.len() as u16).to_le_bytes());
+        unsafe {
+            core::ptr::copy_nonoverlapping(header.as_ptr(), rings[2].ptr, 8);
+            core::ptr::copy_nonoverlapping(command.as_ptr(), rings[2].ptr.add(8), command.len());
+            descriptor(
+                rings[7].ptr,
+                index,
+                rings[2].physical() as u32,
+                (command.len() + 8) as u16,
+            );
+        }
+        fence(Ordering::SeqCst);
+        self.put(base + 0x3c, (index + 1) & (ENTRIES - 1));
+        if let Err(error) = self.wait(base + 0x44, ENTRIES - 1, (index + 1) & (ENTRIES - 1), 3000) {
+            self.snapshot(report, base);
+            report.record("WMI transmit timeout", index);
+            return Err(error);
+        }
+        Ok(())
+    }
+    fn wmi_initialize(
+        &mut self,
+        service: &wmi::ServiceReady,
+        control: &htc::Service,
+        ready: &htc::Ready,
+        report: &mut Report,
+    ) -> KResult<()> {
+        let mut chunks = Vec::new();
+        let mut total = 0usize;
+        for request in &service.requests {
+            let length = request.bytes()?;
+            total = total.checked_add(length).ok_or(Errno::E2BIG)?;
+            if total > 8 * 1024 * 1024 {
+                return Err(Errno::E2BIG);
+            }
+            let region = DmaRegion::new(length).ok_or(Errno::ENOMEM)?;
+            chunks.push(wmi::MemoryChunk {
+                id: request.id,
+                address: region.physical() as u32,
+                length: region.length as u32,
+            });
+            self.host_memory.push(region);
+        }
+        let command = wmi::init(service, &chunks)?;
+        let credits = (command.len() + 8).div_ceil(ready.credit_size as usize);
+        if command.len() > control.max_message as usize || credits > ready.credits as usize {
+            return Err(Errno::EOPNOTSUPP);
+        }
+        self.wmi_rx = (self.wmi_rx + 1) & (ENTRIES - 1);
+        self.post_wmi();
+        report.record("WMI INIT host memory bytes", total as u32);
+        self.send_wmi(control.endpoint, &command, report)?;
+        report.record("WMI ready wait", 0);
+        let deadline = time::monotonic_ns().saturating_add(5_000_000_000);
+        for _ in 0..32 {
+            let left = deadline.saturating_sub(time::monotonic_ns()) / 1_000_000;
+            if left == 0 {
+                return Err(Errno::ETIMEDOUT);
+            }
+            let count = match self.wait_descriptor(6, self.wmi_rx, left) {
+                Ok(count) if count <= 2048 => count as usize,
+                Ok(_) => return Err(Errno::EIO),
+                Err(error) => {
+                    self.snapshot(report, CE + 2 * 0x400);
+                    report.record("WMI ready timeout", 0);
+                    return Err(error);
+                }
+            };
+            let rings = self.rings.as_ref().unwrap();
+            let mut packet = [0u8; 2048];
+            unsafe { core::ptr::copy_nonoverlapping(rings[9].ptr, packet.as_mut_ptr(), count) };
+            if packet[0] != control.endpoint {
+                return Err(Errno::EIO);
+            }
+            let data = htc::payload(&packet[..count])?;
+            if data.len() < 4 {
+                return Err(Errno::EIO);
+            }
+            let id = u32::from_le_bytes(data[..4].try_into().unwrap()) & 0xffffff;
+            report.record("WMI event ID", id);
+            if id == 2 {
+                let mac = wmi::ready(data)?;
+                report.record(
+                    "WMI MAC first four bytes",
+                    u32::from_le_bytes(mac[..4].try_into().unwrap()),
+                );
+                report.record(
+                    "WMI MAC last two bytes",
+                    u32::from(u16::from_le_bytes(mac[4..].try_into().unwrap())),
+                );
+                report.record("WMI ready; checkpoint complete", 1);
+                return Ok(());
+            }
+            self.wmi_rx = (self.wmi_rx + 1) & (ENTRIES - 1);
+            self.post_wmi();
+        }
+        Err(Errno::ETIMEDOUT)
     }
 }
 struct Bmi<'a> {

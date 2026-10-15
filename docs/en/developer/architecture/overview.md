@@ -64,6 +64,7 @@ Existing kernel module names include wordplay; keep their names when changing co
 | `boot` | `osel-core/src/wifi/boot.rs` | QCA6174 ROM early configuration and address checks | [Wi-Fi](drivers/wifi.md) |
 | `bmi` | `osel-core/src/wifi/bmi.rs` | BMI commands, PLL, board/OTP/firmware upload | [Wi-Fi](drivers/wifi.md) |
 | `htc` | `osel-core/src/wifi/htc.rs` | checked HTC ready message | [Wi-Fi](drivers/wifi.md) |
+| `wmi` | `osel-core/src/wifi/wmi.rs` | WMI TLVs, memory requests, INIT/ready | [Wi-Fi](drivers/wifi.md) |
 | `net` | `osel-core/src/net.rs` | Linux IPv4, PCI address / BAR parsing | [Ethernet](drivers/ethernet.md) |
 | `rtl8168` | `osel-core/src/rtl8168.rs` | Realtek XID, descriptors and bounded PHY initialization | [Ethernet](drivers/ethernet.md) |
 | `console` | `osel-core/src/console.rs` | Text rendering into byte buffers | [Details](drivers/console.md) |

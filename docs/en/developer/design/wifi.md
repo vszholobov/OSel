@@ -11,7 +11,7 @@ description: Acer QCA6174 WPA2 bring-up plan from a hardware probe to network Te
 ## Stages {#stages}
 
 1. **PCI and ROM.** Confirmed on Acer with images `a53f703` and `8a7c625`: D0/wake/reset, CE7, early configuration and BMI Target Info `05030000`, type `8`, error=None.
-2. **Firmware.** BMI host-interest, EFUSE-selected PLL, exact board/OTP and SGMT upload, BMI_DONE and HTC ready validation are implemented. `wifi load` checks startup and stops the target. Hardware validation is pending; next is HTC service connection and WMI service-ready.
+2. **Firmware.** BMI host-interest, EFUSE-selected PLL, exact board/OTP and SGMT upload, BMI_DONE and HTC/WMI ready validation are implemented. `wifi load` checks startup and stops the target. Hardware validation is pending; HTC services and WMI service-ready/INIT/ready are implemented; hardware validation is pending.
 3. **Networks.** WMI TLV, 2.4 GHz channels, scan events, BSSID/SSID/channel/RSSI. Checked 802.11/RSN parsing. Initial target: visible SSID and WPA2-Personal CCMP, without WPA3/Enterprise/roaming. Region and permitted channels cannot be guessed from PCI identity.
 4. **Connection.** Authentication/association, EAPOL 4-way handshake, replay/MIC and PTK/GTK installation. Password input must be separate without echo, repository storage or diagnostic disclosure. Nonces require sufficient randomness, not only PIT or MAC.
 5. **Data.** HTT RX/TX and frame translation into the existing smoltcp Ethernet interface. After association: DHCP, route, DNS, `ping gateway` and Tetris. Link loss invalidates configuration/connections; adapter switching must not retain stale SocketHandle values.
