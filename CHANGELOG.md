@@ -4,6 +4,8 @@
 
 ## Не выпущено
 
+## 0.12 — 2026-10-15
+
 ### Added
 
 - Experimental QCA6174 Wi-Fi for Acer: firmware and board data, bounded ROM/BMI/HTC/WMI initialization, passive 2.4 GHz scanning, WPA2-PSK/CCMP authentication and HTT data transfer through the shared DHCP/TCP stack. Firmware loading, scanning and connectivity still require validation on Acer hardware.
