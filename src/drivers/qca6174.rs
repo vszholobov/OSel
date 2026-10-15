@@ -13,7 +13,7 @@ use super::{
     pci,
 };
 use crate::{memory, sync::IrqSpinlock, time};
-use alloc::vec::Vec;
+use alloc::{collections::VecDeque, vec::Vec};
 use core::{
     fmt::Write,
     sync::atomic::{AtomicBool, Ordering, fence},
@@ -21,7 +21,11 @@ use core::{
 use osel_core::{
     errno::{Errno, KResult},
     file::FileLike,
-    wifi::{self, Firmware, bmi, boot, htc, wmi},
+    wifi::{
+        self, Firmware, bmi, boot, htc,
+        ieee80211::{self, AccessPoint},
+        wmi,
+    },
 };
 use x86_64::{
     VirtAddr,
@@ -36,6 +40,8 @@ const CE: usize = 0x34400;
 const ENTRIES: u32 = 16;
 const DIAG: usize = CE + 7 * 0x400;
 const LOG_CAPACITY: usize = 64;
+static SCAN_RESULTS: IrqSpinlock<[Option<AccessPoint>; 20]> =
+    IrqSpinlock::new("WIFI_SCAN", [None; 20]);
 static BUSY: AtomicBool = AtomicBool::new(false);
 static REPORT: IrqSpinlock<Report> = IrqSpinlock::new("WIFI_REPORT", Report::new());
 
@@ -148,7 +154,8 @@ pub fn command(command: &str, out: &mut impl Write) -> KResult<()> {
                 let _ = writeln!(out, "  No snapshot; run wifi probe on Acer");
             }
         }
-        "probe" | "load" => {
+        "results" => show_networks(out),
+        "probe" | "load" | "scan" => {
             let _busy = Busy::take()?;
             let attempts = REPORT.lock().attempts.saturating_add(1);
             let mut report = Report::new();
@@ -158,13 +165,13 @@ pub fn command(command: &str, out: &mut impl Write) -> KResult<()> {
                 out,
                 "WiFi probe: PCI/D0/wake/reset/CE/BMI; bounded waits. See wifi regs."
             );
-            if command == "load" {
+            if command != "probe" {
                 let _ = writeln!(
                     out,
                     "WiFi firmware check: up to 120 seconds after ROM; Ctrl+C cancels. Target stops after the check."
                 );
             }
-            let result = probe(&mut report, command == "load");
+            let result = probe(&mut report, command);
             report.error = result.err();
             *REPORT.lock() = report;
             let _ = writeln!(
@@ -173,12 +180,59 @@ pub fn command(command: &str, out: &mut impl Write) -> KResult<()> {
                 report.stage, report.error
             );
             result?;
+            if command == "scan" {
+                show_networks(out);
+            }
         }
         _ => return Err(Errno::EINVAL),
     }
     Ok(())
 }
 
+fn show_networks(out: &mut impl Write) {
+    let networks = *SCAN_RESULTS.lock();
+    let _ = writeln!(out, "Last passive WiFi scan (2.4 GHz):");
+    for (index, ap) in networks
+        .iter()
+        .enumerate()
+        .filter_map(|(i, ap)| ap.as_ref().map(|ap| (i, ap)))
+    {
+        let security = if ap.wpa2() {
+            "WPA2"
+        } else if ap.capabilities & 0x10 == 0 {
+            "OPEN"
+        } else {
+            "UNSUPPORTED"
+        };
+        let _ = write!(
+            out,
+            "{} {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} {}MHz {}dBm {} ",
+            index + 1,
+            ap.bssid[0],
+            ap.bssid[1],
+            ap.bssid[2],
+            ap.bssid[3],
+            ap.bssid[4],
+            ap.bssid[5],
+            ap.frequency,
+            ap.rssi,
+            security
+        );
+        if ap.hidden() {
+            let _ = out.write_str("<hidden>");
+        } else {
+            for byte in ap.ssid() {
+                for escaped in core::ascii::escape_default(*byte) {
+                    let _ = out.write_char(escaped as char);
+                }
+            }
+        }
+        let _ = out.write_char('\n');
+    }
+    if networks.iter().all(Option::is_none) {
+        let _ = writeln!(out, "No saved networks");
+    }
+}
 struct Controller {
     device: pci::Device,
     base: usize,
@@ -189,6 +243,17 @@ struct Controller {
     diag_rx: u32,
     wmi_rx: u32,
     host_memory: Vec<DmaRegion>,
+    wmi_endpoint: u8,
+    htt_endpoint: u8,
+    wmi_credits: u16,
+    wmi_credit_max: u16,
+    wmi_credit_size: u16,
+    wmi_sequence: u8,
+    wmi_max_message: usize,
+    wmi_events: VecDeque<Vec<u8>>,
+    htt_events: VecDeque<Vec<u8>>,
+    mac: [u8; 6],
+    channel_limits: [u32; 2],
     load_deadline: Option<u64>,
     reset_on_drop: bool,
 }
@@ -227,6 +292,17 @@ impl Controller {
             diag_rx: 0,
             wmi_rx: 0,
             host_memory: Vec::new(),
+            wmi_endpoint: 0,
+            htt_endpoint: 0,
+            wmi_credits: 0,
+            wmi_credit_max: 0,
+            wmi_credit_size: 1,
+            wmi_sequence: 0,
+            wmi_max_message: 0,
+            wmi_events: VecDeque::new(),
+            htt_events: VecDeque::new(),
+            mac: [0; 6],
+            channel_limits: [0; 2],
             load_deadline: None,
             reset_on_drop: false,
         };
@@ -701,35 +777,24 @@ impl Controller {
         }
         report.record("HTC setup complete begin", 5);
         self.bmi_exchange(&htc::setup(2), &mut [], report)?;
+        self.wmi_endpoint = control.endpoint;
+        self.htt_endpoint = htt.endpoint;
+        self.wmi_credits = ready.credits;
+        self.wmi_credit_max = ready.credits;
+        self.wmi_credit_size = ready.credit_size;
+        self.wmi_max_message = usize::from(control.max_message);
+        self.post_receive(); // HTC credit-only reports and HTT events may also use CE1.
         report.record("WMI service ready wait", 0);
-        let count = match self.wait_descriptor(6, self.wmi_rx, 5000) {
-            Ok(count) if count <= 2048 => count as usize,
-            Ok(count) => {
-                report.record("WMI packet too long", u32::from(count));
-                return Err(Errno::EIO);
-            }
-            Err(error) => {
-                self.snapshot(report, CE + 2 * 0x400);
-                report.record("WMI service ready timeout", 0);
-                return Err(error);
-            }
-        };
-        let rings = self.rings.as_ref().unwrap();
-        let mut packet = [0u8; 2048];
-        unsafe { core::ptr::copy_nonoverlapping(rings[9].ptr, packet.as_mut_ptr(), count) };
-        report.record("WMI packet bytes", count as u32);
-        report.record("WMI endpoint", u32::from(packet[0]));
-        if packet[0] != control.endpoint {
-            return Err(Errno::EIO);
-        }
-        let data = htc::payload(&packet[..count])?;
+        let data = self.next_wmi(5000, report)?;
+        report.record("WMI packet bytes", data.len() as u32);
         for i in 0..(data.len() / 4).min(4) {
             report.record(
                 "WMI event header",
                 u32::from_le_bytes(data[i * 4..i * 4 + 4].try_into().unwrap()),
             );
         }
-        let service = wmi::service_ready(data)?;
+        let service = wmi::service_ready(&data)?;
+        self.channel_limits = service.channels_2ghz;
         report.record("WMI firmware build", service.build);
         for value in service.abi {
             report.record("WMI ABI", value);
@@ -757,15 +822,41 @@ impl Controller {
         self.put(CE + 2 * 0x400 + 0x40, (self.wmi_rx + 1) & (ENTRIES - 1));
     }
     fn send_wmi(&mut self, endpoint: u8, command: &[u8], report: &mut Report) -> KResult<()> {
-        if command.len() + 8 > 2048 {
+        self.check_operation()?;
+        if command.len() + 8 > 2048 || command.len() > self.wmi_max_message {
             return Err(Errno::E2BIG);
         }
+        let credits = (command.len() + 8).div_ceil(self.wmi_credit_size as usize) as u16;
+        let deadline = time::monotonic_ns().saturating_add(3_000_000_000);
+        while self.wmi_credits < credits {
+            let left = deadline.saturating_sub(time::monotonic_ns()) / 1_000_000;
+            if left == 0 {
+                report.record("WMI credit timeout", u32::from(self.wmi_credits));
+                return Err(Errno::ETIMEDOUT);
+            }
+            if let Some((endpoint, data)) = self.receive_event(left, report)? {
+                if endpoint == self.wmi_endpoint {
+                    if self.wmi_events.len() >= 32 {
+                        return Err(Errno::EAGAIN);
+                    }
+                    self.wmi_events.push_back(data);
+                } else {
+                    if self.htt_events.len() >= 64 {
+                        return Err(Errno::EAGAIN);
+                    }
+                    self.htt_events.push_back(data);
+                }
+            }
+        }
+        self.wmi_credits -= credits;
         let base = CE + 3 * 0x400;
         let index = self.get(base + 0x3c) & (ENTRIES - 1);
         let rings = self.rings.as_ref().unwrap();
         let mut header = [0u8; 8];
         header[0] = endpoint;
         header[1] = 1; // request credit updates
+        header[5] = self.wmi_sequence;
+        self.wmi_sequence = self.wmi_sequence.wrapping_add(1);
         header[2..4].copy_from_slice(&(command.len() as u16).to_le_bytes());
         unsafe {
             core::ptr::copy_nonoverlapping(header.as_ptr(), rings[2].ptr, 8);
@@ -814,8 +905,6 @@ impl Controller {
         if command.len() > control.max_message as usize || credits > ready.credits as usize {
             return Err(Errno::EOPNOTSUPP);
         }
-        self.wmi_rx = (self.wmi_rx + 1) & (ENTRIES - 1);
-        self.post_wmi();
         report.record("WMI INIT host memory bytes", total as u32);
         self.send_wmi(control.endpoint, &command, report)?;
         report.record("WMI ready wait", 0);
@@ -825,29 +914,15 @@ impl Controller {
             if left == 0 {
                 return Err(Errno::ETIMEDOUT);
             }
-            let count = match self.wait_descriptor(6, self.wmi_rx, left) {
-                Ok(count) if count <= 2048 => count as usize,
-                Ok(_) => return Err(Errno::EIO),
-                Err(error) => {
-                    self.snapshot(report, CE + 2 * 0x400);
-                    report.record("WMI ready timeout", 0);
-                    return Err(error);
-                }
-            };
-            let rings = self.rings.as_ref().unwrap();
-            let mut packet = [0u8; 2048];
-            unsafe { core::ptr::copy_nonoverlapping(rings[9].ptr, packet.as_mut_ptr(), count) };
-            if packet[0] != control.endpoint {
-                return Err(Errno::EIO);
-            }
-            let data = htc::payload(&packet[..count])?;
+            let data = self.next_wmi(left, report)?;
             if data.len() < 4 {
                 return Err(Errno::EIO);
             }
             let id = u32::from_le_bytes(data[..4].try_into().unwrap()) & 0xffffff;
             report.record("WMI event ID", id);
             if id == 2 {
-                let mac = wmi::ready(data)?;
+                let mac = wmi::ready(&data)?;
+                self.mac = mac;
                 report.record(
                     "WMI MAC first four bytes",
                     u32::from_le_bytes(mac[..4].try_into().unwrap()),
@@ -859,10 +934,160 @@ impl Controller {
                 report.record("WMI ready; checkpoint complete", 1);
                 return Ok(());
             }
-            self.wmi_rx = (self.wmi_rx + 1) & (ENTRIES - 1);
-            self.post_wmi();
         }
         Err(Errno::ETIMEDOUT)
+    }
+    fn descriptor_length(&self, ring: usize, index: u32) -> u16 {
+        fence(Ordering::SeqCst);
+        let rings = self.rings.as_ref().unwrap();
+        unsafe {
+            u16::from_le(
+                rings[ring]
+                    .ptr
+                    .add(index as usize * 8 + 4)
+                    .cast::<u16>()
+                    .read_volatile(),
+            )
+        }
+    }
+    fn check_operation(&self) -> KResult<()> {
+        if self
+            .load_deadline
+            .is_some_and(|deadline| time::monotonic_ns() >= deadline)
+        {
+            return Err(Errno::ETIMEDOUT);
+        }
+        if self.load_deadline.is_some() {
+            let terminal = crate::tty::Tty::new(osel_core::vfs::Stat::default());
+            let mut byte = [0];
+            if terminal.read(0, &mut byte, true) == Ok(1) && byte[0] == 3 {
+                return Err(Errno::EINTR);
+            }
+        }
+        Ok(())
+    }
+    fn receive_event(
+        &mut self,
+        timeout: u64,
+        report: &mut Report,
+    ) -> KResult<Option<(u8, Vec<u8>)>> {
+        let deadline = self
+            .load_deadline
+            .unwrap_or(u64::MAX)
+            .min(time::monotonic_ns().saturating_add(timeout.saturating_mul(1_000_000)));
+        loop {
+            self.check_operation()?;
+            let (count, buffer, wmi_ring) = if self.descriptor_length(6, self.wmi_rx) != 0 {
+                (self.descriptor_length(6, self.wmi_rx), 9, true)
+            } else if self.descriptor_length(1, self.rx) != 0 {
+                (self.descriptor_length(1, self.rx), 3, false)
+            } else {
+                if time::monotonic_ns() >= deadline {
+                    self.snapshot(report, CE + 2 * 0x400);
+                    report.record("firmware receive timeout", 0);
+                    return Err(Errno::ETIMEDOUT);
+                }
+                delay(10)?;
+                continue;
+            };
+            if count < 8 || count > 2048 {
+                return Err(Errno::EIO);
+            }
+            let rings = self.rings.as_ref().unwrap();
+            let packet =
+                unsafe { core::slice::from_raw_parts(rings[buffer].ptr, count as usize) }.to_vec();
+            if wmi_ring {
+                self.wmi_rx = (self.wmi_rx + 1) & (ENTRIES - 1);
+                self.post_wmi();
+            } else {
+                self.rx = (self.rx + 1) & (ENTRIES - 1);
+                self.post_receive();
+            }
+            let returned = htc::credits(&packet, self.wmi_endpoint)?;
+            self.wmi_credits = self
+                .wmi_credits
+                .saturating_add(returned)
+                .min(self.wmi_credit_max);
+            let body = htc::payload(&packet)?;
+            if body.is_empty() {
+                return Ok(None);
+            }
+            if packet[0] != self.wmi_endpoint && packet[0] != self.htt_endpoint {
+                return Err(Errno::EIO);
+            }
+            return Ok(Some((packet[0], body.to_vec())));
+        }
+    }
+    fn next_wmi(&mut self, timeout: u64, report: &mut Report) -> KResult<Vec<u8>> {
+        if let Some(event) = self.wmi_events.pop_front() {
+            return Ok(event);
+        }
+        let deadline = time::monotonic_ns().saturating_add(timeout.saturating_mul(1_000_000));
+        loop {
+            let left = deadline.saturating_sub(time::monotonic_ns()) / 1_000_000;
+            if left == 0 {
+                return Err(Errno::ETIMEDOUT);
+            }
+            if let Some((endpoint, event)) = self.receive_event(left, report)? {
+                if endpoint == self.wmi_endpoint {
+                    return Ok(event);
+                }
+                if self.htt_events.len() >= 64 {
+                    return Err(Errno::EAGAIN);
+                }
+                self.htt_events.push_back(event);
+            }
+        }
+    }
+    fn scan(&mut self, report: &mut Report) -> KResult<[Option<AccessPoint>; 20]> {
+        let frequencies: Vec<u32> = (1..=11)
+            .map(|channel| 2407 + 5 * channel)
+            .filter(|frequency| {
+                *frequency >= self.channel_limits[0] && *frequency <= self.channel_limits[1]
+            })
+            .collect();
+        report.record("passive scan channel count", frequencies.len() as u32);
+        self.send_wmi(self.wmi_endpoint, &wmi::vdev_create(self.mac)?, report)?;
+        self.send_wmi(
+            self.wmi_endpoint,
+            &wmi::scan_channels(&frequencies)?,
+            report,
+        )?;
+        self.send_wmi(self.wmi_endpoint, &wmi::start_scan(&frequencies)?, report)?;
+        let deadline = time::monotonic_ns().saturating_add(15_000_000_000);
+        let mut networks: [Option<AccessPoint>; 20] = [None; 20];
+        for _ in 0..4096 {
+            let left = deadline.saturating_sub(time::monotonic_ns()) / 1_000_000;
+            if left == 0 {
+                return Err(Errno::ETIMEDOUT);
+            }
+            let event = self.next_wmi(left, report)?;
+            if event.len() < 4 {
+                continue;
+            }
+            let id = u32::from_le_bytes(event[..4].try_into().unwrap()) & 0xffffff;
+            if id == 0x3001 && wmi::scan_complete(&event)? {
+                report.record(
+                    "passive scan networks",
+                    networks.iter().flatten().count() as u32,
+                );
+                return Ok(networks);
+            }
+            if id == 0x7001 {
+                if let Ok(frame) = wmi::management(&event) {
+                    if let Ok(ap) = ieee80211::beacon(frame.frame, frame.frequency, frame.rssi) {
+                        let index = networks
+                            .iter()
+                            .position(|old| old.is_some_and(|old| old.bssid == ap.bssid))
+                            .or_else(|| networks.iter().position(Option::is_none));
+                        if let Some(index) = index {
+                            networks[index] = Some(ap);
+                        }
+                    }
+                }
+            }
+        }
+        Err(Errno::E2BIG)
     }
 }
 struct Bmi<'a> {
@@ -962,7 +1187,7 @@ impl Drop for Controller {
 fn delay(ms: u64) -> KResult<()> {
     time::sleep_until(time::monotonic_ns().saturating_add(ms * 1_000_000))
 }
-fn probe(report: &mut Report, load: bool) -> KResult<()> {
+fn probe(report: &mut Report, operation: &str) -> KResult<()> {
     report.record("PCI scan begin", 0);
     let device = card().ok_or(Errno::ENODEV)?;
     report.record("PCI subsystem", device.read(0x2c));
@@ -991,8 +1216,12 @@ fn probe(report: &mut Report, load: bool) -> KResult<()> {
     report.record("ROM early configuration complete", controller.get(CORE));
     controller.bmi_info(report)?;
     report.record("ROM ready; firmware not started", 0);
-    if load {
+    if operation != "probe" {
         controller.load(report)?;
+        if operation == "scan" {
+            let results = controller.scan(report)?;
+            *SCAN_RESULTS.lock() = results;
+        }
         drop(controller);
         report.record("firmware check passed; target stopped", 1);
     }
@@ -1010,6 +1239,7 @@ mod tests {
             assert!(out.as_str().contains("board=8124"));
             assert_eq!(command("probe", &mut out), Err(Errno::ENODEV));
             assert_eq!(command("load", &mut out), Err(Errno::ENODEV));
+            assert_eq!(command("scan", &mut out), Err(Errno::ENODEV));
             assert!(!BUSY.load(Ordering::Acquire));
             assert_eq!(REPORT.lock().error, Some(Errno::ENODEV));
         }

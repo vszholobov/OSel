@@ -53,6 +53,7 @@ Spinlock in `osel-core/src/sync.rs` tries lock up to DEFAULT_MAX_SPINS, recordin
 | `PIPE_WAITERS` | `src/pipe.rs` | Data/space waiters and teardown; waking takes SCHEDULER |
 | `EVENTFD`, `EPOLL_REGISTRATIONS` | `osel-core/src/poll.rs` | Counter/watch list, plain Spinlock |
 | `WIFI_REPORT` | `src/drivers/qca6174.rs` | 64-stage snapshot and errno; no MMIO, output or sleep while locked | `wifi probe/status/regs`, `diag` |
+| `WIFI_SCAN` | `src/drivers/qca6174.rs` | up to 20 APs from the last successful passive scan; copied before printing | `wifi scan/results` |
 | `NETWORK` | `src/net.rs` | adapter, DHCP/TCP and socket state | network thread and socket operations; released before sleep |
 | `PCI_CONFIG` | `src/drivers/pci.rs` | PCI address/data port pair | scan, command writes |
 | `PIT2` | `src/drivers/rtl8168.rs` | PIT channel 2 and gate/speaker; Realtek hardware delays | Realtek init and teardown; interrupts disabled, no nested locks |

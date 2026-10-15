@@ -6,7 +6,7 @@ description: "Initial QCA6174 driver: PCI, power, reset, Copy Engine, BMI and di
 
 **Audience:** hardware and firmware bring-up developers.
 
-**Summary:** a hardware probe targets Acer `168c:003e`, subsystem `11ad:0807`, revision `32`. `wifi probe` attempts BMI Target Info after PCI/D0/wake, cold/warm reset and CE0/CE1/CE7 setup and ROM early configuration. `wifi load` also uploads firmware and checks HTC/WMI ready, then stops the target. Scanning, association, WPA2 and the packet data path are not implemented.
+**Summary:** a hardware probe targets Acer `168c:003e`, subsystem `11ad:0807`, revision `32`. `wifi probe` attempts BMI Target Info after PCI/D0/wake, cold/warm reset and CE0/CE1/CE7 setup and ROM early configuration. `wifi load` also uploads firmware and checks HTC/WMI ready, then stops the target. `wifi scan` implements passive 2.4 GHz AP discovery; firmware/scanning still needs hardware validation. Association, the WPA2 handshake and the packet data path are not implemented.
 
 ## How it works {#how}
 
@@ -19,6 +19,8 @@ Ten zeroed DMA pages below 4 GiB hold CE0 source, CE1 destination, request, resp
 `wifi load` uses BMI commands of at most 256 bytes: EFUSE-selected PLL, host-interest/endianness, exactly 8124 bytes of the selected board, OTP and the main SGMT image through an LZ stream. Its last word is zero-padded and a zero-address stream flushes ROM caches. OTP status respects the bundled firmware IGNORE_OTP_RESULT feature. OTP execution calibrates the target; no flash/OTP programming commands are used. CE1 RX is posted before BMI_DONE; HTC ready is checked for endpoint, lengths, message ID, credits and credit size. HTC then connects HTT/WMI services and sends SETUP_COMPLETE_EX. CE2 receives WMI service-ready; ABI, RF chains, services and bounded memory requests are checked. INIT advertises only owned, zeroed memory below 4 GiB; unit counts match vdev/peer resources. Limits are 1 MiB per request and 8 MiB in total. WMI ready requires matching ABI, successful status and a valid MAC. This does not establish association or connectivity. Progress appears every 64 KiB; a 120-second deadline follows the ROM check, with Ctrl+C cancellation.
 
 Before freeing DMA, PCI bus mastering is disabled, events are masked, rings are halted and their sizes cleared. Timeout paths use the same teardown. After `wifi load`, cold reset stops the target CPU before freeing DMA, including error and cancellation paths. The probe is not attached to smoltcp and does not change Ethernet. Subsequent Wi-Fi bring-up needs reinitialization.
+
+`wifi scan` creates a station vdev and passive channels 1–11 within factory limits, then requires a successful scan-completed event. WMI events use bounded queues; HTC trailers from both CE1 and CE2 replenish credits, and TX buffers are not reused before DMA completes. Beacon/probe-response parsing checks SSID/BSSID, IE/RSN lengths, CCMP/PSK and mandatory PMF. Malformed frames are skipped and AP storage is capped at 20. SSID control characters are escaped. Results are copied from WIFI_SCAN before output. No association occurs; the target stops after the command.
 
 ## Firmware and board {#firmware}
 
@@ -33,6 +35,7 @@ The runner always includes `/usr/share/licenses/ath10k/LICENSE` and `/usr/share/
 - `src/drivers/qca6174.rs`: hardware probe, bounded waits and last-stage snapshot.
 - `src/drivers/pci.rs`, `src/drivers/dma.rs`: PCI and DMA pages.
 - `osel-core/src/wifi.rs`: embedded files and checked container parser.
+- `osel-core/src/wifi/ieee80211.rs`: beacon, SSID and RSN.
 - `osel-core/src/wifi/wmi.rs`: WMI TLVs, service-ready/ready and INIT encoding.
 - `osel-core/src/wifi/bmi.rs`, `osel-core/src/wifi/htc.rs`: upload protocol and checked first firmware response.
 - `osel-core/src/wifi/boot.rs`: ROM early configuration order, ABI tables, address checks and a testable CE7 interface.

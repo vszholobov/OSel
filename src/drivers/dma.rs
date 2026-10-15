@@ -98,6 +98,8 @@ impl DmaRegion {
 }
 impl Drop for DmaRegion {
     fn drop(&mut self) {
+        // Callers stop firmware before dropping its shared memory.
+        unsafe { core::ptr::write_bytes(self.ptr, 0, self.frames.len() * 4096) };
         memory::with_memory(|m| {
             for frame in &self.frames {
                 unsafe { m.frame_allocator.deallocate_frame(*frame) };

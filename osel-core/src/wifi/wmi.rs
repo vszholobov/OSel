@@ -189,6 +189,137 @@ pub fn ready(data: &[u8]) -> KResult<[u8; 6]> {
     }
     Ok(mac)
 }
+pub fn vdev_create(mac: [u8; 6]) -> KResult<Vec<u8>> {
+    if mac == [0; 6] || mac[0] & 1 != 0 {
+        return Err(Errno::EINVAL);
+    }
+    let mut command = 0x5001u32.to_le_bytes().to_vec();
+    let mut body = words(&[0, 2, 0]); // vdev zero, station, no subtype
+    body.extend_from_slice(&mac);
+    body.extend_from_slice(&[0; 2]);
+    put_tlv(&mut command, 86, &body)?;
+    Ok(command)
+}
+pub fn passive_channels(service: &ServiceReady) -> Vec<u32> {
+    (1..=11)
+        .map(|channel| 2407 + 5 * channel)
+        .filter(|frequency| {
+            *frequency >= service.channels_2ghz[0] && *frequency <= service.channels_2ghz[1]
+        })
+        .collect()
+}
+pub fn scan_channels(frequencies: &[u32]) -> KResult<Vec<u8>> {
+    if frequencies.is_empty() || frequencies.len() > 11 {
+        return Err(Errno::EINVAL);
+    }
+    let mut command = 0x3003u32.to_le_bytes().to_vec();
+    put_tlv(&mut command, 79, &words(&[frequencies.len() as u32]))?;
+    let mut channels = Vec::new();
+    for &frequency in frequencies {
+        if !(2412..=2462).contains(&frequency) || (frequency - 2412) % 5 != 0 {
+            return Err(Errno::EINVAL);
+        }
+        // Receive-only 11g/20 MHz channels. No TX power is requested for passive scanning.
+        put_tlv(
+            &mut channels,
+            80,
+            &words(&[frequency, frequency, 0, 1 | (1 << 7), 0, 0]),
+        )?;
+    }
+    put_tlv(&mut command, 18, &channels)?;
+    Ok(command)
+}
+pub fn start_scan(frequencies: &[u32]) -> KResult<Vec<u8>> {
+    let _ = scan_channels(frequencies)?;
+    let mut common = [0u32; 25];
+    common[0] = 0xa001;
+    common[1] = 0xa001;
+    common[4] = 0x43; // started, completed, start failed
+    common[5] = 50;
+    common[6] = 150;
+    common[12] = 10000;
+    common[14] = 1; // passive, TLV probe-filter polarity
+    common[16] = frequencies.len() as u32;
+    common[17] = 1;
+    common[20] = 3;
+    let mut command = 0x3001u32.to_le_bytes().to_vec();
+    put_tlv(&mut command, 77, &words(&common))?;
+    put_tlv(&mut command, 16, &words(frequencies))?;
+    put_tlv(&mut command, 19, &[])?; // wildcard SSID
+    put_tlv(
+        &mut command,
+        19,
+        &[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0],
+    )?;
+    put_tlv(&mut command, 17, &[])?;
+    Ok(command)
+}
+pub struct Management<'a> {
+    pub frame: &'a [u8],
+    pub frequency: u16,
+    pub rssi: i32,
+}
+pub fn management(data: &[u8]) -> KResult<Management<'_>> {
+    if word(data, 0)? & 0xffffff != 0x7001 {
+        return Err(Errno::EIO);
+    }
+    let (mut header, mut frame) = (None, None);
+    let mut elements = Elements::new(&data[4..]);
+    while let Some((tag, value)) = elements.next()? {
+        match tag {
+            44 => unique(&mut header, value)?,
+            17 => unique(&mut frame, value)?,
+            _ => {}
+        }
+    }
+    let header = header.filter(|data| data.len() >= 40).ok_or(Errno::EIO)?;
+    let frame = frame
+        .ok_or(Errno::EIO)?
+        .get(..word(header, 4)? as usize)
+        .ok_or(Errno::EIO)?;
+    if word(header, 5)? & 0x39 != 0 {
+        return Err(Errno::EIO);
+    }
+    let frequency = match word(header, 0)? {
+        14 => 2484,
+        channel @ 1..=13 => 2407 + channel * 5,
+        channel @ 36..=196 => 5000 + channel * 5,
+        _ => return Err(Errno::EIO),
+    } as u16;
+    let snr = word(header, 1)? as i32;
+    if !(-32..=127).contains(&snr) {
+        return Err(Errno::EIO);
+    }
+    Ok(Management {
+        frame,
+        frequency,
+        rssi: (snr - 95).clamp(-127, 0),
+    })
+}
+pub fn scan_complete(data: &[u8]) -> KResult<bool> {
+    if word(data, 0)? & 0xffffff != 0x3001 {
+        return Err(Errno::EIO);
+    }
+    let mut scan = None;
+    let mut elements = Elements::new(&data[4..]);
+    while let Some((tag, value)) = elements.next()? {
+        if tag == 36 {
+            unique(&mut scan, value)?;
+        }
+    }
+    let scan = scan.filter(|data| data.len() >= 24).ok_or(Errno::EIO)?;
+    if word(scan, 3)? != 0xa001 || word(scan, 4)? != 0xa001 || word(scan, 5)? != 0 {
+        return Err(Errno::EIO);
+    }
+    let kind = word(scan, 0)?;
+    if kind & 0x40 != 0 {
+        return Err(Errno::EIO);
+    }
+    if kind & 2 != 0 && word(scan, 1)? != 0 {
+        return Err(Errno::EIO);
+    }
+    Ok(kind & 2 != 0)
+}
 fn unique<'a>(slot: &mut Option<&'a [u8]>, value: &'a [u8]) -> KResult<()> {
     if slot.replace(value).is_some() {
         return Err(Errno::EIO);
@@ -410,5 +541,43 @@ mod tests {
         let mut packet = 2u32.to_le_bytes().to_vec();
         put_tlv(&mut packet, 35, &body).unwrap();
         assert!(ready(&packet).is_err());
+    }
+    #[test]
+    fn passive_scan_uses_factory_limits_and_never_enables_active_probes() {
+        let service = service_ready(&event()).unwrap();
+        let frequencies = passive_channels(&service);
+        assert_eq!(frequencies.len(), 11);
+        let packet = start_scan(&frequencies).unwrap();
+        let mut elements = Elements::new(&packet[4..]);
+        let (tag, scan) = elements.next().unwrap().unwrap();
+        assert_eq!(tag, 77);
+        assert_eq!(scan.len(), 100);
+        assert_eq!(word(scan, 14), Ok(1));
+        assert_eq!(word(scan, 20), Ok(3));
+        assert!(scan_channels(&[2484]).is_err());
+        assert!(start_scan(&[]).is_err());
+        assert!(vdev_create([0; 6]).is_err());
+    }
+    #[test]
+    fn management_rx_checks_buffer_lengths_crc_and_channel_metadata() {
+        let mut header = [0u32; 10];
+        header[0] = 1;
+        header[1] = 40;
+        header[4] = 36;
+        let mut packet = 0x7001u32.to_le_bytes().to_vec();
+        put_tlv(&mut packet, 44, &words(&header)).unwrap();
+        put_tlv(&mut packet, 17, &[0; 36]).unwrap();
+        let event = management(&packet).unwrap();
+        assert_eq!(event.frequency, 2412);
+        assert_eq!(event.rssi, -55);
+        assert_eq!(event.frame.len(), 36);
+        for end in 0..packet.len() {
+            assert!(management(&packet[..end]).is_err());
+        }
+        header[5] = 1;
+        let mut bad = 0x7001u32.to_le_bytes().to_vec();
+        put_tlv(&mut bad, 44, &words(&header)).unwrap();
+        put_tlv(&mut bad, 17, &[0; 36]).unwrap();
+        assert!(management(&bad).is_err());
     }
 }

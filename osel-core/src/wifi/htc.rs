@@ -26,6 +26,37 @@ pub fn payload(packet: &[u8]) -> KResult<&[u8]> {
     }
     Ok(&packet[8..8 + length - trailer])
 }
+pub fn credits(packet: &[u8], endpoint: u8) -> KResult<u16> {
+    let _ = payload(packet)?;
+    if packet[1] & 2 == 0 {
+        return Ok(0);
+    }
+    let length = u16::from_le_bytes([packet[2], packet[3]]) as usize;
+    let trailer = packet[4] as usize;
+    let mut data = &packet[8 + length - trailer..8 + length];
+    let mut total = 0u16;
+    while !data.is_empty() {
+        if data.len() < 2 {
+            return Err(Errno::EIO);
+        }
+        let record = data.get(2..2 + data[1] as usize).ok_or(Errno::EIO)?;
+        if data[0] == 1 {
+            if record.len() % 2 != 0 {
+                return Err(Errno::EIO);
+            }
+            for credit in record.chunks_exact(2) {
+                if credit[0] >= 9 {
+                    return Err(Errno::EIO);
+                }
+                if credit[0] == endpoint {
+                    total = total.checked_add(u16::from(credit[1])).ok_or(Errno::EIO)?;
+                }
+            }
+        }
+        data = &data[2 + record.len()..];
+    }
+    Ok(total)
+}
 #[derive(Debug, PartialEq, Eq)]
 pub struct Service {
     pub endpoint: u8,
@@ -160,5 +191,15 @@ mod tests {
         reply[4] = 20;
         assert!(connected(&reply, 0x100).is_err());
         assert_eq!(payload(&setup(1)).unwrap().len(), 12);
+    }
+    #[test]
+    fn credit_updates_are_bounded_and_do_not_become_event_payload() {
+        let packet = [2, 2, 10, 0, 6, 0, 0, 0, 1, 2, 3, 4, 1, 4, 2, 3, 1, 8];
+        assert_eq!(payload(&packet).unwrap(), [1, 2, 3, 4]);
+        assert_eq!(credits(&packet, 2), Ok(3));
+        assert_eq!(credits(&packet, 1), Ok(8));
+        let mut bad = packet;
+        bad[13] = 7;
+        assert!(credits(&bad, 2).is_err());
     }
 }

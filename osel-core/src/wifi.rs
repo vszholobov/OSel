@@ -2,6 +2,7 @@
 pub mod bmi;
 pub mod boot;
 pub mod htc;
+pub mod ieee80211;
 pub mod wmi;
 pub const ACER_BOARD: &[u8] =
     b"bus=pci,vendor=168c,device=003e,subsystem-vendor=11ad,subsystem-device=0807";
