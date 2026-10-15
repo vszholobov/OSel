@@ -53,6 +53,26 @@ fn builtins_and_errors_use_the_real_vfs() {
 }
 
 #[test_case]
+fn diagnostics_and_missing_wifi_are_actionable() {
+    let mut out = String::new();
+    assert_eq!(osel::shell::execute("diag", &mut out), 0);
+    assert!(out.contains("diagnostics BEGIN") && out.contains("diagnostics END"));
+    assert!(out.contains(osel::COMMIT));
+    assert!(out.contains("QCA6174") && out.contains("board=8124"));
+    assert_eq!(osel::shell::execute("wifi probe", &mut out), 1);
+    assert_eq!(osel::shell::execute("wifi load", &mut out), 1);
+    assert_eq!(osel::shell::execute("wifi scan", &mut out), 1);
+    assert_eq!(osel::shell::execute("wifi results", &mut out), 0);
+    assert!(out.contains("Last passive WiFi scan"));
+    assert!(out.contains("ENODEV"));
+    for command in ["wifi invalid", "wifi scan extra", "wifi results extra", "ping", "ping 10.0.2.2 0", "ping 10.0.2.2 abc", "nslookup", "tcpcheck", "tcpcheck 10.0.2.2 0", "tcpcheck 10.0.2.2 65536", "net invalid", "diag extra", "pci extra"] {
+        assert_ne!(osel::shell::execute(command, &mut out), 0, "{command}");
+    }
+    assert_eq!(osel::shell::execute("cat /usr/share/licenses/ath10k/LICENSE", &mut out), 0);
+    assert!(out.contains("Qualcomm Atheros"));
+}
+
+#[test_case]
 fn repeated_programs_return_to_the_shell_without_leaks() {
     let settings = osel::tty::get_termios();
     let mut out = String::new();

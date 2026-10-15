@@ -21,7 +21,7 @@ QEMU reaches its host server at `10.0.2.2:8080`. On hardware, use the server mac
 
 ## Check the adapter {#adapter}
 
-Enter `net` in the shell to see the adapter, link state, address and packet counters. DHCP provides the address. Drivers cover Intel 82574L (`8086:10d3`) and Realtek `10ec:8168` with G/GU/H/M MACs. Use an Ethernet cable; Wi-Fi and USB Ethernet remain unsupported. The adapter name and dropped-frame counter help diagnose the driver; detection alone does not establish DHCP connectivity.
+Enter `net` in the shell to see the adapter, link state, address and packet counters. DHCP provides the address. Drivers cover Intel 82574L (`8086:10d3`) and Realtek `10ec:8168` with G/GU/H/M MACs. For Ethernet, use a cable. QCA6174 Wi-Fi has a `wifi connect N` command and still requires hardware connectivity validation; see [Wi-Fi diagnostics](diagnostics.md#connect). USB Ethernet is unsupported. The adapter name and dropped-frame counter help diagnose the driver; detection alone does not establish DHCP connectivity.
 
 Attach the adapter explicitly when launching a ready BIOS image:
 
@@ -48,6 +48,8 @@ Controls: `a`/`d` move, `s` moves down, `q`/`e` rotate. `x`, Escape or Ctrl+C re
 
 ## Connection failures {#errors}
 
-An offline server produces an error and returns to the shell. Check the address, port 8080, running server and TCP reachability. No card in `net` means another driver is needed. A card without an address suggests a cable or DHCP issue. Use numeric IPv4 addresses because DNS is absent. Hostnames can be added to the ramdisk `/etc/hosts` before building.
+An offline server produces an error and returns to the shell. Check the address, port 8080, running server and TCP reachability. No card in `net` means another driver is needed. A card without an address suggests a cable or DHCP issue. Use numeric IPv4 addresses because Go DNS still needs Linux UDP sockets. Hostnames can be added to the ramdisk `/etc/hosts` before building.
 
 Developers: [network tests](../developer/architecture/core/network.md#tests).
+
+[Network and Wi-Fi diagnostics](diagnostics.md): `ping gateway`, `net ip`, `net route`, `net dns`, `net tcp`, `nslookup` and `diag`. Shell DNS lookup is separate; Tetris still needs IPv4 or `/etc/hosts`.

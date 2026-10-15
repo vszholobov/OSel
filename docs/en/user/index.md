@@ -22,3 +22,5 @@ description: OSel user documentation — ready-made images, booting, hardware an
 These pages help prepare a boot attempt; a listed machine is not necessarily verified with OSel. Each page lists known capabilities and outstanding checks.
 
 To change the code, use the [developer documentation](../developer/index.md).
+
+[Network, PCI and Wi-Fi diagnostics](diagnostics.md).

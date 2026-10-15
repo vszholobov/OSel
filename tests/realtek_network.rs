@@ -5,6 +5,7 @@
 #![reexport_test_harness_main = "test_main"]
 use bootloader_api::{BootInfo, entry_point};
 use core::panic::PanicInfo;
+include!("support/network_diagnostics.rs");
 entry_point!(main, config = &osel::BOOTLOADER_CONFIG);
 fn main(info: &'static mut BootInfo) -> ! {
     osel::avganec::init(info.framebuffer.take());

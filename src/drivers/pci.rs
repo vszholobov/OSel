@@ -62,6 +62,13 @@ impl Device {
         self.write_word(4, if enabled { command | 4 } else { command & !4 });
         self.read_word(4); // flush the configuration write
     }
+    /// Polling drivers must also disable MSI/MSI-X left enabled by previous firmware.
+    pub fn disable_interrupts(&self) {
+        self.write_word(4, self.read_word(4) | (1 << 10));
+        if let Some(msi) = self.capability(5) { self.write_word(msi + 2, self.read_word(msi + 2) & !1); }
+        if let Some(msix) = self.capability(0x11) { self.write_word(msix + 2, (self.read_word(msix + 2) & !0x8000) | 0x4000); }
+        self.read_word(4);
+    }
     /// Capability chains are untrusted firmware data: bound traversal and validate pointers.
     fn capability(&self, id: u8) -> Option<u8> {
         if self.read_word(6) & (1 << 4) == 0 {

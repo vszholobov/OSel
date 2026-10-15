@@ -434,6 +434,21 @@ fn pack_ramdisk(dir: &Path, programs: &[(String, Vec<u8>)]) -> Result<Vec<u8>, S
     let mut builder = CpioBuilder::new();
     let mut packed = Vec::new();
     pack_dir(dir, "", &mut builder, &mut packed)?;
+    for prefix in ["usr", "usr/share", "usr/share/licenses", "usr/share/licenses/ath10k"] {
+        if dir.join(prefix).is_file() { return Err(format!("{prefix} must be a directory for the embedded firmware licenses")); }
+    }
+    // These notices accompany firmware embedded in every kernel, even with OSEL_RAMDISK.
+    for (path, data) in [
+        ("usr/share/licenses/ath10k/LICENSE", include_bytes!("../../firmware/LICENSE.QualcommAtheros_ath10k").as_slice()),
+        ("usr/share/licenses/ath10k/NOTICE", include_bytes!("../../firmware/ath10k/QCA6174/hw3.0/notice_ath10k_firmware-6.txt").as_slice()),
+        ("usr/share/licenses/ath10k/DRIVER-ISC", include_bytes!("../../firmware/ath10k-driver-ISC.txt").as_slice()),
+        ("usr/share/licenses/WPA2-NOTICES", include_bytes!("../../firmware/wpa2-dependencies-NOTICES.txt").as_slice()),
+    ] {
+        if packed.contains(&path.to_string()) {
+            return Err(format!("{path} is reserved for the embedded firmware license"));
+        }
+        builder.add_file(path, 0o644, data);
+    }
     if !programs.is_empty() && !packed.iter().any(|name| name == "bin") {
         builder.add_dir("bin", 0o755);
     }
@@ -917,7 +932,7 @@ mod tests {
         assert_eq!(resolve(&root, "/run").unwrap().stat().permissions, 0o750);
         assert_eq!(resolve(&root, "/suid").unwrap().stat().permissions, 0o4755, "setuid survives");
         let names: Vec<String> = list_dir(&*root).unwrap().into_iter().map(|e| e.name).collect();
-        assert_eq!(names, ["empty", "etc", "run", "suid"], ".DS_Store is skipped");
+        assert_eq!(names, ["empty", "etc", "run", "suid", "usr"], ".DS_Store is skipped; firmware notices are bundled");
         assert!(list_dir(&*resolve(&root, "/empty").unwrap()).unwrap().is_empty());
     }
 
@@ -944,10 +959,22 @@ mod tests {
     }
 
     #[test]
-    fn empty_directory_gives_an_empty_archive() {
+    fn empty_directory_still_bundles_firmware_notices() {
+        use osel_core::vfs::FileSystem;
         let dir = TempDir::new("empty");
         let fs = mount(pack_ramdisk(&dir.0, &[]).unwrap());
-        assert_eq!(fs.node_count(), 1);
+        assert_eq!(fs.node_count(), 9);
+        assert!(osel_core::vfs::resolve_absolute(&fs.root(), "/usr/share/licenses/WPA2-NOTICES").is_ok());
+    }
+    #[test]
+    fn custom_ramdisk_cannot_replace_required_firmware_notices() {
+        let dir = TempDir::new("firmware-collision");
+        std::fs::create_dir_all(dir.0.join("usr/share/licenses/ath10k")).unwrap();
+        std::fs::write(dir.0.join("usr/share/licenses/ath10k/LICENSE"), b"wrong").unwrap();
+        assert!(pack_ramdisk(&dir.0, &[]).unwrap_err().contains("reserved"));
+        std::fs::remove_dir_all(dir.0.join("usr")).unwrap();
+        std::fs::write(dir.0.join("usr"), b"file").unwrap();
+        assert!(pack_ramdisk(&dir.0, &[]).unwrap_err().contains("must be a directory"));
     }
 
     #[test]
@@ -970,8 +997,11 @@ mod tests {
 
     #[test]
     fn the_repository_ramdisk_packs() {
+        use osel_core::vfs::{FileSystem, resolve_absolute};
         let fs = mount(pack_ramdisk(&ramdisk_dir(None, &repository()), &[]).unwrap());
         assert!(fs.node_count() > 1, "ramdisk/ of the repository is empty");
+        assert!(resolve_absolute(&fs.root(), "/usr/share/licenses/ath10k/LICENSE").is_ok());
+        assert!(resolve_absolute(&fs.root(), "/usr/share/licenses/ath10k/NOTICE").is_ok());
     }
 
     #[test]

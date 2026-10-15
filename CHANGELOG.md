@@ -4,6 +4,15 @@
 
 ## Не выпущено
 
+### Added
+
+- Experimental QCA6174 Wi-Fi for Acer: firmware and board data, bounded ROM/BMI/HTC/WMI initialization, passive 2.4 GHz scanning, WPA2-PSK/CCMP authentication and HTT data transfer through the shared DHCP/TCP stack. Firmware loading, scanning and connectivity still require validation on Acer hardware.
+- Network diagnostics: ICMP `ping`, `nslookup`, `tcpcheck`, `net ip/route/dns/tcp/dhcp`, `pci`, `diag` and Wi-Fi status reports.
+
+### Fixed
+
+- Preserve user XMM registers during Wi-Fi cryptography; reject EAPOL replay without reinstalling keys, hide rejected password input, bound HTT completion waits and clear network configuration on disconnect.
+
 ### Changed
 
 - Restored the README logo and added a short explanation of OSel's purpose: learning how operating systems and PCs work.

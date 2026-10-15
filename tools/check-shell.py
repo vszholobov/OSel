@@ -160,6 +160,15 @@ def main():
                 qmp("screendump", {"filename": str(pathlib.Path(args.boot_screenshot).resolve()), "format": "png"})
             command(b"kbd", b"PS/2 init: Ready, error=None")
             command(b"help", b"No quotes")
+            command(b"diag", b"=== OSel diagnostics END ===")
+            command(b"pci", b"subsystem=")
+            command(b"wifi fw", b"board=8124")
+            command(b"wifi probe", b"ENODEV")
+            command(b"wifi load", b"ENODEV")
+            command(b"wifi scan", b"ENODEV")
+            command(b"wifi results", b"No saved networks")
+            command(b"wifi regs", b"snapshot, no register reads")
+            command(b"cat /usr/share/licenses/ath10k/LICENSE", b"Qualcomm Atheros")
             listing = command(b"ls /bin", b"clear\n")
             if args.require_tetris:
                 assert b"tetris\n" in listing, "required Tetris binary is missing from the image"
@@ -253,6 +262,8 @@ def main():
             counters = re.search(rb"irq=(\d+) bytes=(\d+) poll=(\d+) chars=(\d+)", result)
             assert counters and int(counters[1]) > 0 and int(counters[4]) >= 5, result
             if args.screenshot:
+                command(b"clear", b"\x1b[2J")
+                command(b"diag", b"=== OSel diagnostics END ===")
                 qmp("screendump", {"filename": str(pathlib.Path(args.screenshot).resolve()), "format": "png"})
             qmp("quit")
             assert process.wait(timeout=10) == 0

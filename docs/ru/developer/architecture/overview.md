@@ -27,6 +27,11 @@ description: Обзор OSel — из каких крейтов и модуле�
 
 | Модуль | Где | Что делает | Страница |
 |---|---|---|---|
+| `qca6174` | `src/drivers/qca6174.rs` | диагностика QCA6174 PCI/reset/CE/BMI | [Wi-Fi](drivers/wifi.md) |
+| `data` | `src/drivers/qca6174/data.rs` | HTT DMA, RX replay и владение TX | [Wi-Fi](drivers/wifi.md) |
+| `station` | `src/drivers/qca6174/station.rs` | ассоциация, EAPOL и фоновый обмен | [Wi-Fi](drivers/wifi.md) |
+| `bridge` | `src/drivers/qca6174/bridge.rs` | ограниченные очереди Ethernet для smoltcp | [Wi-Fi](drivers/wifi.md) |
+| `diagnostics` | `src/diagnostics.rs` | общий диагностический отчёт | [Диагностика](../../user/diagnostics.md) |
 | `drivers` | `src/drivers/mod.rs` | аппаратные драйверы, старые имена экспортируются из корня | [Ethernet](drivers/ethernet.md) |
 | `pci` | `src/drivers/pci.rs` | PCI configuration, BAR, bus mastering | [Ethernet](drivers/ethernet.md) |
 | `e1000e` | `src/drivers/e1000e.rs` | Intel 82574L, RX/TX DMA | [Ethernet](drivers/ethernet.md) |
@@ -62,6 +67,17 @@ description: Обзор OSel — из каких крейтов и модуле�
 
 | Модуль | Где | Что делает | Страница |
 |---|---|---|---|
+| `icmp` | `osel-core/src/icmp.rs` | ICMP Echo, checksum и проверка ответов | [Сеть](core/network.md) |
+| `wifi` | `osel-core/src/wifi.rs` | контейнеры прошивки и точная PCI-плата | [Wi-Fi](drivers/wifi.md) |
+| `boot` | `osel-core/src/wifi/boot.rs` | ранняя конфигурация ROM QCA6174 и проверка адресов | [Wi-Fi](drivers/wifi.md) |
+| `bmi` | `osel-core/src/wifi/bmi.rs` | команды BMI, PLL, board/OTP/firmware upload | [Wi-Fi](drivers/wifi.md) |
+| `htc` | `osel-core/src/wifi/htc.rs` | проверка сообщения HTC ready | [Wi-Fi](drivers/wifi.md) |
+| `wmi` | `osel-core/src/wifi/wmi.rs` | WMI TLV, запросы памяти, INIT/ready | [Wi-Fi](drivers/wifi.md) |
+| `ieee80211` | `osel-core/src/wifi/ieee80211.rs` | beacon/SSID/RSN и совместимость WPA2 | [Wi-Fi](drivers/wifi.md) |
+| `wpa2` | `osel-core/src/wifi/wpa2.rs` | WPA2-PSK/CCMP, EAPOL, защита от повторной установки ключей | [Wi-Fi](drivers/wifi.md) |
+| `htt` | `osel-core/src/wifi/htt.rs` | HTT events, RX/TX и CCMP replay | [Wi-Fi](drivers/wifi.md) |
+| `station` | `osel-core/src/wifi/station.rs` | 802.11 auth/assoc и проверка nonce | [Wi-Fi](drivers/wifi.md) |
+| `station` | `osel-core/src/wifi/wmi/station.rs` | WMI station, PTK/GTK и события потери связи | [Wi-Fi](drivers/wifi.md) |
 | `net` | `osel-core/src/net.rs` | Linux IPv4, PCI address / BAR parsing | [Ethernet](drivers/ethernet.md) |
 | `rtl8168` | `osel-core/src/rtl8168.rs` | Realtek XID, дескрипторы и ограниченный запуск PHY | [Ethernet](drivers/ethernet.md) |
 | `console` | `osel-core/src/console.rs` | отрисовка текста в любой байтовый буфер | [Консоль](drivers/console.md) |

@@ -139,6 +139,40 @@ mod tests {
     }
 
     #[test_case]
+    fn wifi_crypto_preserves_every_user_xmm_register() {
+        let mut original = FpuState::initial();
+        save(&mut original);
+        let mut pattern = FpuState::initial();
+        for register in 0..16 {
+            pattern.0[160 + register * 16..176 + register * 16].fill(register as u8 + 1);
+        }
+        restore(&pattern);
+        let pmk = osel_core::wifi::wpa2::derive(b"password", b"IEEE").unwrap();
+        let key = core::array::from_fn(|i| i as u8);
+        let encrypted = [
+            0x1f, 0xa6, 0x8b, 0x0a, 0x81, 0x12, 0xb4, 0x47, 0xae, 0xf3, 0x4b, 0xd8, 0xfb, 0x5a,
+            0x7b, 0x82, 0x9d, 0x3e, 0x86, 0x23, 0x71, 0xd2, 0xcf, 0xe5,
+        ];
+        let decrypted = osel_core::wifi::wpa2::unwrap_key_data(&key, &encrypted).unwrap();
+        let mut after = FpuState::initial();
+        save(&mut after);
+        restore(&original);
+        assert_eq!(&pmk[..4], &[0xf4, 0x2c, 0x6f, 0xc5]);
+        assert_eq!(
+            &decrypted[..],
+            &[
+                0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
+                0xee, 0xff
+            ]
+        );
+        for register in 0..16 {
+            assert_eq!(after.xmm(register), pattern.xmm(register));
+        }
+        assert_eq!(after.fcw(), pattern.fcw());
+        assert_eq!(after.mxcsr(), pattern.mxcsr());
+    }
+
+    #[test_case]
     fn test_a_program_keeps_its_xmm_registers() {
         let mut fpu = FpuState::initial();
         let (_frame, stop) = run_code(code!(osel_xmm_patterns, osel_xmm_patterns_end), &mut fpu);

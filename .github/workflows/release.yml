@@ -27,6 +27,9 @@ jobs:
       - name: Test release metadata validation
         run: python3 tools/test-release.py
 
+      - name: Check bundled firmware bytes and notices
+        run: python3 tools/check-firmware.py
+
       - name: Validate the release tag, version and changelog
         if: github.event_name == 'push'
         env:

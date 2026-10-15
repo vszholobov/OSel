@@ -69,6 +69,8 @@ TSS — изменяемая статическая переменная. `kerne
 
 Состояние программы — `FpuState` (`osel-core/src/fpu.rs`), 512 байт в раскладке `fxsave64`. Переключение потоков загружает его (`fpu::restore`) приходящему потоку программы и сохраняет (`fpu::save`) уходящему, а `exit_current` сохраняет его в итог процесса; `run_with` принимает начальное состояние и отдаёт конечное. `run` начинает с `FpuState::initial()`: FCW `0x037F`, MXCSR `0x1F80`, пустой стек x87, нулевые XMM. Ядро собрано без SSE и этих регистров не трогает ни в обработчиках прерываний, ни в системных вызовах. Почему так — решения [0013](../../decisions/0013-fpu-state.md) и [0015](../../decisions/0015-threads.md).
 
+Криптография WPA2 также обязана сохранять XMM: `.cargo/config.toml` задаёт `aes_force_soft` для `x86_64-unknown-none`, а SHA1 собран с `force-soft`. Тест `wifi_crypto_preserves_every_user_xmm_register` проверяет PBKDF2 и AES unwrap со всеми 16 регистрами.
+
 ### Программы из user/ {#user-programs}
 
 Программы для ramdisk лежат исходниками в `user/<имя>/`: крейт `no_std` с `global_asm!` и `_start`. Runner собирает их и кладёт в `/bin`, см. [справочник runner](../../reference/runner.md#user-programs). Ядро при загрузке запускает `/bin/hello` через `program::run`, программа печатает «Hello from ring 3!».

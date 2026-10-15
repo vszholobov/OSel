@@ -27,6 +27,11 @@ Existing kernel module names include wordplay; keep their names when changing co
 
 | Module | Location | Responsibility | Owner |
 |---|---|---|---|
+| `qca6174` | `src/drivers/qca6174.rs` | QCA6174 PCI/reset/CE/BMI diagnostics | [Wi-Fi](drivers/wifi.md) |
+| `data` | `src/drivers/qca6174/data.rs` | HTT DMA, RX replay and TX ownership | [Wi-Fi](drivers/wifi.md) |
+| `station` | `src/drivers/qca6174/station.rs` | association, EAPOL and event pump | [Wi-Fi](drivers/wifi.md) |
+| `bridge` | `src/drivers/qca6174/bridge.rs` | bounded Ethernet queues for smoltcp | [Wi-Fi](drivers/wifi.md) |
+| `diagnostics` | `src/diagnostics.rs` | general diagnostic report | [Diagnostics](../../user/diagnostics.md) |
 | `drivers` | `src/drivers/mod.rs` | hardware drivers; existing names are re-exported from the root | [Ethernet](drivers/ethernet.md) |
 | `pci` | `src/drivers/pci.rs` | PCI configuration, BAR, bus mastering | [Ethernet](drivers/ethernet.md) |
 | `e1000e` | `src/drivers/e1000e.rs` | Intel 82574L, RX/TX DMA | [Ethernet](drivers/ethernet.md) |
@@ -57,6 +62,17 @@ Existing kernel module names include wordplay; keep their names when changing co
 | `sync` | `src/sync.rs` | Named spinlocks, interrupt masking and deadlock reports | [Details](core/locking.md) |
 | `qemuno` | `src/qemuno.rs` | QEMU exit through isa-debug-exit | [Details](testing.md) |
 | `testosterone` | `src/testosterone.rs` | Kernel test framework, expected panic and leak checks | [Details](testing.md) |
+| `icmp` | `osel-core/src/icmp.rs` | ICMP Echo, checksum and reply validation | [Network](core/network.md) |
+| `wifi` | `osel-core/src/wifi.rs` | firmware containers and exact PCI board | [Wi-Fi](drivers/wifi.md) |
+| `boot` | `osel-core/src/wifi/boot.rs` | QCA6174 ROM early configuration and address checks | [Wi-Fi](drivers/wifi.md) |
+| `bmi` | `osel-core/src/wifi/bmi.rs` | BMI commands, PLL, board/OTP/firmware upload | [Wi-Fi](drivers/wifi.md) |
+| `htc` | `osel-core/src/wifi/htc.rs` | checked HTC ready message | [Wi-Fi](drivers/wifi.md) |
+| `wmi` | `osel-core/src/wifi/wmi.rs` | WMI TLVs, memory requests, INIT/ready | [Wi-Fi](drivers/wifi.md) |
+| `ieee80211` | `osel-core/src/wifi/ieee80211.rs` | beacon/SSID/RSN parsing and WPA2 compatibility | [Wi-Fi](drivers/wifi.md) |
+| `wpa2` | `osel-core/src/wifi/wpa2.rs` | WPA2-PSK/CCMP, EAPOL and key reinstallation protection | [Wi-Fi](drivers/wifi.md) |
+| `htt` | `osel-core/src/wifi/htt.rs` | HTT events, RX/TX and CCMP replay | [Wi-Fi](drivers/wifi.md) |
+| `station` | `osel-core/src/wifi/station.rs` | 802.11 auth/assoc and nonce validation | [Wi-Fi](drivers/wifi.md) |
+| `station` | `osel-core/src/wifi/wmi/station.rs` | WMI station, PTK/GTK and link loss events | [Wi-Fi](drivers/wifi.md) |
 | `net` | `osel-core/src/net.rs` | Linux IPv4, PCI address / BAR parsing | [Ethernet](drivers/ethernet.md) |
 | `rtl8168` | `osel-core/src/rtl8168.rs` | Realtek XID, descriptors and bounded PHY initialization | [Ethernet](drivers/ethernet.md) |
 | `console` | `osel-core/src/console.rs` | Text rendering into byte buffers | [Details](drivers/console.md) |

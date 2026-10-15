@@ -12,6 +12,7 @@ description: OSel shell commands, bounded input, ramdisk program launch and retu
 
 | Command | Action |
 |---|---|
+| `diag`, `pci`, `net`, `net ip/route/dns/tcp/dhcp`, `ping`, `nslookup`, `tcpcheck`,  `wifi status/fw/regs/probe` | [Diagnostics](../../user/diagnostics.md#commands) |
 | `help` | Commands and limitations |
 | `kbd` | PS/2 initialization and input counters; [diagnostics](drivers/keyboard.md#diagnostics) |
 | `ls [path]` | Directory contents, default root `/` |
@@ -35,7 +36,7 @@ The editor accepts printable ASCII and tabs as spaces. Length is at most 256 byt
 
 LineEditor reserves a 64-entry ring of at most MAX_LINE bytes per entry at construction. Nonempty submitted lines are retained; consecutive duplicates, canceled input and overflow/non-ASCII rejections are skipped. The draft retains text and rejection state, so browsing cannot make a truncated draft executable. Key ANSI parameters are bounded to 16 bytes; unknown sequences are discarded. Recall redraws one prompt line using CR CSI 2K.
 
-Built-ins are help, ls, cat and kbd. `ls` uses `Inode::read_dir`; cat checks type and size before reading. `write_file_text` in `osel-core/src/shell.rs` filters terminal controls and emits up to 512 bytes per write without splitting UTF-8; a missing final newline is appended. Other commands verify executable regular files and call `program::run`, passing argv and `PATH=/bin`, `TERM=xterm`, `GODEBUG=asyncpreemptoff=1`.
+Built-ins cover files, keyboard and [network diagnostics](../../user/diagnostics.md). `ls` uses `Inode::read_dir`; cat checks type and size before reading. `write_file_text` in `osel-core/src/shell.rs` filters terminal controls and emits up to 512 bytes per write without splitting UTF-8; a missing final newline is appended. Other commands verify executable regular files and call `program::run`, passing argv and `PATH=/bin`, `TERM=xterm`, `GODEBUG=asyncpreemptoff=1`.
 
 For Tetris, the shell sends CSI ?1049h before launch and CSI ?1049l on every return from program::run. This [alternate screen](drivers/console.md#scrolling) preserves shell contents and excludes game frames from scrollback.
 
