@@ -7,7 +7,7 @@ use core::fmt::Write;
 use osel_core::errno::{Errno, KResult};
 use osel_core::exception::FixedBuf;
 use osel_core::file::{FileLike, Ready};
-use osel_core::keyboard::RingBuffer;
+use osel_core::keyboard::{Key, RingBuffer};
 use osel_core::sched::ThreadId;
 use osel_core::syscall::Utf8Decoder;
 use osel_core::terminal::{Input, TERMIOS_SIZE, Termios};
@@ -125,7 +125,7 @@ pub fn set_termios(bytes: &[u8; TERMIOS_SIZE], flush: bool) -> KResult<()> {
         INPUT.lock().configure(Termios(*bytes), flush)?;
         if flush {
             SERIAL_INPUT.lock().clear();
-            while keyboard::pop_char().is_some() {}
+            while keyboard::pop_key().is_some() {}
         }
         notify_input();
         Ok(())
@@ -149,6 +149,9 @@ pub fn winsize() -> [u8; 8] {
     out
 }
 
+const OUTPUT_CHUNK: usize = 512;
+const DECODED_CHUNK: usize = OUTPUT_CHUNK * 3 + 4;
+
 pub struct Tty {
     stat: Stat,
 }
@@ -161,19 +164,17 @@ impl Tty {
 
 fn output(buf: &[u8]) -> KResult<()> {
     output_with(buf, |text| {
-        for c in text.chars() {
-            crate::avganec::with_console(|console| console.write_char(c));
-        }
+        crate::avganec::write_text(text);
         crate::cereal::write_terminal(text.as_bytes())
     })
 }
 
 fn output_with(buf: &[u8], mut emit: impl FnMut(&str) -> KResult<()>) -> KResult<()> {
     let _writer = OutputGuard::acquire()?;
-    for chunk in buf.chunks(64) {
+    for chunk in buf.chunks(OUTPUT_CHUNK) {
         // Invalid UTF-8 can expand to three bytes per input byte, plus a pending
         // replacement from the previous chunk. Never allocate with IRQs masked.
-        let mut text = FixedBuf::<196>::new();
+        let mut text = FixedBuf::<DECODED_CHUNK>::new();
         TEXT.lock().decode(chunk, |piece| {
             let _ = text.write_str(piece);
         });
@@ -196,10 +197,23 @@ fn collect_input() {
         let Some(byte) = byte else { break };
         receive(byte);
     }
-    while let Some(c) = keyboard::pop_char() {
-        let mut bytes = [0; 4];
-        for &byte in c.encode_utf8(&mut bytes).as_bytes() {
-            receive(byte);
+    while let Some(key) = keyboard::pop_key() {
+        match key {
+            Key::PageUp => crate::avganec::scroll_pages(1),
+            Key::PageDown => crate::avganec::scroll_pages(-1),
+            Key::Character(c) => {
+                let was_viewing = crate::avganec::return_live();
+                if c == '\x1b' && was_viewing { continue; }
+                let mut bytes = [0; 4];
+                for &byte in c.encode_utf8(&mut bytes).as_bytes() { receive(byte); }
+            }
+            Key::Sequence(sequence) => {
+                // Preserve the old PS/2 behavior in fullscreen games: their
+                // rune readers treat the leading ESC of an arrow as exit.
+                if crate::avganec::alternate_screen_active() { continue; }
+                crate::avganec::return_live();
+                for byte in sequence.bytes() { receive(byte); }
+            }
         }
     }
 }
@@ -210,13 +224,14 @@ impl FileLike for Tty {
             return Ok(0);
         }
         loop {
-            // Check, register and block atomically against keyboard and timer interrupts.
+            // Decode/navigation may redraw; keep IRQs enabled between console rows.
+            collect_input();
+            // Check queues, register and block atomically against IRQ producers.
             irq::disable();
             if scheduler::current_killed() {
                 irq::enable();
                 return Err(Errno::EINTR);
             }
-            collect_input();
             let result = {
                 let mut input = INPUT.lock();
                 if input.available(buf.len())
@@ -232,6 +247,13 @@ impl FileLike for Tty {
             if let Some(result) = result {
                 irq::enable();
                 return result;
+            }
+            // Input could arrive after collect_input and before cli. Recheck both
+            // producer queues so a wakeup cannot be lost before we register.
+            let queued = keyboard::has_input() || !SERIAL_INPUT.lock().is_empty();
+            if queued {
+                irq::enable();
+                continue;
             }
             let id = scheduler::current_id();
             WAITERS.lock().push(id);
@@ -302,14 +324,14 @@ mod tests {
                 irq::are_enabled(),
                 "drawing must not mask IRQs for the whole write"
             );
-            assert!(text.len() <= 196);
+            assert!(text.len() <= DECODED_CHUNK);
             output.push_str(text);
             Ok(())
         };
-        output_with(&[0xff; 130], &mut collect).unwrap();
+        output_with(&[0xff; OUTPUT_CHUNK * 2 + 2], &mut collect).unwrap();
         output_with(&[0xd0], &mut collect).unwrap();
         output_with(&[0x96], &mut collect).unwrap();
-        assert_eq!(output, "�".repeat(130) + "Ж");
+        assert_eq!(output, "�".repeat(OUTPUT_CHUNK * 2 + 2) + "Ж");
         assert!(!output_pending());
         assert!(!OUTPUT.lock().busy);
     }
@@ -361,6 +383,44 @@ mod tests {
         wait_for(|| scheduler::runs(id).is_none());
         assert_eq!(READ_BYTE.load(Ordering::SeqCst), b'a');
         assert!(WAITERS.lock().is_empty());
+        set_termios(&old, true).unwrap();
+    }
+
+    #[test_case]
+    fn test_keyboard_navigation_routes_history_without_leaking_local_shortcuts() {
+        let old = get_termios();
+        set_termios(&Termios::new().0, true).unwrap();
+        let tty = Tty::new(Stat::default());
+        let mut bytes = [0; 8];
+        crate::avganec::with_console(|c| {
+            c.return_live();
+            for _ in 0..c.rows() + 5 { c.write_string("history\n"); }
+        }).expect("no framebuffer");
+        let cursor = crate::avganec::with_console(|c| c.cursor()).unwrap();
+        let press = |codes: &[u8]| irq::without_interrupts(|| {
+            for &code in codes { keyboard::handle_scancode(code); }
+        });
+        press(&[0xe0, 0x49, 0xe0, 0xc9]);
+        assert_eq!(tty.read(0, &mut bytes, true), Err(Errno::EAGAIN));
+        assert!(crate::avganec::with_console(|c| c.view_offset()).unwrap() > 0);
+        assert_eq!(crate::avganec::with_console(|c| c.cursor()), Some(cursor));
+        press(&[0x01, 0x81]);
+        assert_eq!(tty.read(0, &mut bytes, true), Err(Errno::EAGAIN));
+        assert_eq!(crate::avganec::with_console(|c| c.view_offset()), Some(0));
+        press(&[0xe0, 0x48, 0xe0, 0xc8]);
+        assert_eq!(tty.read(0, &mut bytes, true), Ok(3));
+        assert_eq!(&bytes[..3], b"\x1b[A");
+        press(&[0x1d, 0x2a, 0xe0, 0x48, 0xe0, 0xc8, 0xaa, 0x9d]);
+        assert_eq!(tty.read(0, &mut bytes, true), Err(Errno::EAGAIN));
+        assert!(crate::avganec::with_console(|c| c.view_offset()).unwrap() > 0);
+        press(&[0x1e, 0x9e]);
+        assert_eq!(tty.read(0, &mut bytes, true), Ok(1));
+        assert_eq!(bytes[0], b'a');
+        assert_eq!(crate::avganec::with_console(|c| c.view_offset()), Some(0));
+        crate::avganec::with_console(|c| c.set_alternate_screen(true));
+        press(&[0xe0, 0x48, 0xe0, 0xc8]);
+        assert_eq!(tty.read(0, &mut bytes, true), Err(Errno::EAGAIN));
+        crate::avganec::with_console(|c| c.set_alternate_screen(false));
         set_termios(&old, true).unwrap();
     }
 

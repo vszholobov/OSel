@@ -6,11 +6,11 @@ description: PS/2 setup, scan-code decoding, bounded input, fallback polling and
 
 **Audience:** developers changing input.
 
-**Summary:** configure i8042/PS2 explicitly, decode IRQ1 scan codes using US layout and queue 64 characters. Fallback polling handles missed IRQs. Boot diagnostics expose setup/counters; Ctrl+letter produces control bytes, such as Ctrl+C = \x03.
+**Summary:** configure i8042/PS2 explicitly, decode IRQ1 scan codes using US layout and queue 64 events. Fallback polling handles missed IRQs. Boot diagnostics expose setup/counters; Ctrl+letter produces control bytes, such as Ctrl+C = \x03.
 
 ## Behavior {#how}
 
-keyboard_interrupt_handler calls keyboard::interrupt, checking 0x64 before each 0x60 read and consuming at most 16 bytes. AUX, transmission errors and protocol responses do not enter the decoder. ScancodeDecoder in `osel-core/src/keyboard.rs` handles set 1, Shift, Caps Lock and E0. Releases, modifiers, nonsymbol keys and garbage return None. RingBuffer holds BUFFER_SIZE 64; overflow drops new characters and increments dropped_chars. tty::notify_input wakes readers without switching or allocating in IRQ. pop_char retrieves oldest input. The [shell](../shell.md) reads Tty except while a program owns input.
+keyboard_interrupt_handler calls keyboard::interrupt, checking 0x64 before each 0x60 read and consuming at most 16 bytes. AUX, transmission errors and protocol responses do not enter the decoder. ScancodeDecoder in `osel-core/src/keyboard.rs` handles set 1, Shift, Caps Lock and E0. decode_key returns Key character/navigation events: arrows become ANSI sequences; PageUp/PageDown and Ctrl+Shift+Up/Down become local scroll events. Releases, modifiers, function keys and garbage return None. RingBuffer holds BUFFER_SIZE 64; overflow drops new events and increments dropped_chars. tty::notify_input wakes readers without switching or allocating in IRQ. pop_key retrieves the oldest event. pop_char/decode retain character-only inspection and skip navigation. Tty converts arrows to ANSI bytes and consumes local scrolling keys. PS/2 arrows remain ignored on the alternate screen because the game rune reader treats their ANSI prefix as Escape/exit; Escape in history returns live without reaching the program, while other input returns live and reaches the reader. Redrawing occurs in the reading thread, never IRQ. The [shell](../shell.md) reads Tty except while a program owns input.
 
 ### Initialization {#init}
 
@@ -38,7 +38,7 @@ Before the first prompt, PS/2 init shows error, command bytes before/after, last
 | irq | IRQ1 handler calls, including empty calls |
 | bytes | Runtime reads, excluding initialization |
 | poll | Bytes consumed by fallback |
-| chars | Decoded characters including control bytes, not physical keypresses |
+| chars | Decoded input events including controls/navigation, not physical keypresses |
 | bad | Filtered AUX/errors/protocol bytes or unready setup |
 | st | Current controller status in hex |
 | last | Last runtime byte in hex, initially 00 |
@@ -65,4 +65,4 @@ Drain stuck boot-menu bytes before PIC reset. UEFI-menu keyboard input does not 
 
 Host tests cover buffer sizes 0/1, order/overflow, modifiers, control/navigation keys, Pause/Print Screen and garbage. Kernel tests inject via controller command D2, check Shift/extended keys/overflow, reinitialize disabled settings, poll masked IRQ without duplicates, and filter responses. PS2 model tests cover ordering, system-bit preservation, ACK/RESEND, missing/busy controllers, stuck data, no response, errors and readback. `tools/check-shell.py` checks automatic diagnostics, kbd and actual QEMU sendkey; --boot-screenshot captures boot diagnostics.
 
-_Checked against code: 2026-10-13, branch fix-ps2-keyboard._
+_Checked against code: 2026-10-15, fix-console-scroll branch._

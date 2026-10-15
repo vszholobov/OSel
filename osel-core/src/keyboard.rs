@@ -1,6 +1,6 @@
 //! Keyboard input: PS/2 scancode decoding and the buffer of typed characters
 
-use pc_keyboard::{DecodedKey, HandleControl, PS2Keyboard, ScancodeSet1, layouts};
+use pc_keyboard::{DecodedKey, HandleControl, KeyCode, KeyState, PS2Keyboard, ScancodeSet1, layouts};
 
 /// Fixed capacity FIFO queue that drops new items when full
 pub struct RingBuffer<T: Copy, const N: usize> {
@@ -62,6 +62,15 @@ impl<T: Copy, const N: usize> RingBuffer<T, N> {
     }
 }
 
+/// Input events retain navigation keys without inventing Unicode characters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Key {
+    Character(char),
+    Sequence(&'static str),
+    PageUp,
+    PageDown,
+}
+
 /// Turns PS/2 scancode set 1 bytes into characters, US layout.
 /// Ctrl+letter gives the control character (Ctrl+C is `\x03`) like a terminal.
 pub struct ScancodeDecoder {
@@ -78,10 +87,35 @@ impl ScancodeDecoder {
     /// Feeds one byte from the keyboard, returns a character once a key press is complete.
     /// Releases, modifiers, keys without a character and invalid bytes give `None`.
     pub fn decode(&mut self, scancode: u8) -> Option<char> {
+        match self.decode_key(scancode)? {
+            Key::Character(c) => Some(c),
+            _ => None,
+        }
+    }
+
+    /// Navigation is encoded for terminals; Ctrl+Shift+Up/Down also scroll locally.
+    /// Key releases always update modifier state but never emit input.
+    pub fn decode_key(&mut self, scancode: u8) -> Option<Key> {
         let event = self.keyboard.add_byte(scancode).ok()??;
-        match self.keyboard.process_keyevent(event)? {
-            DecodedKey::Unicode(c) => Some(c),
-            DecodedKey::RawKey(_) => None,
+        let code = event.code;
+        let state = event.state;
+        let decoded = self.keyboard.process_keyevent(event);
+        if state == KeyState::Up { return None; }
+        let modifiers = self.keyboard.get_modifiers();
+        let scroll = (modifiers.lctrl || modifiers.rctrl) && (modifiers.lshift || modifiers.rshift);
+        match code {
+            KeyCode::PageUp => Some(Key::PageUp),
+            KeyCode::PageDown => Some(Key::PageDown),
+            KeyCode::ArrowUp if scroll => Some(Key::PageUp),
+            KeyCode::ArrowDown if scroll => Some(Key::PageDown),
+            KeyCode::ArrowUp => Some(Key::Sequence("\x1b[A")),
+            KeyCode::ArrowDown => Some(Key::Sequence("\x1b[B")),
+            KeyCode::ArrowLeft => Some(Key::Sequence("\x1b[D")),
+            KeyCode::ArrowRight => Some(Key::Sequence("\x1b[C")),
+            _ => match decoded? {
+                DecodedKey::Unicode(c) => Some(Key::Character(c)),
+                DecodedKey::RawKey(_) => None,
+            },
         }
     }
 }
@@ -104,6 +138,22 @@ mod tests {
 
     fn type_fresh(scancodes: &[u8]) -> String {
         typed(&mut ScancodeDecoder::new(), scancodes)
+    }
+
+    #[test]
+    fn navigation_and_scroll_shortcuts_preserve_modifiers_and_ignore_releases() {
+        let mut decoder = ScancodeDecoder::new();
+        let mut keys = |codes: &[u8]| -> Vec<Key> {
+            codes.iter().filter_map(|&code| decoder.decode_key(code)).collect()
+        };
+        assert_eq!(keys(&[0xe0, 0x48, 0xe0, 0xc8, 0xe0, 0x50, 0xe0, 0xd0]),
+            [Key::Sequence("\x1b[A"), Key::Sequence("\x1b[B")]);
+        assert_eq!(keys(&[0xe0, 0x49, 0xe0, 0xc9, 0xe0, 0x51, 0xe0, 0xd1]),
+            [Key::PageUp, Key::PageDown]);
+        assert_eq!(keys(&[0x1d, 0x2a, 0xe0, 0x48, 0xe0, 0xc8, 0xe0, 0x50, 0xe0, 0xd0,
+            0xaa, 0x9d, 0x1e, 0x9e]), [Key::PageUp, Key::PageDown, Key::Character('a')]);
+        assert_eq!(keys(&[0xe0, 0x1d, 0x36, 0xe0, 0x48, 0xe0, 0xc8, 0xb6, 0xe0, 0x9d,
+            0xe0, 0x48, 0xe0, 0xc8]), [Key::PageUp, Key::Sequence("\x1b[A")]);
     }
 
     #[test]

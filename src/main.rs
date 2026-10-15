@@ -17,10 +17,10 @@ entry_point!(kernel_main, config = &osel::BOOTLOADER_CONFIG);
 
 fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     osel::avganec::init(boot_info.framebuffer.take());
-    println!("OSel {} (commit {}) woke up!", osel::VERSION, osel::COMMIT);
     // The release image check verifies its identity over COM1 before exercising the shell.
     osel::serial_println!("OSel {} (commit {}) woke up!", osel::VERSION, osel::COMMIT);
     osel::init(boot_info);
+    println!("OSel {} (commit {}) woke up!", osel::VERSION, osel::COMMIT);
     #[cfg(test)]
     test_main();
     print_motd();
