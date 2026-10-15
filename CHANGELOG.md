@@ -6,6 +6,7 @@
 
 ### Changed
 
+- Restored the README logo and added a short explanation of OSel's purpose: learning how operating systems and PCs work.
 - All pull requests and releases must be written in English; the PR template and contributor instructions now reflect this rule.
 - Simplified the English README to the project name, description and documentation link.
 
