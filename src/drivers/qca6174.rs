@@ -7,7 +7,7 @@
 // See firmware/ath10k-driver-ISC.txt for the license.
 //! QCA6174 PCIe ROM bring-up and diagnostics, for the Acer LiteOn 11ad:0807 card.
 //! Register/CE/BMI protocol definitions follow Linux ath10k (ISC), v6.12.
-//! No firmware execution or RF transmission yet: this is a hardware checkpoint.
+//! ROM probe and bounded firmware/HTC checkpoint, without Wi-Fi association.
 use super::{dma::Dma, pci};
 use crate::{memory, sync::IrqSpinlock, time};
 use core::{
@@ -16,7 +16,8 @@ use core::{
 };
 use osel_core::{
     errno::{Errno, KResult},
-    wifi::{self, Firmware, boot},
+    file::FileLike,
+    wifi::{self, Firmware, bmi, boot, htc},
 };
 use x86_64::{
     VirtAddr,
@@ -143,7 +144,7 @@ pub fn command(command: &str, out: &mut impl Write) -> KResult<()> {
                 let _ = writeln!(out, "  No snapshot; run wifi probe on Acer");
             }
         }
-        "probe" => {
+        "probe" | "load" => {
             let _busy = Busy::take()?;
             let attempts = REPORT.lock().attempts.saturating_add(1);
             let mut report = Report::new();
@@ -153,7 +154,13 @@ pub fn command(command: &str, out: &mut impl Write) -> KResult<()> {
                 out,
                 "WiFi probe: PCI/D0/wake/reset/CE/BMI; bounded waits. See wifi regs."
             );
-            let result = probe(&mut report);
+            if command == "load" {
+                let _ = writeln!(
+                    out,
+                    "WiFi firmware check: up to 120 seconds after ROM; Ctrl+C cancels. Target stops after the check."
+                );
+            }
+            let result = probe(&mut report, command == "load");
             report.error = result.err();
             *REPORT.lock() = report;
             let _ = writeln!(
@@ -176,6 +183,8 @@ struct Controller {
     rx: u32,
     diag_tx: u32,
     diag_rx: u32,
+    load_deadline: Option<u64>,
+    reset_on_drop: bool,
 }
 impl Controller {
     fn new(device: pci::Device) -> KResult<Self> {
@@ -210,6 +219,8 @@ impl Controller {
             rx: 0,
             diag_tx: 0,
             diag_rx: 0,
+            load_deadline: None,
+            reset_on_drop: false,
         };
         controller.device.bus_master(false);
         controller.device.disable_interrupts();
@@ -230,7 +241,11 @@ impl Controller {
         self.get(offset); // flush PCIe posted writes
     }
     fn wait(&self, offset: usize, mask: u32, expected: u32, ms: u64) -> KResult<()> {
-        let end = time::monotonic_ns().saturating_add(ms * 1_000_000);
+        let end = self
+            .load_deadline
+            .unwrap_or(u64::MAX)
+            .min(time::monotonic_ns().saturating_add(ms * 1_000_000));
+        let mut spins = 0;
         loop {
             let value = self.get(offset);
             if value != u32::MAX && value & mask == expected {
@@ -239,7 +254,12 @@ impl Controller {
             if time::monotonic_ns() >= end {
                 return Err(Errno::ETIMEDOUT);
             }
-            delay(10)?;
+            if spins < 64 {
+                spins += 1;
+                core::hint::spin_loop();
+            } else {
+                delay(10)?;
+            }
         }
     }
     fn mask(&mut self) {
@@ -337,7 +357,7 @@ impl Controller {
             ("CE source read index", self.get(base + 0x44)),
             ("CE destination write index", self.get(base + 0x40)),
             ("CE destination read index", self.get(base + 0x48)),
-            ("CE error status", self.get(base + 0x38)),
+            ("CE error status", self.get(base + 0x38) & 0x7e0),
         ] {
             report.record(stage, value);
         }
@@ -418,7 +438,11 @@ impl Controller {
         Ok(value)
     }
     fn wait_descriptor(&self, ring: usize, index: u32, ms: u64) -> KResult<u16> {
-        let end = time::monotonic_ns().saturating_add(ms * 1_000_000);
+        let end = self
+            .load_deadline
+            .unwrap_or(u64::MAX)
+            .min(time::monotonic_ns().saturating_add(ms * 1_000_000));
+        let mut spins = 0;
         loop {
             fence(Ordering::SeqCst);
             let rings = self.rings.as_ref().unwrap();
@@ -437,7 +461,12 @@ impl Controller {
             if time::monotonic_ns() >= end {
                 return Err(Errno::ETIMEDOUT);
             }
-            delay(10)?;
+            if spins < 64 {
+                spins += 1;
+                core::hint::spin_loop();
+            } else {
+                delay(10)?;
+            }
         }
     }
     fn reset(&mut self, report: &mut Report) -> KResult<()> {
@@ -481,79 +510,170 @@ impl Controller {
         report.record("CE1 write index", self.rx);
         Ok(())
     }
-    fn bmi_info(&mut self, report: &mut Report) -> KResult<()> {
-        report.record("BMI GET_TARGET_INFO begin", 8);
+    fn bmi_exchange(
+        &mut self,
+        request: &[u8],
+        reply: &mut [u8],
+        report: &mut Report,
+    ) -> KResult<usize> {
+        if request.is_empty() || request.len() > 256 || reply.len() > 256 {
+            return Err(Errno::EINVAL);
+        }
+        if self
+            .load_deadline
+            .is_some_and(|end| time::monotonic_ns() >= end)
+        {
+            report.record("firmware operation deadline", 120);
+            return Err(Errno::ETIMEDOUT);
+        }
         let rings = self.rings.as_ref().unwrap();
         unsafe {
-            rings[2].ptr.cast::<u32>().write_volatile(8u32.to_le());
-            let tx = rings[0].ptr.add(self.tx as usize * 8);
-            tx.cast::<u32>()
-                .write_volatile((rings[2].physical() as u32).to_le());
-            tx.add(4).cast::<u16>().write_volatile(4u16.to_le());
-            tx.add(6).cast::<u16>().write_volatile(0);
-            let rx = rings[1].ptr.add(self.rx as usize * 8);
-            rx.cast::<u32>()
-                .write_volatile((rings[3].physical() as u32).to_le());
-            rx.add(4).cast::<u16>().write_volatile(0);
-            rx.add(6).cast::<u16>().write_volatile(0);
+            core::ptr::copy_nonoverlapping(request.as_ptr(), rings[2].ptr, request.len());
+            descriptor(
+                rings[0].ptr,
+                self.tx,
+                rings[2].physical() as u32,
+                request.len() as u16,
+            );
         }
         let tx_next = (self.tx + 1) & (ENTRIES - 1);
-        let rx_next = (self.rx + 1) & (ENTRIES - 1);
         fence(Ordering::SeqCst);
-        self.put(CE + 0x400 + 0x40, rx_next);
+        if !reply.is_empty() {
+            self.post_receive();
+        }
         self.put(CE + 0x3c, tx_next);
-        let sent = self.wait(CE + 0x44, ENTRIES - 1, tx_next, 3000);
-        report.record("CE0 source read index", self.get(CE + 0x44));
-        report.record("CE0 error status", self.get(CE + 0x38));
-        if let Err(error) = sent {
+        if let Err(error) = self.wait(CE + 0x44, ENTRIES - 1, tx_next, 3000) {
             self.snapshot(report, CE);
             report.record("BMI CE0 source timeout", self.get(CE + 0x44));
             return Err(error);
         }
-        let received = self.wait(CE + 0x400 + 0x48, ENTRIES - 1, rx_next, 3000);
-        report.record("CE1 destination read index", self.get(CE + 0x400 + 0x48));
-        report.record("CE1 error status", self.get(CE + 0x400 + 0x38));
-        if let Err(error) = received {
-            self.snapshot(report, CE + 0x400);
-            report.record("BMI CE1 destination timeout", self.get(CE + 0x400 + 0x48));
-            return Err(error);
+        self.tx = tx_next;
+        if reply.is_empty() {
+            return Ok(0);
         }
-        // DRRI can be updated before the DMA descriptor write completes.
-        // Wait for nbytes too, as ath10k does, rather than reporting a false short reply.
-        let deadline = time::monotonic_ns().saturating_add(100_000_000);
-        let length = loop {
-            fence(Ordering::SeqCst);
-            let rings = self.rings.as_ref().unwrap();
-            let length = unsafe {
-                u16::from_le(
-                    rings[1]
-                        .ptr
-                        .add(self.rx as usize * 8 + 4)
-                        .cast::<u16>()
-                        .read_volatile(),
-                )
-            };
-            if length != 0 || time::monotonic_ns() >= deadline {
-                break length;
-            }
-            delay(10)?;
-        };
+        let count = self.receive(3000, report)?;
+        if count as usize > reply.len() {
+            report.record("BMI response too long", u32::from(count));
+            return Err(Errno::EIO);
+        }
         let rings = self.rings.as_ref().unwrap();
-        report.record("BMI response length", u32::from(length));
+        unsafe { core::ptr::copy_nonoverlapping(rings[3].ptr, reply.as_mut_ptr(), count as usize) };
+        Ok(count as usize)
+    }
+    fn post_receive(&mut self) {
+        let rings = self.rings.as_ref().unwrap();
+        unsafe { descriptor(rings[1].ptr, self.rx, rings[3].physical() as u32, 0) };
+        fence(Ordering::SeqCst);
+        self.put(CE + 0x400 + 0x40, (self.rx + 1) & (ENTRIES - 1));
+    }
+    fn receive(&mut self, timeout: u64, report: &mut Report) -> KResult<u16> {
+        let count = match self.wait_descriptor(1, self.rx, timeout) {
+            Ok(count) if count <= 2048 => count,
+            Ok(count) => {
+                report.record("CE1 response too long", u32::from(count));
+                return Err(Errno::EIO);
+            }
+            Err(error) => {
+                self.snapshot(report, CE + 0x400);
+                report.record("CE1 receive timeout", self.get(CE + 0x400 + 0x48));
+                return Err(error);
+            }
+        };
+        self.rx = (self.rx + 1) & (ENTRIES - 1);
+        Ok(count)
+    }
+    fn bmi_info(&mut self, report: &mut Report) -> KResult<()> {
+        report.record("BMI GET_TARGET_INFO begin", 8);
+        let mut response = [0; 12];
+        let length = self.bmi_exchange(&8u32.to_le_bytes(), &mut response, report)?;
+        report.record("BMI response length", length as u32);
         if length != 12 {
             return Err(Errno::EIO);
         }
-        let read = |i| unsafe { u32::from_le(rings[3].ptr.add(i).cast::<u32>().read_volatile()) };
-        let size = read(0);
-        let version = read(4);
-        let target = read(8);
-        report.record("BMI info size", size);
-        report.record("BMI target version", version);
-        report.record("BMI target type", target);
-        if size != 12 || version != 0x05030000 {
+        let word = |i| u32::from_le_bytes(response[i..i + 4].try_into().unwrap());
+        report.record("BMI info size", word(0));
+        report.record("BMI target version", word(4));
+        report.record("BMI target type", word(8));
+        if word(0) != 12 || word(4) != 0x05030000 || word(8) != 8 {
             return Err(Errno::EOPNOTSUPP);
         }
         Ok(())
+    }
+    fn load(&mut self, report: &mut Report) -> KResult<()> {
+        let fw = Firmware::parse(wifi::FIRMWARE).map_err(|_| Errno::EIO)?;
+        let board = wifi::board(wifi::BOARDS, wifi::ACER_BOARD).map_err(|_| Errno::EIO)?;
+        self.reset_on_drop = true;
+        self.load_deadline = Some(time::monotonic_ns().saturating_add(120_000_000_000));
+        bmi::Client::new(&mut Bmi {
+            controller: self,
+            report,
+        })
+        .upload(&fw, board)?;
+        // The first firmware packet can arrive as soon as BMI_DONE is consumed.
+        self.post_receive();
+        report.record("BMI_DONE begin", 1);
+        bmi::Client::new(&mut Bmi {
+            controller: self,
+            report,
+        })
+        .done()?;
+        report.record("HTC ready wait", 0);
+        let count = self.receive(5000, report)?;
+        let mut packet = [0u8; 2048];
+        let rings = self.rings.as_ref().unwrap();
+        unsafe {
+            core::ptr::copy_nonoverlapping(rings[3].ptr, packet.as_mut_ptr(), count as usize)
+        };
+        report.record("HTC packet bytes", u32::from(count));
+        for (stage, offset) in [
+            ("HTC header word 0", 0),
+            ("HTC header word 1", 4),
+            ("HTC message word 0", 8),
+        ] {
+            report.record(
+                stage,
+                u32::from_le_bytes(packet[offset..offset + 4].try_into().unwrap()),
+            );
+        }
+        let ready = htc::ready(&packet[..count as usize])?;
+        report.record("HTC transmit credits", u32::from(ready.credits));
+        report.record("HTC credit size", u32::from(ready.credit_size));
+        report.record("HTC endpoints", u32::from(ready.endpoints));
+        report.record("HTC ready; checkpoint complete", 1);
+        Ok(())
+    }
+}
+struct Bmi<'a> {
+    controller: &'a mut Controller,
+    report: &'a mut Report,
+}
+impl bmi::Transport for Bmi<'_> {
+    fn exchange(&mut self, request: &[u8], reply: &mut [u8]) -> KResult<usize> {
+        let terminal = crate::tty::Tty::new(osel_core::vfs::Stat::default());
+        let mut byte = [0];
+        if terminal.read(0, &mut byte, true) == Ok(1) && byte[0] == 3 {
+            self.report.record("firmware load cancelled", 0);
+            return Err(Errno::EINTR);
+        }
+        // Preserve command context on failure without flooding the screen for every chunk.
+        let id = u32::from_le_bytes(request[..4].try_into().unwrap());
+        let result = self.controller.bmi_exchange(request, reply, self.report);
+        if result.is_err() {
+            self.report.record("failed BMI command", id);
+            if request.len() >= 8 {
+                self.report.record(
+                    "failed BMI argument",
+                    u32::from_le_bytes(request[4..8].try_into().unwrap()),
+                );
+            }
+        }
+        result
+    }
+    fn pause(&mut self) -> KResult<()> {
+        delay(10)
+    }
+    fn progress(&mut self, stage: &'static str, value: u32) {
+        self.report.record(stage, value);
     }
 }
 struct Boot<'a> {
@@ -595,7 +715,19 @@ impl Drop for Controller {
         // Disable bus mastering before descriptor pages are freed, including timeout paths.
         self.device.bus_master(false);
         self.mask();
-        if self.rings.is_some() {
+        if self.reset_on_drop {
+            let reset = self.get(LOCAL + 8);
+            unsafe { ((self.base + LOCAL + 8) as *mut u32).write_volatile(reset | 1) };
+            let until = time::monotonic_ns().saturating_add(20_000_000);
+            while time::monotonic_ns() < until {
+                core::hint::spin_loop();
+            }
+            unsafe { ((self.base + LOCAL + 8) as *mut u32).write_volatile(reset & !1) };
+            let until = time::monotonic_ns().saturating_add(20_000_000);
+            while time::monotonic_ns() < until {
+                core::hint::spin_loop();
+            }
+        } else if self.rings.is_some() {
             for i in 0..8 {
                 self.put(CE + i * 0x400 + 0x18, 1);
                 self.put(CE + i * 0x400 + 4, 0);
@@ -608,7 +740,7 @@ impl Drop for Controller {
 fn delay(ms: u64) -> KResult<()> {
     time::sleep_until(time::monotonic_ns().saturating_add(ms * 1_000_000))
 }
-fn probe(report: &mut Report) -> KResult<()> {
+fn probe(report: &mut Report, load: bool) -> KResult<()> {
     report.record("PCI scan begin", 0);
     let device = card().ok_or(Errno::ENODEV)?;
     report.record("PCI subsystem", device.read(0x2c));
@@ -637,6 +769,11 @@ fn probe(report: &mut Report) -> KResult<()> {
     report.record("ROM early configuration complete", controller.get(CORE));
     controller.bmi_info(report)?;
     report.record("ROM ready; firmware not started", 0);
+    if load {
+        controller.load(report)?;
+        drop(controller);
+        report.record("firmware check passed; target stopped", 1);
+    }
     Ok(())
 }
 #[cfg(test)]
@@ -650,6 +787,7 @@ mod tests {
             command("fw", &mut out).unwrap();
             assert!(out.as_str().contains("board=8124"));
             assert_eq!(command("probe", &mut out), Err(Errno::ENODEV));
+            assert_eq!(command("load", &mut out), Err(Errno::ENODEV));
             assert!(!BUSY.load(Ordering::Acquire));
             assert_eq!(REPORT.lock().error, Some(Errno::ENODEV));
         }

@@ -1,5 +1,7 @@
 //! Checked ath10k firmware/board containers. No register or DMA access.
+pub mod bmi;
 pub mod boot;
+pub mod htc;
 pub const ACER_BOARD: &[u8] =
     b"bus=pci,vendor=168c,device=003e,subsystem-vendor=11ad,subsystem-device=0807";
 pub const FIRMWARE: &[u8] = include_bytes!("../../firmware/ath10k/QCA6174/hw3.0/firmware-6.bin");
@@ -45,6 +47,7 @@ pub struct Firmware<'a> {
     pub otp: &'a [u8],
     pub wmi: u32,
     pub htt: u32,
+    pub ignore_otp_result: bool,
 }
 impl<'a> Firmware<'a> {
     pub fn parse(bytes: &'a [u8]) -> Result<Self, Error> {
@@ -54,6 +57,7 @@ impl<'a> Firmware<'a> {
         let mut otp = None;
         let mut wmi = None;
         let mut htt = None;
+        let mut features = None;
         while let Some((id, data)) = tlvs.next()? {
             match id {
                 0 => set(
@@ -66,6 +70,7 @@ impl<'a> Firmware<'a> {
                 4 => set(&mut otp, data)?,
                 5 => set(&mut wmi, word(data)?)?,
                 6 => set(&mut htt, word(data)?)?,
+                2 => set(&mut features, data)?,
                 _ => {}
             }
         }
@@ -76,6 +81,8 @@ impl<'a> Firmware<'a> {
             otp: otp.unwrap_or(&[]),
             wmi: wmi.ok_or(Error::Missing)?,
             htt: htt.ok_or(Error::Missing)?,
+            ignore_otp_result: features
+                .is_some_and(|data| data.first().is_some_and(|b| b & 0x80 != 0)),
         })
     }
 }

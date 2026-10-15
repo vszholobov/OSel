@@ -67,6 +67,8 @@ description: Обзор OSel — из каких крейтов и модуле�
 | `icmp` | `osel-core/src/icmp.rs` | ICMP Echo, checksum и проверка ответов | [Сеть](core/network.md) |
 | `wifi` | `osel-core/src/wifi.rs` | контейнеры прошивки и точная PCI-плата | [Wi-Fi](drivers/wifi.md) |
 | `boot` | `osel-core/src/wifi/boot.rs` | ранняя конфигурация ROM QCA6174 и проверка адресов | [Wi-Fi](drivers/wifi.md) |
+| `bmi` | `osel-core/src/wifi/bmi.rs` | команды BMI, PLL, board/OTP/firmware upload | [Wi-Fi](drivers/wifi.md) |
+| `htc` | `osel-core/src/wifi/htc.rs` | проверка сообщения HTC ready | [Wi-Fi](drivers/wifi.md) |
 | `net` | `osel-core/src/net.rs` | Linux IPv4, PCI address / BAR parsing | [Ethernet](drivers/ethernet.md) |
 | `rtl8168` | `osel-core/src/rtl8168.rs` | Realtek XID, дескрипторы и ограниченный запуск PHY | [Ethernet](drivers/ethernet.md) |
 | `console` | `osel-core/src/console.rs` | отрисовка текста в любой байтовый буфер | [Консоль](drivers/console.md) |

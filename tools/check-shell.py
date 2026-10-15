@@ -125,6 +125,7 @@ def main():
             command(b"pci", b"subsystem=")
             command(b"wifi fw", b"board=8124")
             command(b"wifi probe", b"ENODEV")
+            command(b"wifi load", b"ENODEV")
             command(b"wifi regs", b"snapshot, no register reads")
             command(b"cat /usr/share/licenses/ath10k/LICENSE", b"Qualcomm Atheros")
             listing = command(b"ls /bin", b"clear\n")

@@ -27,6 +27,7 @@ description: OSel commands for network, PCI, memory and initial Acer Wi-Fi diagn
 | `wifi status` | QCA6174 PCI card, last probe stage and error |
 | `wifi fw` | bundled firmware version, API/WMI/HTT, OTP and exact board match |
 | `wifi probe` | checks the Acer card up to a BMI ROM response; does not start firmware or connect |
+| `wifi load` | repeats the ROM check, uploads calibration/firmware and waits for HTC ready; stops the target after the check, without connecting |
 | `wifi regs` | last 22 saved stages and values from the probe, without rereading registers |
 | `kbd` | PS/2 initialization, IRQ and input counters |
 
@@ -39,6 +40,8 @@ description: OSel commands for network, PCI, memory and initial Acer Wi-Fi diagn
 1. After boot, run `clear`, then `diag`. Save COM1 output or photograph the display including version and commit.
 2. For [Acer Wi-Fi](hardware/acer-nitro.md#wifi), run `wifi probe`, then `clear` and `wifi regs`; save that display too. The error and stage help even when probing fails.
 3. For Ethernet after DHCP, run `ping gateway 4`, then `ping SERVER_IP 4`. Check `tcpcheck SERVER_IP 8080`. For game failures include the error text and server address.
+
+`wifi load` has a 120-second deadline after the ROM check and supports Ctrl+C. Stages and uploaded byte counts appear on screen. `firmware check passed; target stopped` confirms firmware startup through HTC; WMI, scanning and connection still need implementation/validation. Save `wifi regs` on failure.
 
 Reports contain no Wi-Fi passwords or keys. All shell output is also sent to COM1. If the laptop freezes during `wifi probe`, preserve the last line: stages are shown on the display and sent to COM1 while executing. Probing does not run automatically at boot, so the shell remains available after reboot.
 

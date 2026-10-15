@@ -60,6 +60,7 @@ fn diagnostics_and_missing_wifi_are_actionable() {
     assert!(out.contains(osel::COMMIT));
     assert!(out.contains("QCA6174") && out.contains("board=8124"));
     assert_eq!(osel::shell::execute("wifi probe", &mut out), 1);
+    assert_eq!(osel::shell::execute("wifi load", &mut out), 1);
     assert!(out.contains("ENODEV"));
     for command in ["wifi invalid", "wifi scan", "ping", "ping 10.0.2.2 0", "ping 10.0.2.2 abc", "nslookup", "tcpcheck", "tcpcheck 10.0.2.2 0", "tcpcheck 10.0.2.2 65536", "net invalid", "diag extra", "pci extra"] {
         assert_ne!(osel::shell::execute(command, &mut out), 0, "{command}");
