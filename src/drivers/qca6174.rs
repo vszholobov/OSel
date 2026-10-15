@@ -934,15 +934,22 @@ impl Controller {
         self.wmi_max_message = usize::from(control.max_message);
         self.post_receive(); // HTC credit-only reports and HTT events may also use CE1.
         report.record("WMI service ready wait", 0);
-        let data = self.next_wmi(5000, report)?;
-        report.record("WMI packet bytes", data.len() as u32);
-        for i in 0..(data.len() / 4).min(4) {
-            report.record(
-                "WMI event header",
-                u32::from_le_bytes(data[i * 4..i * 4 + 4].try_into().unwrap()),
-            );
-        }
-        let service = wmi::service_ready(&data)?;
+        let deadline = time::monotonic_ns().saturating_add(5_000_000_000);
+        let service = wmi::wait_service_ready(|| {
+            let left = deadline.saturating_sub(time::monotonic_ns()) / 1_000_000;
+            if left == 0 {
+                return Err(Errno::ETIMEDOUT);
+            }
+            let data = self.next_wmi(left, report)?;
+            report.record("WMI packet bytes", data.len() as u32);
+            for i in 0..(data.len() / 4).min(4) {
+                report.record(
+                    "WMI event header",
+                    u32::from_le_bytes(data[i * 4..i * 4 + 4].try_into().unwrap()),
+                );
+            }
+            Ok(data)
+        })?;
         self.channel_limits = service.channels_2ghz;
         report.record("WMI firmware build", service.build);
         for value in service.abi {

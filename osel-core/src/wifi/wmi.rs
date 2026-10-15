@@ -327,6 +327,34 @@ fn unique<'a>(slot: &mut Option<&'a [u8]>, value: &'a [u8]) -> KResult<()> {
     }
     Ok(())
 }
+/// Wait through optional SERVICE_AVAILABLE events before SERVICE_READY.
+/// The transport must enforce one deadline across all receive calls.
+pub fn wait_service_ready(mut receive: impl FnMut() -> KResult<Vec<u8>>) -> KResult<ServiceReady> {
+    for _ in 0..32 {
+        let data = receive()?;
+        match word(&data, 0)? & 0xffffff {
+            1 => return service_ready(&data),
+            3 => {
+                // ath10k sends the extended service bitmap before SERVICE_READY.
+                // This station uses only base services; do not treat the bitmap
+                // as readiness or use it to bypass the full boot validation.
+                let mut available = None;
+                let mut elements = Elements::new(&data[4..]);
+                while let Some((tag, value)) = elements.next()? {
+                    if tag == 0x22f {
+                        unique(&mut available, value)?;
+                    }
+                }
+                // Segment offset plus four bitmap words in the bundled ABI.
+                if available.is_none_or(|value| value.len() != 20) {
+                    return Err(Errno::EIO);
+                }
+            }
+            _ => return Err(Errno::EIO),
+        }
+    }
+    Err(Errno::ETIMEDOUT)
+}
 pub fn service_ready(data: &[u8]) -> KResult<ServiceReady> {
     if word(data, 0)? & 0xffffff != 1 {
         return Err(Errno::EIO);
@@ -427,6 +455,93 @@ mod tests {
         tlv(&mut requests, 34, &bytes(&[1, 32, 2, 0]));
         tlv(&mut out, 18, &requests);
         out
+    }
+    fn available() -> Vec<u8> {
+        // Acer photo: 28-byte event, ID 3, TLV 022f0014, then 0, 08001000.
+        // The remaining bitmap words are zero fixtures, not captured values.
+        words(&[3, 0x022f0014, 0, 0x08001000, 0, 0, 0])
+    }
+    #[test]
+    fn acer_service_available_precedes_service_ready() {
+        for prelude in 0..=2 {
+            let mut received = 0;
+            let service = wait_service_ready(|| {
+                received += 1;
+                Ok(if received <= prelude {
+                    available()
+                } else {
+                    event()
+                })
+            })
+            .unwrap();
+            assert_eq!(received, prelude + 1);
+            assert_eq!(service, service_ready(&event()).unwrap());
+            assert_eq!(service_ready(&available()), Err(Errno::EIO));
+        }
+    }
+    #[test]
+    fn service_available_does_not_replace_ready_or_hide_transport_failure() {
+        let mut received = 0;
+        assert_eq!(
+            wait_service_ready(|| {
+                received += 1;
+                if received == 1 {
+                    Ok(available())
+                } else {
+                    Err(Errno::EINTR)
+                }
+            }),
+            Err(Errno::EINTR)
+        );
+        assert_eq!(received, 2);
+        received = 0;
+        assert_eq!(
+            wait_service_ready(|| {
+                received += 1;
+                Ok(available())
+            }),
+            Err(Errno::ETIMEDOUT)
+        );
+        assert_eq!(received, 32);
+    }
+    #[test]
+    fn malformed_service_available_is_rejected_before_readiness() {
+        let bytes = available();
+        for end in 0..bytes.len() {
+            let mut received = 0;
+            assert_eq!(
+                wait_service_ready(|| {
+                    received += 1;
+                    Ok(bytes[..end].to_vec())
+                }),
+                Err(Errno::EIO),
+                "end={end}"
+            );
+            assert_eq!(received, 1);
+        }
+        let mut duplicate = bytes.clone();
+        duplicate.extend_from_slice(&bytes[4..]);
+        let mut wrong_tag = bytes.clone();
+        wrong_tag[6] = 0;
+        let mut unknown = bytes.clone();
+        unknown[0] = 2;
+        let mut short = 3u32.to_le_bytes().to_vec();
+        tlv(&mut short, 0x22f, &[0; 16]);
+        let mut long = 3u32.to_le_bytes().to_vec();
+        tlv(&mut long, 0x22f, &[0; 24]);
+        for invalid in [duplicate, wrong_tag, unknown, short, long] {
+            assert_eq!(wait_service_ready(|| Ok(invalid.clone())), Err(Errno::EIO));
+        }
+    }
+    #[test]
+    fn service_available_does_not_bypass_service_ready_validation() {
+        let mut invalid = event();
+        invalid[12] = 3;
+        let mut packets = [available(), invalid].into_iter();
+        assert_eq!(
+            wait_service_ready(|| Ok(packets.next().unwrap())),
+            Err(Errno::EOPNOTSUPP)
+        );
     }
     #[test]
     fn checked_service_ready_retains_abi_regulatory_limits_and_memory_requests() {

@@ -4,6 +4,10 @@
 
 ## Не выпущено
 
+### Fixed
+
+- QCA6174 firmware startup accepts the preliminary WMI SERVICE_AVAILABLE event before SERVICE_READY, avoiding the EIO observed on Acer while keeping a shared timeout and strict readiness validation.
+
 ## 0.12 — 2026-10-15
 
 ### Added
