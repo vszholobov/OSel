@@ -10,7 +10,6 @@ description: Deliberately deferred OSel work and links to the owning subsystem p
 
 | Work | Why deferred | Details |
 |---|---|---|
-| Console shadow buffer | Scrolling reads slow video memory on real hardware | [Console](architecture/drivers/console.md) |
 | Backspace across lines | Needs terminal/editor work | [Console](architecture/drivers/console.md) |
 | Separate #GP stack | Do not move page faults to IST: they need nesting | [Interrupts](architecture/core/interrupts.md) |
 | CI fmt/clippy | Enabling formatting changes the whole codebase; separate PR | [CI](guides/toolchain-and-ci.md) |

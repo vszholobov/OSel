@@ -44,7 +44,7 @@ open_access follows Linux read-only error order: missing O_CREAT/O_TMPFILE gives
 
 encode_stat writes 144-byte Linux x86_64 stat: device 1, link count (2 for directories), mode/rdev/size, block size 4096 and 512-byte block count; owner/times zero.
 
-Tty merges PS2/COM1 input, sends output to screen/serial and retains split UTF-8 characters between writes. Empty reads block (or EAGAIN with O_NONBLOCK), with atomic masked check/enqueue/block. tty::forget removes dead waiters. OutputGuard owns serialization under brief TTY_OUTPUT; competitors sleep without spinlocks. Decode 64 input bytes at a time into bounded stack storage, lock framebuffer per character and COM1 per nonblocking attempt. Cancellation/error releases output and wakes writers. Read-side echo preserves incoming IF.
+Tty merges PS2/COM1 input, sends output to screen/serial and retains split UTF-8 characters between writes. Empty reads block (or EAGAIN with O_NONBLOCK), with decoding/echo/history navigation in process context, followed by an atomic masked input check, PS2/COM1 producer-queue recheck, enqueue and block. Rechecking producer queues prevents losing input arriving between decoding and IRQ masking. tty::forget removes dead waiters. OutputGuard owns serialization under brief TTY_OUTPUT; competitors sleep without spinlocks. Decode 512 input bytes at a time into bounded stack storage, update [console](../drivers/console.md#locks) cells in chunks and release its lock between presented rows; lock COM1 per nonblocking attempt. Cancellation/error releases output and wakes writers. Read-side echo preserves incoming IF.
 
 `osel-core/src/terminal.rs` stores 36-byte Linux termios and bounded input. Default is immediate input without echo. TCGETS/TCSETS/TCSETSW/TCSETSF support ICANON/ECHO, CRLF conversion and VMIN. Canonical mode handles Backspace/EOF; TCSETSF flushes input. TCSETSW does not wait because output is synchronous. Echo runs in the reading thread, not IRQ. VTIME nonzero and nonzero line discipline return EINVAL; signals/full termios are unsupported. TIOCGWINSZ uses framebuffer geometry or 80×25. All terminal opens share modes/input/UTF-8 state.
 
@@ -105,7 +105,7 @@ Kernel tests cover blocking/nonblocking pipe wakes and final-copy endpoint lifet
 
 [0007](../../decisions/0007-storage-interfaces.md), [0014](../../decisions/0014-file-descriptors.md), [0005](../../decisions/0005-linux-abi-for-go.md).
 
-_Checked against code: 2026-10-13, commit 6f96d29 and stage-2.5 work._
+_Checked against code: 2026-10-15, fix-console-scroll branch._
 
 Sockets implement the same `FileLike`; see [networking](network.md#sockets) for readiness, weak epoll registrations, `EPOLLET` and `EPOLLONESHOT`.
 

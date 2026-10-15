@@ -94,6 +94,7 @@ pub fn init(boot_info: &'static BootInfo) {
         )
     };
     allocator::init_heap().expect("heap initialization failed");
+    avganec::init_text_buffer();
     memory::enable_frame_tracking();
     fs::init(boot_info);
     scheduler::init();

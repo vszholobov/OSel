@@ -96,9 +96,9 @@ Existing kernel module names include wordplay; keep their names when changing co
 ## Boot sequence {#boot}
 
 1. bootloader loads the kernel ELF in the upper half, maps physical memory/framebuffer and enters kernel_main in `src/main.rs`. BOOTLOADER_CONFIG lives in `src/lib.rs`.
-2. avganec::init takes the framebuffer; screen/serial print the version/commit wake-up banner. build.rs embeds the commit; image verification checks it against the release.
-3. osel::init runs exactly once, in order: mask interrupts; GDT/TSS; x87/SSE; IDT; syscall MSRs; memory/lower-half cleanup/IST guards/frame pool/shared upper tables; heap; frame tracking; root ramdisk with /dev; scheduler boot/idle threads; PS2 setup then PIC/PIT; clock/futex/poll queues; enable interrupts.
-4. Print /etc/motd, run /bin/hello, print OSel ready to go!, then enter the [shell](shell.md). tetris starts the game and returns to the prompt.
+2. avganec::init takes the framebuffer; COM1 prints the version/commit wake-up banner. build.rs embeds the commit; image verification checks it against the release.
+3. osel::init runs exactly once, in order: mask interrupts; GDT/TSS; x87/SSE; IDT; syscall MSRs; memory/lower-half cleanup/IST guards/frame pool/shared upper tables; heap; [RAM console cells](drivers/console.md#scrolling); frame tracking; root ramdisk with /dev; scheduler boot/idle threads; PS2 setup then PIC/PIT; clock/futex/poll queues; enable interrupts.
+4. Print the screen banner, then /etc/motd, run /bin/hello, print OSel ready to go!, then enter the [shell](shell.md). tetris starts the game and returns to the prompt.
 
 osel::boot_info() retains the bootloader memory map, ramdisk and ACPI information after initialization.
 
@@ -117,6 +117,6 @@ See [memory](core/memory.md) for ownership and pitfalls.
 
 See [our decisions](../decisions/index.md) for bootloader, host tests, higher-half memory, storage, frames, shared address spaces, ELF, user entry, calls, FPU, descriptors and threads.
 
-_Checked against code: 2026-10-13, branch release-images._
+_Checked against code: 2026-10-15, fix-console-scroll branch._
 
 After terminal setup, `net::init` discovers PCI and starts the network thread before enabling interrupts. See [networking](core/network.md).

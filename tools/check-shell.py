@@ -97,6 +97,45 @@ def main():
                 if "return" in reply:
                     return reply["return"]
 
+        def key(name):
+            qmp("human-monitor-command", {"command-line": "sendkey " + name + " 10"})
+            time.sleep(0.03)  # let QEMU release a repeated key before the next press
+
+        def screen():
+            path = directory + "/screen.ppm"
+            qmp("screendump", {"filename": path})
+            return pathlib.Path(path).read_bytes()
+
+        def changed_screen(previous):
+            deadline = time.monotonic() + 10
+            last = previous
+            stable_since = time.monotonic()
+            while time.monotonic() < deadline:
+                current = screen()
+                if current != last:
+                    last = current
+                    stable_since = time.monotonic()
+                if current != previous and time.monotonic() - stable_since >= 0.2:
+                    return current
+                time.sleep(0.04)
+            raise AssertionError("framebuffer did not change and settle after navigation")
+
+        def restored_screen(expected):
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                if screen() == expected:
+                    return
+                time.sleep(0.04)
+            raise AssertionError("navigation did not restore the live framebuffer")
+
+        def recalled_command(sequence, expected):
+            start = len(transcript)
+            send(sequence + b"\n")
+            result = wait(expected, start)
+            after_output = transcript.index(expected, start) + len(expected)
+            wait(b"osel> ", after_output)
+            return result
+
         try:
             wait(b"osel> ", timeout=180)
             assert b"OSel ready to go!" in transcript
@@ -126,6 +165,52 @@ def main():
                 assert b"tetris\n" in listing, "required Tetris binary is missing from the image"
                 command(b"cat /etc/font-license.txt", b"SIL OPEN FONT LICENSE")
             command(b"cat /etc/motd", b"Welcome to OSel!")
+            # Serial CSI and SS3 arrows recall without executing until Enter.
+            recalled_command(b"\x1b[A", b"Welcome to OSel!")
+            recalled_command(b"\x1bOA", b"Welcome to OSel!")
+            start = len(transcript)
+            send(b"draft\x1b[A\x1b[B")
+            wait(b"\r\x1b[2Kosel> draft", start)
+            send(b"\x03")
+            wait(b"^C", start)
+            wait(b"osel> ", transcript.index(b"^C", start) + 2)
+            # Real PS/2 arrows use the same history as the serial terminal.
+            start = len(transcript)
+            key("up")
+            wait(b"\r\x1b[2Kosel> cat /etc/motd", start)
+            key("ret")
+            wait(b"Welcome to OSel!", start)
+            wait(b"osel> ", transcript.index(b"Welcome to OSel!", start) + len(b"Welcome to OSel!"))
+            command(b"cat /etc/font-license.txt", b"SIL OPEN FONT LICENSE")
+            time.sleep(0.1)
+            live = screen()
+            key("pgup")
+            older = changed_screen(live)
+            key("pgup")
+            changed_screen(older)
+            key("pgdn")
+            key("pgdn")
+            restored_screen(live)
+            key("ctrl-shift-up")
+            changed_screen(live)
+            key("ctrl-shift-down")
+            restored_screen(live)
+            key("pgup")
+            changed_screen(live)
+            key("esc")
+            restored_screen(live)
+            # Serial navigation and lone Escape (with timeout) preserve the prompt.
+            send(b"\x1b[5~")
+            changed_screen(live)
+            send(b"\x1b[6~")
+            restored_screen(live)
+            send(b"\x1b[5~")
+            changed_screen(live)
+            send(b"\x1b")
+            restored_screen(live)
+            key("pgup")
+            changed_screen(live)
+            command(b"help", b"No quotes")
             command(b"missing-command", b"missing-command:")
             command(b"hellp\x08o", b"Hello from ring 3!")
             command(b"hello | clear", b"UnsupportedSyntax")
@@ -144,11 +229,15 @@ def main():
                     send(f"tetris --seed {seed} --trace\n".encode())
                     wait(b"TETRIS READY", start)
                     wait(b"TETRIS TICK", start)
+                    assert b"\x1b[?1049h" in transcript[start:], "game must enter the alternate screen"
+                    key("pgup")
+                    key("up")  # PS/2 navigation must not turn into Escape/exit in the game
                     send(b"a")
                     wait(b"TETRIS INPUT key=a changed=true", start)
                     send(b"x")
                     result = wait(b"osel> ", start)
                     assert b"TETRIS EXIT" in result
+                    assert b"\x1b[?1049l" in result, "game must restore the shell screen"
                     command(b"ls /bin", b"tetris\n")
             else:
                 print("Tetris skipped: no Go binary in ramdisk")
@@ -167,7 +256,7 @@ def main():
                 qmp("screendump", {"filename": str(pathlib.Path(args.screenshot).resolve()), "format": "png"})
             qmp("quit")
             assert process.wait(timeout=10) == 0
-            print("Shell OK: builtins, errors, editing, external programs, repeated Tetris, COM1 and PS/2")
+            print("Shell OK: builtins, command history, scrollback, errors, editing, alternate screen, repeated Tetris, COM1 and PS/2")
         except Exception:
             print(transcript.decode("utf-8", errors="replace"))
             raise

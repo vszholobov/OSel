@@ -30,6 +30,7 @@ pub fn _print(args: fmt::Arguments) {
     // printing before `init` or without a framebuffer is a no-op
     if let Some(console) = WRITER.lock().as_mut() {
         let _ = console.write_fmt(args);
+        console.flush();
     }
 }
 
@@ -41,6 +42,7 @@ pub fn try_print(args: fmt::Arguments) {
         && let Some(console) = console.as_mut()
     {
         let _ = console.write_fmt(args);
+        console.flush();
     }
 }
 
@@ -65,7 +67,75 @@ pub fn init(framebuffer: Option<FrameBuffer>) {
 /// Runs `f` with the console (and interrupts off), `None` without a framebuffer
 #[track_caller]
 pub fn with_console<R>(f: impl FnOnce(&mut Console<'static>) -> R) -> Option<R> {
-    WRITER.lock().as_mut().map(f)
+    WRITER.lock().as_mut().map(|console| {
+        let result = f(console);
+        console.flush();
+        result
+    })
+}
+
+/// Called once after the heap exists. Early boot and allocation failure retain
+/// direct rendering so a fatal initialization error still has a visible screen.
+pub fn init_text_buffer() {
+    // Initialization is single-threaded with IRQs off. Allocate outside WRITER.
+    let console = WRITER.lock().take();
+    if let Some(mut console) = console {
+        let result = console.enable_buffering();
+        console.flush();
+        *WRITER.lock() = Some(console);
+        if let Err(error) = result {
+            crate::serial_println!("avganec: RAM text buffer unavailable: {:?}", error);
+        }
+    }
+}
+
+/// User output is serialized by tty. Keep IRQ-off work bounded to parsing a small
+/// chunk or presenting one row; never carry WRITER across a scheduling point.
+pub fn write_text(text: &str) {
+    let rows = {
+        let mut writer = WRITER.lock();
+        let Some(console) = writer.as_mut() else { return };
+        console.write_string(text);
+        console.rows()
+    };
+    present_rows(rows);
+}
+
+/// Fullscreen games use letter controls and interpret a lone ESC as exit.
+pub fn alternate_screen_active() -> bool {
+    WRITER.lock().as_ref().is_some_and(|console| console.alternate_screen_active())
+}
+
+/// Navigate without changing the live cursor or holding IRQs off for a screen.
+pub fn scroll_pages(pages: isize) {
+    let rows = {
+        let mut writer = WRITER.lock();
+        let Some(console) = writer.as_mut() else { return };
+        console.scroll_pages(pages);
+        console.rows()
+    };
+    present_rows(rows);
+}
+
+pub fn return_live() -> bool {
+    let rows = {
+        let mut writer = WRITER.lock();
+        let Some(console) = writer.as_mut() else { return false };
+        if console.view_offset() == 0 { return false; }
+        console.return_live();
+        console.rows()
+    };
+    present_rows(rows);
+    true
+}
+
+fn present_rows(rows: usize) {
+    for row in 0..rows {
+        if let Some(console) = WRITER.lock().as_mut() {
+            console.flush_row(row);
+        }
+    }
+    core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
 }
 
 /// Color of the pixel at (`x`, `y`), `None` without a framebuffer or outside of the screen
@@ -97,6 +167,7 @@ pub fn panic_screen(info: &PanicInfo) -> bool {
             crate::COMMIT,
             info
         );
+        console.flush();
     }
     // the framebuffer is never read back by the kernel, make sure the writes happen
     core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
@@ -113,6 +184,11 @@ pub fn panic_screen(info: &PanicInfo) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test_case]
+    fn test_ram_text_buffer_is_enabled() {
+        assert_eq!(with_console(|c| c.is_buffered()), Some(true));
+    }
 
     #[test_case]
     fn test_println_simple() {

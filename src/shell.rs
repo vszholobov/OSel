@@ -38,6 +38,7 @@ pub fn run() -> ! {
     let _ = crate::keyboard::write_counters(&mut out);
     let mut watching = true;
     let mut watch_tick = crate::interrupts::ticks();
+    let mut escape_tick = watch_tick;
     let _ = writeln!(
         out,
         "OSel shell. Type help. Ctrl+C cancels the current line."
@@ -45,7 +46,11 @@ pub fn run() -> ! {
     let _ = write!(out, "{PROMPT}");
     loop {
         let mut byte = [0];
-        if terminal.read(0, &mut byte, watching) != Ok(1) {
+        if terminal.read(0, &mut byte, watching || line.escape_pending()) != Ok(1) {
+            if line.escape_pending() && crate::interrupts::ticks().saturating_sub(escape_tick) >= 10 {
+                line.cancel_escape();
+                crate::avganec::return_live();
+            }
             if watching {
                 let tick = crate::interrupts::ticks();
                 if tick.saturating_sub(watch_tick) >= u64::from(crate::interrupts::TICK_HZ) {
@@ -72,13 +77,25 @@ pub fn run() -> ! {
                     crate::serial_print!("{}", text.as_str());
                 }
                 // No busy loop. A frozen watch is evidence that PIT/IRQ delivery stopped.
+            }
+            if watching || line.escape_pending() {
                 let _ = crate::time::sleep_until(crate::time::monotonic_ns() + 10_000_000);
             }
             continue;
         }
         watching = false;
-        match line.receive(byte[0]) {
+        escape_tick = crate::interrupts::ticks();
+        let event = line.receive(byte[0]);
+        if !matches!(event, Event::None | Event::PageUp | Event::PageDown) {
+            crate::avganec::return_live();
+        }
+        match event {
             Event::None => {}
+            Event::PageUp => crate::avganec::scroll_pages(1),
+            Event::PageDown => crate::avganec::scroll_pages(-1),
+            Event::Redraw => {
+                let _ = write!(out, "\r\x1b[2K{PROMPT}{}", line.text());
+            }
             Event::Echo(b) => {
                 let _ = write!(out, "{}", b as char);
             }
@@ -167,17 +184,7 @@ fn cat(path: &str, out: &mut impl Write) -> KResult<u8> {
     }
     let bytes = fs::read_to_end(&*inode)?;
     let text = alloc::string::String::from_utf8_lossy(&bytes);
-    // Display control bytes visibly instead of letting file contents control the terminal.
-    for c in text.chars() {
-        let _ = out.write_char(if c.is_control() && c != '\n' && c != '\t' {
-            '?'
-        } else {
-            c
-        });
-    }
-    if !text.ends_with('\n') {
-        let _ = out.write_char('\n');
-    }
+    shell::write_file_text(&text, out).map_err(|_| Errno::EIO)?;
     Ok(0)
 }
 
@@ -192,7 +199,10 @@ fn external(args: &[&str], out: &mut impl Write) -> KResult<u8> {
         argv.insert(1, b"--single");
     }
     let settings = tty::get_termios();
+    let full_screen = path.rsplit('/').next() == Some("tetris");
+    if full_screen { let _ = out.write_str("\x1b[?1049h"); }
     let result = program::run(&path, &argv, ENV);
+    if full_screen { let _ = out.write_str("\x1b[?1049l"); }
     // A failed/crashed program must not leave the shell in canonical/no-echo mode.
     tty::set_termios(&settings, true)?;
     let _ = out.write_str("\x1b[0m\x1b[?25h");
