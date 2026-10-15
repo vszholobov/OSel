@@ -1,27 +1,26 @@
 # История изменений
 
-Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/), версии — [SemVer](https://semver.org/lang/ru/) с нулевой мажорной: пока совместимость не обещается. Каждый PR добавляет строку в раздел «Не выпущено», при выпуске раздел становится версией. Как выпустить версию — в `docs/ru/developer/guides/release.md`.
+Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/). Начиная с `0.11`, публичные версии имеют вид `X.Y`, а Cargo хранит `X.Y.0`; пока старшая цифра равна нулю, совместимость не обещается. Каждый PR добавляет строку в раздел «Не выпущено», при выпуске раздел становится версией. Как выпустить версию — в `docs/ru/developer/guides/release.md`.
 
 ## Не выпущено
 
-### Исправлено
+## 0.11 — 2026-10-15
 
-- Медленная прокрутка консоли (#12): текст и цвета хранятся в RAM, выводятся только изменившиеся ячейки без чтения видеопамяти, прерывания восстанавливаются между строками. `cat` печатает фильтрованный UTF-8 порциями; добавлены проверки лицензии, длинного вывода и отзывчивости в QEMU. Проверка ускорения на Lenovo ещё предстоит.
+### Added
 
-### Добавлено
+- Command history: recall the last 64 commands with Up/Down and restore unfinished input.
+- Colored scrollback: browse 1,024 output lines with PageUp/PageDown or Ctrl+Shift+Up/Down; Escape or typing returns to live output.
+- Network Tetris with DHCP/IPv4/TCP and Intel 82574L and Realtek Ethernet support.
 
-- История 64 команд с выбором через ↑/↓, редактированием и восстановлением недописанной строки; история 1024 строк вывода с цветами, просмотром PageUp/PageDown или Ctrl+Shift+↑/↓ и возвратом по Esc/вводу. Отдельный экран сохраняет оболочку во время тетриса и не записывает игровые кадры в историю.
+### Fixed
 
-- Драйвер проводной Realtek `10ec:8168` для Acer Nitro: определение MAC G/GU/H/M по XID, запуск PHY и DMA-кольца; PCI ID владельца `10ec:8168`, subsystem `1025:1366`, ревизия `25`. Общий путь DMA, DHCP и сетевой тетрис проверяются через Realtek C+ в QEMU; проверка на самом Acer ещё требуется.
-- Сетевой тетрис в QEMU: PCI, Intel 82574L (`e1000e`), smoltcp с DHCP/IPv4/TCP, исходящие сокеты Linux, режимы epoll для Go и команда `net`. Клиент принимает адрес сервера, рисует оба поля и возвращается в оболочку при выходе или ошибке; настоящие обработчики локального сервера проверяют игру без доступного публичного сервера. Сквозные проверки UEFI/BIOS покрывают большой поток, двух игроков, ping/pong и освобождение ресурсов.
+- Slow console scrolling: keep text in RAM, redraw changed cells without reading video memory, and batch `cat` output.
 
+### Changed
 
-### Изменено
-
-- Аппаратные драйверы собраны в `src/drivers/` с сохранением публичных имён; проверки документации обходят вложенные модули. Зафиксирована подтверждённая владельцем работа одиночного тетриса на реальном компьютере; модель и режим загрузки ещё не записаны.
-
-- Убраны дублирующие ссылки выбора языка из статей и меню документации; используется штатная кнопка Language в шапке сайта.
-- Документация разделена на пользовательскую и разработческую, добавлена английская версия и переключение языков. Убраны отсылки к учебным источникам; проверки охватывают обе локали, прежние адреса сайта перенаправляются на русскую версию.
+- Tetris preserves the shell on an alternate screen and keeps game frames out of scrollback.
+- Hardware drivers are grouped under `src/drivers/`; documentation is available in Russian and English with a native language selector.
+- Releases use `X.Y` version numbers and concise English descriptions; Cargo stores `X.Y.0`.
 
 ## 0.1.0 — 2026-10-14
 
