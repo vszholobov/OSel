@@ -30,6 +30,8 @@ Before freeing DMA, PCI bus mastering is disabled, events are masked, rings are 
 
 `bridge.rs` exchanges Ethernet frames with smoltcp through queues capped at 64 packets; the driver retains EAPOL. Connection generations revoke stale TX tokens. Switching adapters requires no live TCP/ICMP/DNS handles and preserves monotonic socket IDs; the old device is freed outside NETWORK. AP loss, beacon miss/peer kickout, DMA errors or `wifi disconnect` clear link, IP, route and DNS and abort TCP. DMA pages are zeroed after stop/reset and returned to the allocator. The load deadline is disabled only for the connected worker, which never consumes shell input.
 
+An outstanding HTT TX expires after 5 seconds: its buffer stays pinned until reset, while the worker reports `HTT TX completion timeout`. CE/station waits check disconnect requests. The WMI command buffer is zeroed immediately after CE source completion so PTK/GTK do not remain in shared DMA. Invalid or overlong password input is consumed through the end of the hidden line, keeping its suffix out of shell input. Core/kernel tests cover these boundaries.
+
 ## WPA2 {#wpa2}
 
 `osel-core/src/wifi/wpa2.rs` provides a pure WPA2-PSK/CCMP state machine: PBKDF2-HMAC-SHA1, PTK derivation, MIC and AES key unwrap. Primitives come from RustCrypto; dependency licenses accompany every ramdisk at `/usr/share/licenses/WPA2-NOTICES`. Passwords accept 8–63 bytes or a 64-digit hexadecimal PSK; secrets use `Zeroizing`.

@@ -88,6 +88,14 @@ impl Controller {
                 }
             }
         }
+        if let Some(id) = self
+            .data
+            .as_ref()
+            .and_then(|data| data.expired_tx(time::monotonic_ns()))
+        {
+            report.record("HTT TX completion timeout", id as u32);
+            return Err(Errno::ETIMEDOUT);
+        }
         Ok(())
     }
     fn wait_station(

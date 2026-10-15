@@ -11,6 +11,7 @@ pub(super) struct Data {
     allocation: usize,
     tx: Vec<Option<Dma>>,
     completed: [Option<u8>; htt::TX_LIMIT],
+    started_ns: [u64; htt::TX_LIMIT],
     pub(super) received: VecDeque<Vec<u8>>,
     pub(super) management: VecDeque<Vec<u8>>,
     pub(super) started: bool,
@@ -39,6 +40,7 @@ impl Data {
             allocation: 0,
             tx: (0..htt::TX_LIMIT).map(|_| None).collect(),
             completed: [None; htt::TX_LIMIT],
+            started_ns: [0; htt::TX_LIMIT],
             received: VecDeque::new(),
             management: VecDeque::new(),
             started: false,
@@ -110,6 +112,7 @@ impl Data {
             core::ptr::copy_nonoverlapping(frame.as_ptr(), page.ptr.add(512), frame.len());
         }
         self.completed[slot] = None;
+        self.started_ns[slot] = crate::time::monotonic_ns();
         self.tx[slot] = Some(page); // pinned until HTT TX completion, including send failure
         Ok((slot as u16, command))
     }
@@ -127,6 +130,11 @@ impl Data {
     }
     pub(super) fn can_transmit(&self) -> bool {
         self.tx.iter().any(Option::is_none)
+    }
+    pub(super) fn expired_tx(&self, now: u64) -> Option<usize> {
+        self.tx.iter().enumerate().position(|(i, page)| {
+            page.is_some() && now.saturating_sub(self.started_ns[i]) >= 5_000_000_000
+        })
     }
     pub(super) fn receive(
         &mut self,
@@ -197,11 +205,15 @@ mod tests {
             let allocated = crate::memory::with_memory(|m| m.frame_allocator.used_frames());
             assert_eq!(allocated, before + htt::RX_POSTED + 2);
             let (id, _) = data.transmit(&[0xaa; 60], false, false).unwrap();
+            let started = data.started_ns[id as usize];
+            assert_eq!(data.expired_tx(started + 4_999_999_999), None);
+            assert_eq!(data.expired_tx(started + 5_000_000_000), Some(id as usize));
             assert_eq!(
                 crate::memory::with_memory(|m| m.frame_allocator.used_frames()),
                 allocated + 1
             );
             data.complete(id, 0).unwrap();
+            assert_eq!(data.expired_tx(started + 5_000_000_000), None);
             assert_eq!(
                 crate::memory::with_memory(|m| m.frame_allocator.used_frames()),
                 allocated

@@ -10,6 +10,50 @@ use zeroize::Zeroizing;
 type HmacSha1 = Hmac<Sha1>;
 pub type Pmk = Zeroizing<[u8; 32]>;
 pub type Password = Zeroizing<Vec<u8>>;
+/// Hidden input consumes the entire invalid line before returning an error, so
+/// an overlong password suffix cannot become visible shell input.
+pub struct PasswordReader {
+    bytes: Password,
+    invalid: bool,
+    finished: bool,
+}
+impl PasswordReader {
+    pub fn new() -> Self {
+        Self {
+            bytes: Password::new(Vec::with_capacity(64)),
+            invalid: false,
+            finished: false,
+        }
+    }
+    pub fn receive(&mut self, byte: u8) -> Option<KResult<Password>> {
+        if self.finished {
+            return None;
+        }
+        match byte {
+            3 => {
+                self.finished = true;
+                return Some(Err(Errno::EINTR));
+            }
+            b'\r' | b'\n' => {
+                self.finished = true;
+                return Some(if self.invalid {
+                    Err(Errno::EINVAL)
+                } else {
+                    Ok(core::mem::replace(
+                        &mut self.bytes,
+                        Password::new(Vec::new()),
+                    ))
+                });
+            }
+            8 | 127 => {
+                self.bytes.pop();
+            }
+            0x20..=0xff if self.bytes.len() < 64 => self.bytes.push(byte),
+            _ => self.invalid = true,
+        }
+        None
+    }
+}
 
 pub fn derive(password: &[u8], ssid: &[u8]) -> KResult<Pmk> {
     if ssid.is_empty() || ssid.len() > 32 {
@@ -397,6 +441,24 @@ impl Handshake {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn hidden_input_drains_overlong_or_invalid_passwords_without_exposing_a_suffix() {
+        for prefix in [alloc::vec![b'x';65], b"secret\x01".to_vec()] {
+            let mut reader = PasswordReader::new();
+            for byte in prefix.iter().chain(b"private suffix").copied() {
+                assert!(reader.receive(byte).is_none());
+            }
+            assert!(matches!(reader.receive(b'\n'), Some(Err(Errno::EINVAL))));
+        }
+        let mut reader = PasswordReader::new();
+        for &byte in b"passwordx\x08" {
+            assert!(reader.receive(byte).is_none());
+        }
+        assert_eq!(&*reader.receive(b'\n').unwrap().unwrap(), b"password");
+        let mut reader = PasswordReader::new();
+        reader.receive(b'x');
+        assert!(matches!(reader.receive(3), Some(Err(Errno::EINTR))));
+    }
     fn hex(text: &str) -> Vec<u8> {
         text.as_bytes()
             .chunks_exact(2)

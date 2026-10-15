@@ -230,26 +230,17 @@ pub fn connect(index: usize, out: &mut impl Write) -> KResult<()> {
         "WiFi network {index}; WPA2 password (input hidden, Ctrl+C cancels):"
     );
     let tty = crate::tty::Tty::new(osel_core::vfs::Stat::default());
-    let mut password = wifi::wpa2::Password::new(Vec::with_capacity(64));
-    loop {
+    let mut reader = wifi::wpa2::PasswordReader::new();
+    let password = loop {
         let mut byte = [0];
         if tty.read(0, &mut byte, false)? != 1 {
             continue;
         }
-        match byte[0] {
-            3 => {
-                let _ = writeln!(out, "Cancelled");
-                return Err(Errno::EINTR);
-            }
-            b'\r' | b'\n' => break,
-            8 | 127 => {
-                password.pop();
-            }
-            0x20..=0xff if password.len() < 64 => password.push(byte[0]),
-            _ => return Err(Errno::EINVAL),
+        if let Some(result) = reader.receive(byte[0]) {
+            let _ = out.write_char('\n');
+            break result?;
         }
-    }
-    let _ = out.write_char('\n');
+    };
     let pmk = wifi::wpa2::derive(&password, ap.ssid())?;
     drop(password);
     let mut report = Report::new();
@@ -488,6 +479,7 @@ impl Controller {
             .min(time::monotonic_ns().saturating_add(ms * 1_000_000));
         let mut spins = 0;
         loop {
+            self.check_operation()?;
             let value = self.get(offset);
             if value != u32::MAX && value & mask == expected {
                 return Ok(());
@@ -1160,6 +1152,11 @@ impl Controller {
             report.record("WMI transmit timeout", index);
             return Err(error);
         }
+        // CE source completion means firmware has copied the command. In particular,
+        // do not retain a PTK/GTK in the shared command page for the session lifetime.
+        unsafe {
+            core::ptr::write_bytes(self.rings.as_ref().unwrap()[2].ptr, 0, command.len() + 8);
+        }
         Ok(())
     }
     fn wmi_initialize(
@@ -1236,6 +1233,9 @@ impl Controller {
         }
     }
     fn check_operation(&self) -> KResult<()> {
+        if ACTIVE.load(Ordering::Acquire) && STOP.load(Ordering::Acquire) {
+            return Err(Errno::EINTR);
+        }
         if self
             .load_deadline
             .is_some_and(|deadline| time::monotonic_ns() >= deadline)
