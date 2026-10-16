@@ -23,7 +23,7 @@ fn ap() -> ieee80211::AccessPoint {
 
 #[test]
 fn firmware_boot_abi_matches_c_service_ready_init_and_ready() {
-    let service = wmi::service_ready(fixture!("service-ready")).unwrap();
+    let mut service = wmi::service_ready(fixture!("service-ready")).unwrap();
     assert_eq!(service.build, 0x441a8135);
     assert_eq!(service.chains, 2);
     assert_eq!(service.eeprom_domain, 0x6c);
@@ -40,6 +40,16 @@ fn firmware_boot_abi_matches_c_service_ready_init_and_ready() {
     .unwrap();
     assert_eq!(command, fixture!("init"));
     assert_eq!(wmi::ready(fixture!("ready")), Ok(STA));
+    let capabilities = fixture!("management-services");
+    for (index, service_id) in [wmi::MGMT_TX_HTT, wmi::MGMT_TX_WMI].into_iter().enumerate() {
+        assert_eq!(
+            u32::from_le_bytes(capabilities[index * 4..index * 4 + 4].try_into().unwrap()) as usize,
+            service_id
+        );
+        assert!(!service.supports(service_id));
+        service.services[service_id / 4] |= 1 << (service_id % 4);
+        assert!(service.supports(service_id));
+    }
 }
 
 #[test]
@@ -123,7 +133,7 @@ fn unsupported_networks_explain_security_band_and_rate_rejections_without_weaken
         assert!(station::supported(&network).is_err());
         assert!(wmi::station::start(&network).is_err());
         assert!(
-            wmi::station::start_with_channel(&network, |_| {
+            wmi::station::start_with_channel(&network, 0x6c, |_| {
                 panic!("unsupported AP must not publish a transmit channel")
             })
             .is_err()
@@ -179,19 +189,20 @@ fn fresh_station_start_publishes_the_home_channel_before_start_and_stops_on_erro
     // No scan or persistent channel state exists in this new firmware session.
     let expected = [
         fixture!("station-channel").as_slice(),
+        fixture!("station-regdomain").as_slice(),
         fixture!("vdev-start").as_slice(),
     ];
     let mut commands = Vec::new();
-    wmi::station::start_with_channel(&ap, |command| {
+    wmi::station::start_with_channel(&ap, 0x6c, |command| {
         commands.push(command.to_vec());
         Ok(())
     })
     .unwrap();
     assert_eq!(commands, expected);
-    for fail_at in 0..2 {
+    for fail_at in 0..3 {
         let mut sent = 0;
         assert_eq!(
-            wmi::station::start_with_channel(&ap, |command| {
+            wmi::station::start_with_channel(&ap, 0x6c, |command| {
                 assert_eq!(command, expected[sent]);
                 sent += 1;
                 if sent == fail_at + 1 {
@@ -205,7 +216,7 @@ fn fresh_station_start_publishes_the_home_channel_before_start_and_stops_on_erro
         assert_eq!(
             sent,
             fail_at + 1,
-            "a failed channel publication must prevent VDEV_START"
+            "a failed channel/domain publication must stop the sequence"
         );
     }
     // The new home channel enables station TX only for the already-admitted AP;
@@ -217,17 +228,41 @@ fn fresh_station_start_publishes_the_home_channel_before_start_and_stops_on_erro
         let mut network = ap;
         network.frequency = frequency;
         let mut sent = 0;
-        wmi::station::start_with_channel(&network, |command| {
-            let field = if sent == 0 { 20 } else { 84 };
-            assert_eq!(
-                u32::from_le_bytes(command[field..field + 4].try_into().unwrap()),
-                u32::from(frequency)
-            );
+        wmi::station::start_with_channel(&network, 0x6c, |command| {
+            if sent == 1 {
+                assert_eq!(command, fixture!("station-regdomain"));
+            } else {
+                let field = if sent == 0 { 20 } else { 84 };
+                assert_eq!(
+                    u32::from_le_bytes(command[field..field + 4].try_into().unwrap()),
+                    u32::from(frequency)
+                );
+            }
             sent += 1;
             Ok(())
         })
         .unwrap();
-        assert_eq!(sent, 2);
+        assert_eq!(sent, 3);
+    }
+}
+
+#[test]
+fn station_domain_uses_the_actual_audited_eeprom_without_a_country_fallback() {
+    assert_eq!(
+        wmi::station::regdomain(0x6c).unwrap(),
+        fixture!("station-regdomain")
+    );
+    assert_eq!(
+        wmi::station::regdomain(0x406c).unwrap(),
+        fixture!("station-regdomain")
+    );
+    for domain in [0, 0x60, 0x37, 0x199, 0x806c, 0x1006c, u32::MAX] {
+        assert_eq!(
+            wmi::station::start_with_channel(&ap(), domain, |_| {
+                panic!("an unaudited EEPROM domain must fail before any WMI command")
+            }),
+            Err(osel_core::errno::Errno::EOPNOTSUPP)
+        );
     }
 }
 

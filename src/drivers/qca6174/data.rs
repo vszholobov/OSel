@@ -12,6 +12,8 @@ pub(super) struct Diagnostics {
     pub wrong_channel: u32,
     pub htt: u32,
     pub last_htt: u32,
+    pub eeprom_domain: u32,
+    pub management_services: u32,
 }
 impl Diagnostics {
     pub(super) fn record(self, report: &mut Report) {
@@ -22,6 +24,8 @@ impl Diagnostics {
             ("STA wrong-channel frames", self.wrong_channel),
             ("STA received HTT events", self.htt),
             ("STA last HTT event ID", self.last_htt),
+            ("STA EEPROM domain", self.eeprom_domain),
+            ("STA management services HTT/WMI", self.management_services),
         ] {
             report.record(name, value);
         }
@@ -456,7 +460,7 @@ mod tests {
                     .iter()
                     .all(|r| r.value != 0xa5a5a5a5)
             );
-            // Five compact hardware records, six counters and final wait errno
+            // Compact hardware state, receive/setup fields and final wait errno
             // leave the rejecting header visible in wifi regs' last 22 lines.
             for _ in 0..5 {
                 report.record("test hardware state", 0);

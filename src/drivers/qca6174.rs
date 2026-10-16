@@ -1066,7 +1066,7 @@ impl Controller {
         }
         report.record("WMI service ready", 1);
         self.wmi_initialize(&service, &control, ready, report)?;
-        self.htt_boot(service.supports(65), report)?;
+        self.htt_boot(&service, report)?;
         Ok(())
     }
     fn send_htt(&mut self, command: &[u8], report: &mut Report) -> KResult<()> {
@@ -1121,7 +1121,8 @@ impl Controller {
             }
         }
     }
-    fn htt_boot(&mut self, full_reorder: bool, report: &mut Report) -> KResult<()> {
+    fn htt_boot(&mut self, service: &wmi::ServiceReady, report: &mut Report) -> KResult<()> {
+        let full_reorder = service.supports(wmi::RX_FULL_REORDER);
         report.record("HTT full RX reorder service", u32::from(full_reorder));
         if !full_reorder {
             return Err(Errno::EOPNOTSUPP);
@@ -1148,7 +1149,10 @@ impl Controller {
         if major != 3 {
             return Err(Errno::EOPNOTSUPP);
         }
-        let data = data::Data::new(self.mac)?;
+        let mut data = data::Data::new(self.mac)?;
+        data.diagnostics.eeprom_domain = service.eeprom_domain;
+        data.diagnostics.management_services = u32::from(service.supports(wmi::MGMT_TX_HTT))
+            | u32::from(service.supports(wmi::MGMT_TX_WMI)) << 1;
         let config = data.config()?;
         self.data = Some(data); // owns the ring before the firmware can see it
         self.send_htt(&config, report)?;

@@ -2,6 +2,7 @@
 // WMI TLV ABI follows Linux ath10k v6.12; see firmware/ath10k-driver-ISC.txt.
 // Copyright (c) 2005-2011 Atheros Communications Inc.
 // Copyright (c) 2011-2017 Qualcomm Atheros, Inc.
+// Regulatory mapping follows ath/regd_common.h (ISC), Atheros 2008-2009.
 //! Station-only WMI commands. No secret command implements Debug.
 use super::{Elements, put_tlv, unique, word, words};
 use crate::{
@@ -49,12 +50,15 @@ pub fn create_peer(ap: [u8; 6]) -> KResult<Vec<u8>> {
 }
 /// Every firmware boot needs its own channel table, including a fresh connect
 /// after scanning stopped/reset the target. Publish only the admitted home
-/// channel, with the same 11g/20 MHz and 0 dBm limits as VDEV_START.
+/// channel, configure its verified EEPROM domain, then start the vdev with the
+/// same 11g/20 MHz and 0 dBm limits. Unknown domains must not become WORC_WORLD.
 pub fn start_with_channel(
     ap: &AccessPoint,
+    eeprom_domain: u32,
     mut send: impl FnMut(&[u8]) -> KResult<()>,
 ) -> KResult<()> {
     station::supported(ap)?;
+    let domain = regdomain(eeprom_domain)?;
     let mut channels = Vec::new();
     put_tlv(
         &mut channels,
@@ -64,7 +68,18 @@ pub fn start_with_channel(
     let mut list = command(0x3003, 79, &words(&[1]))?;
     put_tlv(&mut list, 18, &channels)?;
     send(&list)?;
+    send(&domain)?;
     send(&start(ap)?)
+}
+pub fn regdomain(eeprom_domain: u32) -> KResult<Vec<u8>> {
+    // ath_regd_get_eepromRD strips only WORLDWIDE_ROAMING_FLAG. This Acer
+    // reports WORC_WORLD; its regDomainPairs entry has NO_CTL for both bands.
+    // Keep country-coded and other, unaudited EEPROM domains unsupported.
+    let domain = eeprom_domain & !0x4000;
+    if domain != 0x6c {
+        return Err(Errno::EOPNOTSUPP);
+    }
+    command(0x4001, 81, &words(&[0, domain, domain, domain, 0xff, 0xff]))
 }
 pub fn start(ap: &AccessPoint) -> KResult<Vec<u8>> {
     station::supported(ap)?;

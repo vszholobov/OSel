@@ -15,6 +15,8 @@ pub const VDEVS: u32 = 4;
 pub const PEERS: u32 = 33;
 pub const MSDUS: u32 = 64;
 pub const RX_FULL_REORDER: usize = 65;
+pub const MGMT_TX_HTT: usize = 75;
+pub const MGMT_TX_WMI: usize = 76;
 pub struct Elements<'a>(&'a [u8]);
 impl<'a> Elements<'a> {
     pub fn new(bytes: &'a [u8]) -> Self {

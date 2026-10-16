@@ -2,7 +2,8 @@
 """Regenerate independent wire fixtures using pinned ISC ath10k C declarations.
 
 Download the v6.12 headers listed in fixtures/ath10k-v6.12/sources.json
-and the legacy v4.4 HTT header (as htt-v4.4.h) into --reference-dir.
+the regulatory_headers entries, and the legacy v4.4 HTT header
+(as htt-v4.4.h) into --reference-dir.
 No kernel headers, Rust output, network or installation
 are used by this generator. Ordinary cargo tests only read the saved fixtures.
 """
@@ -33,7 +34,7 @@ def declarations(sources):
     return found
 
 
-def header(sources, legacy):
+def header(sources, legacy, regulatory):
     found = declarations(sources)
     emitted = set()
     output = ['''#include <stdint.h>
@@ -68,7 +69,8 @@ typedef uint16_t __le16; typedef uint32_t __le32; typedef uint64_t __le64;
 
     for name in ['wmi_tlv_grp_id', 'wmi_tlv_cmd_id', 'wmi_tlv_event_id',
                  'wmi_tlv_tag', 'wmi_tlv_vdev_param', 'wmi_tlv_peer_param', 'wmi_tlv_peer_flags',
-                 'wmi_phy_mode', 'wmi_cipher_suites', 'wmi_peer_type', 'ath10k_hw_txrx_mode', 'htt_mgmt_tx_status']:
+                 'wmi_phy_mode', 'wmi_cipher_suites', 'wmi_peer_type', 'ath10k_hw_txrx_mode', 'htt_mgmt_tx_status',
+                 'wmi_tlv_service']:
         emit('enum', name)
     for name in ['wmi_tlv', 'wmi_tlv_init_cmd', 'wmi_tlv_resource_config',
                  'host_memory_chunk_tlv', 'wlan_host_mem_req',
@@ -77,7 +79,7 @@ typedef uint16_t __le16; typedef uint32_t __le32; typedef uint64_t __le64;
                  'wmi_vdev_set_param_cmd', 'wmi_peer_set_param_cmd',
                  'wmi_tlv_peer_create_cmd', 'wmi_tlv_peer_assoc_cmd',
                  'wmi_vdev_install_key_cmd', 'wmi_tlv_start_scan_cmd',
-                 'wmi_tlv_scan_chan_list_cmd', 'wmi_channel',
+                 'wmi_tlv_scan_chan_list_cmd', 'wmi_channel', 'wmi_tlv_pdev_set_rd_cmd',
                  'wmi_tlv_mgmt_rx_ev', 'wmi_scan_event',
                  'wmi_vdev_start_response_event', 'ath10k_htc_hdr',
                  'ath10k_ath10k_htc_record_hdr', 'ath10k_htc_credit_report',
@@ -88,6 +90,11 @@ typedef uint16_t __le16; typedef uint32_t __le32; typedef uint64_t __le64;
         emit('struct', name)
     original = declarations([legacy])['struct', 'htt_mgmt_tx_completion']
     output.append(original.replace('htt_mgmt_tx_completion', 'htt_mgmt_tx_completion_legacy'))
+    output.append(declarations(regulatory)['enum', 'EnumRd'])
+    joined = '\n'.join(regulatory)
+    output.append(re.search(r'^#define[ \t]+NO_CTL[ \t]+[^\n]+', joined, re.M)[0])
+    entry = re.search(r'\{WORC_WORLD,\s*\w+,\s*\w+\}', joined)[0]
+    output.append('static const struct { u32 domain, ctl5g, ctl2g; } reference_world = ' + entry + ';')
     return '\n'.join(output)
 
 
@@ -103,13 +110,19 @@ def main():
         if hashlib.sha256(data).hexdigest() != digest:
             parser.error(f'{name}: does not match the pinned v6.12 source')
         sources.append(data.decode())
+    regulatory = []
+    for name, digest in manifest['regulatory_headers']['files'].items():
+        data = (args.reference_dir / name).read_bytes()
+        if hashlib.sha256(data).hexdigest() != digest:
+            parser.error(f'{name}: does not match the pinned v6.12 regulatory source')
+        regulatory.append(data.decode())
     legacy = manifest['legacy_management_completion']
     legacy_data = (args.reference_dir / legacy['file']).read_bytes()
     if hashlib.sha256(legacy_data).hexdigest() != legacy['sha256']:
         parser.error('legacy HTT header: does not match the pinned v4.4 source')
     with tempfile.TemporaryDirectory(prefix='osel-wifi-abi-') as name:
         temporary = pathlib.Path(name)
-        (temporary / 'ath10k-reference.h').write_text(header(sources, legacy_data.decode()))
+        (temporary / 'ath10k-reference.h').write_text(header(sources, legacy_data.decode(), regulatory))
         subprocess.run(['cc', '-std=gnu11', '-Wall', '-Wextra', '-Werror',
                         '-I', str(temporary), str(ROOT / 'tools/wifi-abi-cases.c'),
                         '-o', str(temporary / 'reference')], check=True)

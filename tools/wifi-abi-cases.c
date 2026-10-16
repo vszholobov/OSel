@@ -153,6 +153,16 @@ static void station_commands(void) {
     tlv(WMI_TLV_TAG_STRUCT_SCAN_CHAN_LIST_CMD, &list, sizeof(list));
     tlv(WMI_TLV_TAG_ARRAY_STRUCT, &home, sizeof(home));
     save("station-channel");
+    struct wmi_tlv_pdev_set_rd_cmd domain = {
+        .regd = reference_world.domain, .regd_2ghz = reference_world.domain,
+        .regd_5ghz = reference_world.domain,
+        .conform_limit_2ghz = reference_world.ctl2g, .conform_limit_5ghz = reference_world.ctl5g,
+    };
+    begin(WMI_TLV_PDEV_SET_REGDOMAIN_CMDID);
+    tlv(WMI_TLV_TAG_STRUCT_PDEV_SET_REGDOMAIN_CMD, &domain, sizeof(domain));
+    save("station-regdomain");
+    begin(WMI_TLV_SERVICE_MGMT_TX_HTT); word(WMI_TLV_SERVICE_MGMT_TX_WMI);
+    save("management-services");
     begin(WMI_TLV_VDEV_START_REQUEST_CMDID);
     tlv(WMI_TLV_TAG_STRUCT_VDEV_START_REQUEST_CMD, &start, sizeof(start));
     tlv(WMI_TLV_TAG_STRUCT_CHANNEL, &channel, sizeof(channel));

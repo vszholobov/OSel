@@ -13,5 +13,12 @@
     "source": "https://raw.githubusercontent.com/torvalds/linux/v4.4/drivers/net/wireless/ath/ath10k/htt.h",
     "file": "htt-v4.4.h",
     "sha256": "9cbf80f66d55506c4a57e5a1d91fc2fdf6c5768dbe6b68d6fa729da43dd9d68e"
+  },
+  "regulatory_headers": {
+    "source": "https://github.com/torvalds/linux/tree/v6.12/drivers/net/wireless/ath",
+    "files": {
+      "regd.h": "17ddca22d3e35d396cc6dc9005f364157dc34937d609156c80c48d37c7afc73f",
+      "regd_common.h": "95eca0ec1ab9e7ea248b4b9cc4ad3081cc9f61eb036e7faa9959acb49b356941"
+    }
   }
 }

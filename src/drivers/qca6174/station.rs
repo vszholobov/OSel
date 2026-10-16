@@ -184,6 +184,10 @@ impl Controller {
         let data = self.data.as_mut().ok_or(Errno::ENODEV)?;
         data.ap = ap.bssid;
         data.frequency = ap.frequency;
+        let eeprom_domain = data.diagnostics.eeprom_domain;
+        report.record("STA EEPROM domain configuration", eeprom_domain);
+        // Reject an unaudited domain before configuring this station at all.
+        wmi::station::regdomain(eeprom_domain)?;
         self.send_wmi(self.wmi_endpoint, &wmi::vdev_create(self.mac)?, report)?;
         self.send_wmi(
             self.wmi_endpoint,
@@ -191,10 +195,11 @@ impl Controller {
             report,
         )?;
         report.record("STA vdev start channel", u32::from(ap.frequency));
-        wmi::station::start_with_channel(ap, |command| {
+        wmi::station::start_with_channel(ap, eeprom_domain, |command| {
             self.send_wmi(self.wmi_endpoint, command, report)
         })?;
         report.record("STA home channel list submitted", u32::from(ap.frequency));
+        report.record("STA EEPROM domain configured", eeprom_domain);
         self.wait_station(3000, report, "STA vdev start response wait", |data| {
             Ok(data.started)
         })?;
