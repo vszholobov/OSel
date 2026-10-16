@@ -85,6 +85,45 @@ impl Report {
         crate::println!("WIFI {}: {:08x}", stage, value);
         *REPORT.lock() = *self;
     }
+    fn rejected_event(&mut self, htt: bool, event: &[u8], error: Errno) {
+        self.record(
+            if htt {
+                "HTT rejected event bytes"
+            } else {
+                "WMI rejected event bytes"
+            },
+            event.len() as u32,
+        );
+        // Only protocol headers and completion ID/status: never dump RX frames,
+        // SEC_IND key material, EAPOL or outgoing key/password buffers.
+        for word in event
+            .chunks(4)
+            .take(if htt && matches!(event.first(), Some(7 | 0xe)) {
+                3
+            } else {
+                1
+            })
+        {
+            let mut bytes = [0; 4];
+            bytes[..word.len()].copy_from_slice(word);
+            self.record(
+                if htt {
+                    "HTT rejected event word"
+                } else {
+                    "WMI rejected event word"
+                },
+                u32::from_le_bytes(bytes),
+            );
+        }
+        self.record(
+            if htt {
+                "HTT rejected event errno"
+            } else {
+                "WMI rejected event errno"
+            },
+            error as u32,
+        );
+    }
 }
 struct Busy;
 impl Busy {
@@ -1593,8 +1632,11 @@ mod tests {
                 let slot = firmware as usize;
                 unsafe {
                     // The real firmware may fill every published slot before polling.
-                    let address = u32::from_le(ring.ptr.add(slot * 8).cast::<u32>().read_volatile());
-                    let offset = u64::from(address).checked_sub(queue.buffers.physical()).unwrap() as usize;
+                    let address =
+                        u32::from_le(ring.ptr.add(slot * 8).cast::<u32>().read_volatile());
+                    let offset = u64::from(address)
+                        .checked_sub(queue.buffers.physical())
+                        .unwrap() as usize;
                     assert_eq!(offset, slot * 2048, "DMA descriptors must not alias");
                     core::ptr::write_bytes(queue.buffers.ptr.add(offset), wave * 15 + n, 8);
                     ring.ptr

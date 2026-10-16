@@ -8,5 +8,10 @@
     "htt.h": "0cbb9326399ac9685f2a863edfcd5e4ed3ee58885dfdb5053f536386311220f7",
     "rx_desc.h": "fa3d9957d11ea1b48c54e40646c0b003228fad72009871b2f7e3f32d497a418e",
     "hw.h": "47758ba92a73199a33b937d530c05da8b0deb07e45e547dee1c928821c978b97"
+  },
+  "legacy_management_completion": {
+    "source": "https://raw.githubusercontent.com/torvalds/linux/v4.4/drivers/net/wireless/ath/ath10k/htt.h",
+    "file": "htt-v4.4.h",
+    "sha256": "9cbf80f66d55506c4a57e5a1d91fc2fdf6c5768dbe6b68d6fa729da43dd9d68e"
   }
 }

@@ -139,7 +139,10 @@ pub fn event(data: &[u8]) -> KResult<Event<'_>> {
                 ids,
             }
         }
-        0xe if data.len() >= 20 => {
+        0xe if data.len() >= 12 => {
+            // The original HTT completion (ath10k v4.4) ends after status.
+            // Later firmware appends PPDU ID and optional ACK RSSI metadata;
+            // neither extension is needed to release this TX buffer.
             let id = u32_at(data, 4)?;
             let status = u32_at(data, 8)?;
             if id as usize >= TX_LIMIT || status > 2 {

@@ -21,24 +21,28 @@ pub(super) fn nonce(output: &mut [u8; 32]) -> KResult<()> {
 }
 impl Controller {
     fn station_wmi(&mut self, event: Vec<u8>, report: &mut Report) -> KResult<()> {
+        self.station_wmi_event(&event, report)
+            .inspect_err(|&error| report.rejected_event(false, &event, error))
+    }
+    fn station_wmi_event(&mut self, event: &[u8], report: &mut Report) -> KResult<()> {
         if event.len() < 4 {
             return Err(Errno::EIO);
         }
         let id = u32::from_le_bytes(event[..4].try_into().unwrap()) & 0xffffff;
         let diagnostics = &mut self.data.as_mut().ok_or(Errno::ENODEV)?.diagnostics;
         diagnostics.wmi = diagnostics.wmi.saturating_add(1);
-        if wmi::station::lost(&event, self.data.as_ref().ok_or(Errno::ENODEV)?.ap)? {
+        if wmi::station::lost(event, self.data.as_ref().ok_or(Errno::ENODEV)?.ap)? {
             report.record("WMI AP connection lost", id);
             return Err(Errno::ENETUNREACH);
         }
         if id == 0x5001 {
-            wmi::station::started(&event)?;
+            wmi::station::started(event)?;
             self.data.as_mut().ok_or(Errno::ENODEV)?.started = true;
         }
         if id == 0x7001 {
             let diagnostics = &mut self.data.as_mut().ok_or(Errno::ENODEV)?.diagnostics;
             diagnostics.management = diagnostics.management.saturating_add(1);
-            let frame = match wmi::management(&event) {
+            let frame = match wmi::management(event) {
                 Ok(frame) => frame,
                 Err(_) => {
                     let diagnostics = &mut self.data.as_mut().unwrap().diagnostics;
@@ -116,29 +120,34 @@ impl Controller {
     ) -> KResult<()> {
         report.record(stage, 0);
         let end = time::monotonic_ns().saturating_add(timeout * 1_000_000);
-        loop {
+        let result = (|| loop {
             self.station_poll(report)?;
             if ready(self.data.as_mut().ok_or(Errno::ENODEV)?)? {
                 return Ok(());
             }
             if time::monotonic_ns() >= end {
-                let counts = self.data.as_ref().unwrap().diagnostics;
-                self.snapshot(report, CE + 4 * 0x400);
-                for (name, value) in [
-                    ("STA received WMI events", counts.wmi),
-                    ("STA management frames", counts.management),
-                    ("STA rejected management frames", counts.rejected),
-                    ("STA wrong-channel frames", counts.wrong_channel),
-                    ("STA received HTT events", counts.htt),
-                    ("STA last HTT event ID", counts.last_htt),
-                ] {
-                    report.record(name, value);
-                }
-                report.record(stage, 1);
                 return Err(Errno::ETIMEDOUT);
             }
             delay(10)?;
+        })();
+        if let Err(error) = result {
+            // Preserve error context within wifi regs' last 22 entries, even
+            // when event dispatch or the completion predicate fails early.
+            for (name, value) in [
+                ("STA firmware indicator", self.get(INDICATOR)),
+                ("STA CE4 source write", self.get(CE + 4 * 0x400 + 0x3c)),
+                ("STA CE4 source read", self.get(CE + 4 * 0x400 + 0x44)),
+                ("STA CE1 destination read", self.get(CE + 0x400 + 0x48)),
+                ("STA CE2 destination read", self.get(CE + 2 * 0x400 + 0x48)),
+            ] {
+                report.record(name, value);
+            }
+            if let Some(data) = &self.data {
+                data.diagnostics.record(report);
+            }
+            report.record(stage, error as u32);
         }
+        result
     }
     fn frame_and_wait(
         &mut self,

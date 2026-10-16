@@ -259,6 +259,8 @@ static void transport(void) {
     u16 id = 0; append(&id, 2); id = 0xffff; append(&id, 2); save("tx-completed");
     struct htt_mgmt_tx_completion mgmt = {.desc_id = 0, .status = HTT_MGMT_TX_STATUS_OK};
     length = 0; type = 0xe; append(&type, 1); append(&mgmt, sizeof(mgmt)); save("management-completed");
+    struct htt_mgmt_tx_completion_legacy legacy = {.desc_id = 0, .status = HTT_MGMT_TX_STATUS_OK};
+    length = 0; append(&type, 1); append(&legacy, sizeof(legacy)); save("management-completed-legacy");
     struct htt_rx_ring_setup_ring32 ring = {
         .fw_idx_shadow_reg_paddr = 0x1000, .rx_ring_base_paddr = 0x2000,
         .rx_ring_len = 128, .rx_ring_bufsize = 2048, .flags = 0xffff, .fw_idx_init_val = 63,

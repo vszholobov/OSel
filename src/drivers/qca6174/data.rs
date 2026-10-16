@@ -13,6 +13,20 @@ pub(super) struct Diagnostics {
     pub htt: u32,
     pub last_htt: u32,
 }
+impl Diagnostics {
+    pub(super) fn record(self, report: &mut Report) {
+        for (name, value) in [
+            ("STA received WMI events", self.wmi),
+            ("STA management frames", self.management),
+            ("STA rejected management frames", self.rejected),
+            ("STA wrong-channel frames", self.wrong_channel),
+            ("STA received HTT events", self.htt),
+            ("STA last HTT event ID", self.last_htt),
+        ] {
+            report.record(name, value);
+        }
+    }
+}
 pub(super) struct Data {
     ring: Dma,
     index: Dma,
@@ -98,6 +112,10 @@ impl Data {
     pub(super) fn handle(&mut self, event: &[u8], report: &mut Report) -> KResult<()> {
         self.diagnostics.htt = self.diagnostics.htt.saturating_add(1);
         self.diagnostics.last_htt = event.first().copied().map_or(u32::MAX, u32::from);
+        self.handle_event(event, report)
+            .inspect_err(|&error| report.rejected_event(true, event, error))
+    }
+    fn handle_event(&mut self, event: &[u8], report: &mut Report) -> KResult<()> {
         match htt::event(event)? {
             htt::Event::Peer { id, vdev, mac } if vdev == 0 && mac == self.ap => {
                 self.peer.insert(id)?;
@@ -368,6 +386,61 @@ mod tests {
         )
         .unwrap();
         assert_eq!(data.completion(id), Some(0));
+    }
+    #[test_case]
+    fn legacy_and_extended_management_events_complete_pinned_auth_buffers() {
+        let mut data = Data::new([2, 3, 4, 5, 6, 8]).unwrap();
+        let mut report = Report::new();
+        for completion in [
+            include_bytes!(
+                "../../../osel-core/tests/fixtures/ath10k-v6.12/management-completed-legacy.bin"
+            )
+            .as_slice(),
+            include_bytes!(
+                "../../../osel-core/tests/fixtures/ath10k-v6.12/management-completed.bin"
+            )
+            .as_slice(),
+        ] {
+            let (id, _) = data.transmit(&[0; 30], true, false).unwrap();
+            let mut malformed = completion.to_vec();
+            malformed[8..12].copy_from_slice(&3u32.to_le_bytes());
+            assert_eq!(data.handle(&malformed, &mut report), Err(Errno::EIO));
+            assert!(data.tx[id as usize].is_some());
+            assert_eq!(data.completion(id), None);
+            let entries = &report.records[..report.len];
+            assert!(entries.iter().any(
+                |r| r.stage == "HTT rejected event bytes" && r.value == completion.len() as u32
+            ));
+            assert_eq!(entries.last().unwrap().value, Errno::EIO as u32);
+            data.handle(completion, &mut report).unwrap();
+            assert!(data.tx[id as usize].is_none());
+            assert_eq!(data.completion(id), Some(0));
+        }
+    }
+    #[test_case]
+    fn error_reports_keep_headers_without_security_material_or_rx_payload() {
+        for htt in [true, false] {
+            let mut report = Report::new();
+            let mut event = [0xa5; 28];
+            event[..4].copy_from_slice(&[0xb, 0x86, 7, 0]);
+            report.rejected_event(htt, &event, Errno::EIO);
+            assert_eq!(report.len, 3);
+            assert_eq!(report.records[1].value, 0x0007860b);
+            assert!(
+                report.records[..report.len]
+                    .iter()
+                    .all(|r| r.value != 0xa5a5a5a5)
+            );
+            // Five compact hardware records, six counters and final wait errno
+            // leave the rejecting header visible in wifi regs' last 22 lines.
+            for _ in 0..5 {
+                report.record("test hardware state", 0);
+            }
+            Diagnostics::default().record(&mut report);
+            report.record("STA HTT TX completion wait", Errno::EIO as u32);
+            assert!(report.len <= 22);
+            assert_eq!(report.records[report.len - 1].value, 5);
+        }
     }
     #[test_case]
     fn reference_events_preserve_peer_key_dma_and_receive_ownership() {

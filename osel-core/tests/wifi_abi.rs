@@ -227,27 +227,31 @@ fn htc_credit_records_and_htt_events_match_c_layouts() {
 
 #[test]
 fn management_completions_match_c_and_reject_truncation_ids_and_status() {
-    let packet = fixture!("management-completed");
-    assert!(matches!(
-        htt::event(packet),
-        Ok(htt::Event::ManagementTx { id: 0, status: 0 })
-    ));
-    for end in 0..packet.len() {
-        assert!(htt::event(&packet[..end]).is_err());
+    for packet in [
+        fixture!("management-completed-legacy").as_slice(),
+        fixture!("management-completed").as_slice(),
+    ] {
+        assert!(matches!(
+            htt::event(packet),
+            Ok(htt::Event::ManagementTx { id: 0, status: 0 })
+        ));
+        for end in 0..12 {
+            assert!(htt::event(&packet[..end]).is_err());
+        }
+        for (status, expected) in [(1u32, 2), (2, 1)] {
+            let mut changed = packet.to_vec();
+            changed[8..12].copy_from_slice(&status.to_le_bytes());
+            assert!(
+                matches!(htt::event(&changed), Ok(htt::Event::ManagementTx { id: 0, status }) if status == expected)
+            );
+        }
+        let mut changed = packet.to_vec();
+        changed[4..8].copy_from_slice(&64u32.to_le_bytes());
+        assert!(htt::event(&changed).is_err());
+        changed = packet.to_vec();
+        changed[8..12].copy_from_slice(&3u32.to_le_bytes());
+        assert!(htt::event(&changed).is_err());
     }
-    for (status, expected) in [(1u32, 2), (2, 1)] {
-        let mut changed = *packet;
-        changed[8..12].copy_from_slice(&status.to_le_bytes());
-        assert!(
-            matches!(htt::event(&changed), Ok(htt::Event::ManagementTx { id: 0, status }) if status == expected)
-        );
-    }
-    let mut changed = *packet;
-    changed[4..8].copy_from_slice(&64u32.to_le_bytes());
-    assert!(htt::event(&changed).is_err());
-    changed = *packet;
-    changed[8..12].copy_from_slice(&3u32.to_le_bytes());
-    assert!(htt::event(&changed).is_err());
 }
 
 #[test]

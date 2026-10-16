@@ -2,7 +2,8 @@
 """Regenerate independent wire fixtures using pinned ISC ath10k C declarations.
 
 Download the v6.12 headers listed in fixtures/ath10k-v6.12/sources.json
-into --reference-dir. No kernel headers, Rust output, network or installation
+and the legacy v4.4 HTT header (as htt-v4.4.h) into --reference-dir.
+No kernel headers, Rust output, network or installation
 are used by this generator. Ordinary cargo tests only read the saved fixtures.
 """
 import argparse
@@ -32,7 +33,7 @@ def declarations(sources):
     return found
 
 
-def header(sources):
+def header(sources, legacy):
     found = declarations(sources)
     emitted = set()
     output = ['''#include <stdint.h>
@@ -85,6 +86,8 @@ typedef uint16_t __le16; typedef uint32_t __le32; typedef uint64_t __le64;
                  'htt_security_indication', 'htt_mgmt_tx_completion', 'htt_rx_ring_setup_ring32',
                  'htt_data_tx_desc', 'htt_rx_desc_v1']:
         emit('struct', name)
+    original = declarations([legacy])['struct', 'htt_mgmt_tx_completion']
+    output.append(original.replace('htt_mgmt_tx_completion', 'htt_mgmt_tx_completion_legacy'))
     return '\n'.join(output)
 
 
@@ -100,9 +103,13 @@ def main():
         if hashlib.sha256(data).hexdigest() != digest:
             parser.error(f'{name}: does not match the pinned v6.12 source')
         sources.append(data.decode())
+    legacy = manifest['legacy_management_completion']
+    legacy_data = (args.reference_dir / legacy['file']).read_bytes()
+    if hashlib.sha256(legacy_data).hexdigest() != legacy['sha256']:
+        parser.error('legacy HTT header: does not match the pinned v4.4 source')
     with tempfile.TemporaryDirectory(prefix='osel-wifi-abi-') as name:
         temporary = pathlib.Path(name)
-        (temporary / 'ath10k-reference.h').write_text(header(sources))
+        (temporary / 'ath10k-reference.h').write_text(header(sources, legacy_data.decode()))
         subprocess.run(['cc', '-std=gnu11', '-Wall', '-Wextra', '-Werror',
                         '-I', str(temporary), str(ROOT / 'tools/wifi-abi-cases.c'),
                         '-o', str(temporary / 'reference')], check=True)

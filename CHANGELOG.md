@@ -12,6 +12,7 @@
 
 ### Fixed
 
+- Accept legacy 12-byte HTT management completions alongside extended events, and retain rejected-event headers, station receive counters and wait errors without logging key material or frame payloads.
 - Match ath10k STA setup with DEFAULT peers and Native WiFi vdev encapsulation while HTT descriptors select management or Ethernet format.
 - Retain all selected-AP peer IDs for RX and key acknowledgements; only the last unmap revokes authorization.
 - Parse HTT management completions without releasing unrelated/stale DMA slots, and distinguish TX-completion from AP-response timeouts with receive counters.
