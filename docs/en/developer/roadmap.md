@@ -69,7 +69,7 @@ Network Tetris is implemented and tested in QEMU with the repository's local ser
 - [x] Intel 82574L (`e1000e`) in QEMU with RX/TX DMA rings.
 - [x] Realtek RTL8168 G/GU/H/M driver for Acer PCI ID `10ec:8168`, XID diagnostics; shared DMA, DHCP and gameplay tested through QEMU C+. Laptop PHY remains untested.
 - [x] ICMP ping, DNS lookup and network/PCI diagnostics.
-- [ ] Wi-Fi QCA6174 WPA2 on Acer: [design](design/wifi.md); ROM/CE/BMI confirmed on Acer; firmware, HTT, WPA2 association and DHCP are implemented; hardware connectivity remains unverified.
+- [ ] Wi-Fi QCA6174 WPA2 on Acer: [design](design/wifi.md); upload, HTT 3.87 and an 18-AP list including Galaxy S23 confirmed on Acer; first auth timed out and connectivity still needs hardware validation.
 - [x] smoltcp: DHCP, IPv4 and TCP.
 - [x] Outgoing Linux sockets and Go's required `epoll` modes.
 - [x] Ramdisk `/etc/hosts` and configurable client server address.

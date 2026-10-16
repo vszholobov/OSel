@@ -15,6 +15,8 @@ pub const VDEVS: u32 = 4;
 pub const PEERS: u32 = 33;
 pub const MSDUS: u32 = 64;
 pub const RX_FULL_REORDER: usize = 65;
+pub const MGMT_TX_HTT: usize = 75;
+pub const MGMT_TX_WMI: usize = 76;
 pub struct Elements<'a>(&'a [u8]);
 impl<'a> Elements<'a> {
     pub fn new(bytes: &'a [u8]) -> Self {
@@ -65,6 +67,7 @@ pub struct ServiceReady {
     pub build: u32,
     pub abi: [u32; 6],
     pub chains: u32,
+    pub tx_power: [u32; 2],
     pub eeprom_domain: u32,
     pub channels_2ghz: [u32; 2],
     pub channels_5ghz: [u32; 2],
@@ -202,44 +205,62 @@ pub fn vdev_create(mac: [u8; 6]) -> KResult<Vec<u8>> {
     Ok(command)
 }
 pub fn passive_channels(service: &ServiceReady) -> Vec<u32> {
-    (1..=11)
+    passive_frequencies(service.channels_2ghz, service.channels_5ghz)
+}
+/// Receive-only discovery. Extra channels do not authorize station TX there.
+/// Avoid DFS channels; keep every frequency within the board's advertised limits.
+pub fn passive_frequencies(band2: [u32; 2], band5: [u32; 2]) -> Vec<u32> {
+    (1..=13)
         .map(|channel| 2407 + 5 * channel)
-        .filter(|frequency| {
-            *frequency >= service.channels_2ghz[0] && *frequency <= service.channels_2ghz[1]
-        })
+        .filter(|frequency| *frequency >= band2[0] && *frequency <= band2[1])
+        .chain(
+            [5180, 5200, 5220, 5240, 5745, 5765, 5785, 5805, 5825]
+                .into_iter()
+                .filter(|frequency| *frequency >= band5[0] && *frequency <= band5[1]),
+        )
         .collect()
 }
 pub fn scan_channels(frequencies: &[u32]) -> KResult<Vec<u8>> {
-    if frequencies.is_empty() || frequencies.len() > 11 {
+    if frequencies.is_empty() || frequencies.len() > 22 {
         return Err(Errno::EINVAL);
     }
     let mut command = 0x3003u32.to_le_bytes().to_vec();
     put_tlv(&mut command, 79, &words(&[frequencies.len() as u32]))?;
     let mut channels = Vec::new();
     for &frequency in frequencies {
-        if !(2412..=2462).contains(&frequency) || (frequency - 2412) % 5 != 0 {
+        let band2 = (2412..=2472).contains(&frequency) && (frequency - 2412) % 5 == 0;
+        let band5 = [5180, 5200, 5220, 5240, 5745, 5765, 5785, 5805, 5825].contains(&frequency);
+        if !band2 && !band5 {
             return Err(Errno::EINVAL);
         }
-        // Receive-only 11g/20 MHz channels. No TX power is requested for passive scanning.
+        // Receive-only 11g/11a, 20 MHz. No TX power is requested.
         put_tlv(
             &mut channels,
             80,
-            &words(&[frequency, frequency, 0, 1 | (1 << 7), 0, 0]),
+            &words(&[frequency, frequency, 0, u32::from(band2) | (1 << 7), 0, 0]),
         )?;
     }
     put_tlv(&mut command, 18, &channels)?;
     Ok(command)
 }
 pub fn start_scan(frequencies: &[u32]) -> KResult<Vec<u8>> {
+    start_scan_id(frequencies, 0xa001)
+}
+pub fn start_scan_id(frequencies: &[u32], id: u32) -> KResult<Vec<u8>> {
     let _ = scan_channels(frequencies)?;
+    if !(0xa001..=0xafff).contains(&id) {
+        return Err(Errno::EINVAL);
+    }
     let mut common = [0u32; 25];
-    common[0] = 0xa001;
+    common[0] = id;
     common[1] = 0xa001;
-    common[4] = 0x43; // started, completed, start failed
+    common[4] = 0x14b; // started, completed, foreign channel/exit, start failed
     common[5] = 50;
-    common[6] = 150;
+    common[6] = 200;
+    common[7] = 50;
+    common[8] = 500;
     common[12] = 10000;
-    common[14] = 1; // passive, TLV probe-filter polarity
+    common[14] = 0x21; // passive, ath10k TLV inverts FILTER_PROBE_REQ
     common[16] = frequencies.len() as u32;
     common[17] = 1;
     common[20] = 3;
@@ -297,7 +318,13 @@ pub fn management(data: &[u8]) -> KResult<Management<'_>> {
         rssi: (snr - 95).clamp(-127, 0),
     })
 }
-pub fn scan_complete(data: &[u8]) -> KResult<bool> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScanEvent {
+    pub kind: u32,
+    pub reason: u32,
+    pub frequency: u32,
+}
+pub fn scan_event(data: &[u8], id: u32) -> KResult<ScanEvent> {
     if word(data, 0)? & 0xffffff != 0x3001 {
         return Err(Errno::EIO);
     }
@@ -309,7 +336,7 @@ pub fn scan_complete(data: &[u8]) -> KResult<bool> {
         }
     }
     let scan = scan.filter(|data| data.len() >= 24).ok_or(Errno::EIO)?;
-    if word(scan, 3)? != 0xa001 || word(scan, 4)? != 0xa001 || word(scan, 5)? != 0 {
+    if word(scan, 3)? != 0xa001 || word(scan, 4)? != id || word(scan, 5)? != 0 {
         return Err(Errno::EIO);
     }
     let kind = word(scan, 0)?;
@@ -319,13 +346,101 @@ pub fn scan_complete(data: &[u8]) -> KResult<bool> {
     if kind & 2 != 0 && word(scan, 1)? != 0 {
         return Err(Errno::EIO);
     }
-    Ok(kind & 2 != 0)
+    Ok(ScanEvent {
+        kind,
+        reason: word(scan, 1)?,
+        frequency: word(scan, 2)?,
+    })
+}
+pub fn scan_complete(data: &[u8]) -> KResult<bool> {
+    Ok(scan_event(data, 0xa001)?.kind & 2 != 0)
+}
+/// Accumulate all passes without erasing APs missed in a later pass. Counters
+/// distinguish no radio frames from malformed metadata or rejected beacons.
+#[derive(Default)]
+pub struct ScanResults {
+    pub networks: [Option<super::ieee80211::AccessPoint>; 20],
+    pub events: u32,
+    pub channels: u32,
+    pub management: u32,
+    pub bad_management: u32,
+    pub bad_beacons: u32,
+    pub beacons: u32,
+}
+impl ScanResults {
+    pub fn event(&mut self, data: &[u8], id: u32) -> KResult<bool> {
+        self.events += 1;
+        match word(data, 0)? & 0xffffff {
+            0x3001 => {
+                let scan = scan_event(data, id)?;
+                self.channels += u32::from(scan.kind & 8 != 0);
+                return Ok(scan.kind & 2 != 0);
+            }
+            0x7001 => {
+                self.management += 1;
+                let frame = match management(data) {
+                    Ok(frame) => frame,
+                    Err(_) => {
+                        self.bad_management += 1;
+                        return Ok(false);
+                    }
+                };
+                if !matches!(frame.frame.first(), Some(0x80 | 0x50)) {
+                    return Ok(false);
+                }
+                match super::ieee80211::beacon(frame.frame, frame.frequency, frame.rssi) {
+                    Ok(ap) => {
+                        self.beacons += 1;
+                        let index = self
+                            .networks
+                            .iter()
+                            .position(|old| old.is_some_and(|old| old.bssid == ap.bssid))
+                            .or_else(|| self.networks.iter().position(Option::is_none));
+                        if let Some(index) = index {
+                            self.networks[index] = Some(ap);
+                        }
+                    }
+                    Err(_) => self.bad_beacons += 1,
+                }
+            }
+            _ => (),
+        }
+        Ok(false)
+    }
 }
 fn unique<'a>(slot: &mut Option<&'a [u8]>, value: &'a [u8]) -> KResult<()> {
     if slot.replace(value).is_some() {
         return Err(Errno::EIO);
     }
     Ok(())
+}
+/// Wait through optional SERVICE_AVAILABLE events before SERVICE_READY.
+/// The transport must enforce one deadline across all receive calls.
+pub fn wait_service_ready(mut receive: impl FnMut() -> KResult<Vec<u8>>) -> KResult<ServiceReady> {
+    for _ in 0..32 {
+        let data = receive()?;
+        match word(&data, 0)? & 0xffffff {
+            1 => return service_ready(&data),
+            3 => {
+                // ath10k sends the extended service bitmap before SERVICE_READY.
+                // This station uses only base services; do not treat the bitmap
+                // as readiness or use it to bypass the full boot validation.
+                let mut available = None;
+                let mut elements = Elements::new(&data[4..]);
+                while let Some((tag, value)) = elements.next()? {
+                    if tag == 0x22f {
+                        unique(&mut available, value)?;
+                    }
+                }
+                // Segment offset plus four bitmap words in the bundled ABI.
+                if available.is_none_or(|value| value.len() != 20) {
+                    return Err(Errno::EIO);
+                }
+            }
+            _ => return Err(Errno::EIO),
+        }
+    }
+    Err(Errno::ETIMEDOUT)
 }
 pub fn service_ready(data: &[u8]) -> KResult<ServiceReady> {
     if word(data, 0)? & 0xffffff != 1 {
@@ -386,6 +501,7 @@ pub fn service_ready(data: &[u8]) -> KResult<ServiceReady> {
         build: word(event, 0)?,
         abi,
         chains,
+        tx_power: [word(event, 13)?, word(event, 14)?],
         eeprom_domain: word(reg, 0)?,
         channels_2ghz: [word(reg, 5)?, word(reg, 6)?],
         channels_5ghz: [word(reg, 7)?, word(reg, 8)?],
@@ -427,6 +543,93 @@ mod tests {
         tlv(&mut requests, 34, &bytes(&[1, 32, 2, 0]));
         tlv(&mut out, 18, &requests);
         out
+    }
+    fn available() -> Vec<u8> {
+        // Acer photo: 28-byte event, ID 3, TLV 022f0014, then 0, 08001000.
+        // The remaining bitmap words are zero fixtures, not captured values.
+        words(&[3, 0x022f0014, 0, 0x08001000, 0, 0, 0])
+    }
+    #[test]
+    fn acer_service_available_precedes_service_ready() {
+        for prelude in 0..=2 {
+            let mut received = 0;
+            let service = wait_service_ready(|| {
+                received += 1;
+                Ok(if received <= prelude {
+                    available()
+                } else {
+                    event()
+                })
+            })
+            .unwrap();
+            assert_eq!(received, prelude + 1);
+            assert_eq!(service, service_ready(&event()).unwrap());
+            assert_eq!(service_ready(&available()), Err(Errno::EIO));
+        }
+    }
+    #[test]
+    fn service_available_does_not_replace_ready_or_hide_transport_failure() {
+        let mut received = 0;
+        assert_eq!(
+            wait_service_ready(|| {
+                received += 1;
+                if received == 1 {
+                    Ok(available())
+                } else {
+                    Err(Errno::EINTR)
+                }
+            }),
+            Err(Errno::EINTR)
+        );
+        assert_eq!(received, 2);
+        received = 0;
+        assert_eq!(
+            wait_service_ready(|| {
+                received += 1;
+                Ok(available())
+            }),
+            Err(Errno::ETIMEDOUT)
+        );
+        assert_eq!(received, 32);
+    }
+    #[test]
+    fn malformed_service_available_is_rejected_before_readiness() {
+        let bytes = available();
+        for end in 0..bytes.len() {
+            let mut received = 0;
+            assert_eq!(
+                wait_service_ready(|| {
+                    received += 1;
+                    Ok(bytes[..end].to_vec())
+                }),
+                Err(Errno::EIO),
+                "end={end}"
+            );
+            assert_eq!(received, 1);
+        }
+        let mut duplicate = bytes.clone();
+        duplicate.extend_from_slice(&bytes[4..]);
+        let mut wrong_tag = bytes.clone();
+        wrong_tag[6] = 0;
+        let mut unknown = bytes.clone();
+        unknown[0] = 2;
+        let mut short = 3u32.to_le_bytes().to_vec();
+        tlv(&mut short, 0x22f, &[0; 16]);
+        let mut long = 3u32.to_le_bytes().to_vec();
+        tlv(&mut long, 0x22f, &[0; 24]);
+        for invalid in [duplicate, wrong_tag, unknown, short, long] {
+            assert_eq!(wait_service_ready(|| Ok(invalid.clone())), Err(Errno::EIO));
+        }
+    }
+    #[test]
+    fn service_available_does_not_bypass_service_ready_validation() {
+        let mut invalid = event();
+        invalid[12] = 3;
+        let mut packets = [available(), invalid].into_iter();
+        assert_eq!(
+            wait_service_ready(|| Ok(packets.next().unwrap())),
+            Err(Errno::EOPNOTSUPP)
+        );
     }
     #[test]
     fn checked_service_ready_retains_abi_regulatory_limits_and_memory_requests() {
@@ -547,16 +750,25 @@ mod tests {
     fn passive_scan_uses_factory_limits_and_never_enables_active_probes() {
         let service = service_ready(&event()).unwrap();
         let frequencies = passive_channels(&service);
-        assert_eq!(frequencies.len(), 11);
+        assert_eq!(frequencies.len(), 22);
+        assert!(frequencies.contains(&2472));
+        assert!(frequencies.contains(&5180));
+        assert!(!frequencies.contains(&5260)); // DFS is outside discovery policy.
+        assert_eq!(passive_frequencies([2412, 2462], [0, 0]).len(), 11);
+        assert!(passive_frequencies([2473, 2484], [5260, 5720]).is_empty());
         let packet = start_scan(&frequencies).unwrap();
         let mut elements = Elements::new(&packet[4..]);
         let (tag, scan) = elements.next().unwrap().unwrap();
         assert_eq!(tag, 77);
         assert_eq!(scan.len(), 100);
-        assert_eq!(word(scan, 14), Ok(1));
+        assert_eq!(word(scan, 14), Ok(0x21));
         assert_eq!(word(scan, 20), Ok(3));
         assert!(scan_channels(&[2484]).is_err());
+        assert!(scan_channels(&[5260]).is_err());
+        assert!(scan_channels(&[2413]).is_err());
         assert!(start_scan(&[]).is_err());
+        assert!(start_scan_id(&frequencies, 0xa000).is_err());
+        assert!(start_scan_id(&frequencies, 0xb000).is_err());
         assert!(vdev_create([0; 6]).is_err());
     }
     #[test]

@@ -13,6 +13,32 @@ pub const RX_DESCRIPTOR: usize = 300;
 pub const RX_ENTRIES: usize = 128;
 pub const RX_POSTED: usize = RX_ENTRIES / 2 - 1;
 pub const TX_LIMIT: usize = 64;
+pub const PEER_ID_LIMIT: usize = 2048; // ath10k core.h, RX descriptor peer-ID space
+#[derive(Debug, Default)]
+pub struct PeerIds([u64; PEER_ID_LIMIT / 64]);
+impl PeerIds {
+    pub fn insert(&mut self, id: u16) -> KResult<()> {
+        let id = usize::from(id);
+        let word = self.0.get_mut(id / 64).ok_or(Errno::EIO)?;
+        *word |= 1 << (id % 64);
+        Ok(())
+    }
+    pub fn contains(&self, id: u16) -> bool {
+        let id = usize::from(id);
+        self.0
+            .get(id / 64)
+            .is_some_and(|word| word & (1 << (id % 64)) != 0)
+    }
+    pub fn remove(&mut self, id: u16) {
+        let id = usize::from(id);
+        if let Some(word) = self.0.get_mut(id / 64) {
+            *word &= !(1 << (id % 64));
+        }
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.iter().all(|word| *word == 0)
+    }
+}
 fn u16_at(data: &[u8], at: usize) -> KResult<u16> {
     Ok(u16::from_le_bytes(
         data.get(at..at + 2).ok_or(Errno::EIO)?.try_into().unwrap(),
@@ -65,6 +91,10 @@ pub enum Event<'a> {
         status: u8,
         ids: &'a [u8],
     },
+    ManagementTx {
+        id: u16,
+        status: u8,
+    },
     Rx {
         peer: u16,
         vdev: u8,
@@ -75,6 +105,7 @@ pub enum Event<'a> {
         peer: u16,
         flags: u8,
     },
+    Credits(i32),
     Other(u8),
 }
 pub fn event(data: &[u8]) -> KResult<Event<'_>> {
@@ -108,6 +139,21 @@ pub fn event(data: &[u8]) -> KResult<Event<'_>> {
                 ids,
             }
         }
+        0xe if data.len() >= 12 => {
+            // The original HTT completion (ath10k v4.4) ends after status.
+            // Later firmware appends PPDU ID and optional ACK RSSI metadata;
+            // neither extension is needed to release this TX buffer.
+            let id = u32_at(data, 4)?;
+            let status = u32_at(data, 8)?;
+            if id as usize >= TX_LIMIT || status > 2 {
+                return Err(Errno::EIO);
+            }
+            // HTT_MGMT_TX_STATUS_RETRY maps to NOACK; DROP maps to DISCARD.
+            Event::ManagementTx {
+                id: id as u16,
+                status: [0, 2, 1][status as usize],
+            }
+        }
         0x12 if data.len() >= 8 => {
             let count = u16_at(data, 6)? as usize;
             if count == 0 || count > RX_POSTED {
@@ -137,9 +183,29 @@ pub fn event(data: &[u8]) -> KResult<Event<'_>> {
             peer: u16_at(data, 2)?,
             flags: data[1],
         },
-        0 | 3 | 4 | 7 | 0xb | 0x12 => return Err(Errno::EIO),
+        0xf if data.len() >= 4 => {
+            let value = u32_at(data, 0)?;
+            let delta = (value >> 16) as i32;
+            Event::Credits(if value & (1 << 8) != 0 { -delta } else { delta })
+        }
+        0 | 3 | 4 | 7 | 0xb | 0xe | 0xf | 0x12 => return Err(Errno::EIO),
         other => Event::Other(other),
     })
+}
+
+/// HTT credit notifications may precede the version confirmation. This driver
+/// uses TX completions rather than HTT credit flow control, so no update is needed.
+/// The transport must enforce one deadline across all receive calls.
+pub fn wait_version(mut receive: impl FnMut() -> KResult<Vec<u8>>) -> KResult<(u8, u8)> {
+    for _ in 0..32 {
+        let data = receive()?;
+        match event(&data)? {
+            Event::Version { major, minor } => return Ok((major, minor)),
+            Event::Credits(_) => (),
+            _ => return Err(Errno::EIO),
+        }
+    }
+    Err(Errno::ETIMEDOUT)
 }
 
 /// CE completion consumes this command, while HTT completion owns the frame's lifetime.
@@ -191,6 +257,25 @@ pub struct Received<'a> {
     pub key_index: u8,
     pub tid: u8,
     pub pn: u64,
+}
+/// Only the associated authenticator may feed EAPOL into the WPA2 state machine.
+/// After authorization the AP can relay other stations' data, but those sources
+/// must never gain the authenticator's privilege to restart a key exchange.
+pub fn ethernet_allowed(
+    frame: &Received<'_>,
+    station: [u8; 6],
+    ap: [u8; 6],
+    authorized: bool,
+) -> bool {
+    let bytes = frame.ethernet;
+    if bytes.len() < 14 {
+        return false;
+    }
+    if bytes[12..14] == [0x88, 0x8e] {
+        bytes[..6] == station && bytes[6..12] == ap
+    } else {
+        authorized && frame.encrypted
+    }
 }
 /// Firmware offload lacks the normal descriptor/PN. Only MIC-verified EAPOL
 /// may use this path; application packets must pass the full RX checks.
@@ -337,6 +422,31 @@ impl Replay {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn version_wait_allows_credit_updates_without_treating_them_as_readiness() {
+        let mut packets = [vec![0xf, 0, 64, 0], vec![0xf, 1, 2, 0], vec![0, 1, 3, 0]].into_iter();
+        assert!(matches!(event(&[0xf, 0, 64, 0]), Ok(Event::Credits(64))));
+        assert!(matches!(event(&[0xf, 1, 2, 0]), Ok(Event::Credits(-2))));
+        assert_eq!(wait_version(|| Ok(packets.next().unwrap())), Ok((3, 1)));
+        assert_eq!(wait_version(|| Ok(vec![0, 0, 2, 0])), Ok((2, 0)));
+    }
+    #[test]
+    fn version_wait_rejects_malformed_unexpected_and_unending_notifications() {
+        for bad in [vec![], vec![0], vec![0xf, 0, 1], vec![0x15, 0, 0, 0]] {
+            assert_eq!(wait_version(|| Ok(bad.clone())), Err(Errno::EIO));
+        }
+        let mut received = 0;
+        assert_eq!(
+            wait_version(|| {
+                received += 1;
+                Ok(vec![0xf, 0, 1, 0])
+            }),
+            Err(Errno::ETIMEDOUT)
+        );
+        assert_eq!(received, 32);
+        let mut packets = [Ok(vec![0xf, 0, 1, 0]), Err(Errno::EINTR)].into_iter();
+        assert_eq!(wait_version(|| packets.next().unwrap()), Err(Errno::EINTR));
+    }
     #[test]
     fn qca6174_layout_matches_v612_c_offsets_and_preserves_all_rx_fields() {
         let command = rx_config(0x1000, 0x2000).unwrap();
