@@ -47,6 +47,25 @@ pub fn create_peer(ap: [u8; 6]) -> KResult<Vec<u8>> {
     body.extend_from_slice(&words(&[0])); // WMI_PEER_TYPE_DEFAULT, as STA_NONE in ath10k
     command(0x6001, 97, &body)
 }
+/// Every firmware boot needs its own channel table, including a fresh connect
+/// after scanning stopped/reset the target. Publish only the admitted home
+/// channel, with the same 11g/20 MHz and 0 dBm limits as VDEV_START.
+pub fn start_with_channel(
+    ap: &AccessPoint,
+    mut send: impl FnMut(&[u8]) -> KResult<()>,
+) -> KResult<()> {
+    station::supported(ap)?;
+    let mut channels = Vec::new();
+    put_tlv(
+        &mut channels,
+        80,
+        &words(&[ap.frequency as u32, ap.frequency as u32, 0, 1, 0, 0]),
+    )?;
+    let mut list = command(0x3003, 79, &words(&[1]))?;
+    put_tlv(&mut list, 18, &channels)?;
+    send(&list)?;
+    send(&start(ap)?)
+}
 pub fn start(ap: &AccessPoint) -> KResult<Vec<u8>> {
     station::supported(ap)?;
     let mut body = words(&[

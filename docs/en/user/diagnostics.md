@@ -63,6 +63,8 @@ After `WiFi DHCP ready`, run `net ip`, `ping gateway 4`, `tcpcheck SERVER_IP 808
 
 For a connection ETIMEDOUT preserve `wifi regs`. `STA HTT TX completion wait` means no transmission completion reached the driver; `STA authentication response wait` means TX completed but no matching AP response was accepted. Both precede WPA2 password verification. Reports include TX ID, completion status and receive counters, never the password.
 
+If the TX wait returns EIO after `HTT management TX DROP`, firmware reported discarding the frame; `NOACK` means completion without acknowledgement. This differs from a missing TX completion with ETIMEDOUT. Preserve the complete `wifi regs` report and commit from `diag`; the first open authentication does not yet verify the WPA2 password. DROP alone does not establish its cause or whether the frame was transmitted over the air.
+
 ## Verified scope {#limits}
 
 QEMU verifies commands, missing QCA6174, actual ICMP, the WPA2 state machine, DMA ownership, adapter switching and link-loss cleanup. QEMU does not emulate QCA6174. Acer photos confirm HTT 3.87 and an 18-AP result with Galaxy S23. Repeated scanning is unreliable; WPA2, DHCP and Wi-Fi gameplay still require hardware verification; see the current [driver status](../developer/architecture/drivers/wifi.md#abi-audit).

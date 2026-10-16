@@ -158,6 +158,14 @@ impl Data {
                     return Err(Errno::EIO);
                 }
                 report.record(
+                    match status {
+                        0 => "HTT management TX OK",
+                        1 => "HTT management TX DROP",
+                        _ => "HTT management TX NOACK",
+                    },
+                    u32::from(id),
+                );
+                report.record(
                     "HTT management completion id/status",
                     u32::from(id) << 8 | u32::from(status),
                 );
@@ -415,6 +423,23 @@ mod tests {
             data.handle(completion, &mut report).unwrap();
             assert!(data.tx[id as usize].is_none());
             assert_eq!(data.completion(id), Some(0));
+            for (wire_status, status, stage) in [
+                (2u32, 1, "HTT management TX DROP"),
+                (1u32, 2, "HTT management TX NOACK"),
+            ] {
+                let (id, _) = data.transmit(&[0; 30], true, false).unwrap();
+                let mut failed = completion.to_vec();
+                failed[8..12].copy_from_slice(&wire_status.to_le_bytes());
+                data.handle(&failed, &mut report).unwrap();
+                assert!(data.tx[id as usize].is_none());
+                assert_eq!(data.completion(id), Some(status));
+                assert!(
+                    report.records[..report.len]
+                        .iter()
+                        .any(|r| r.stage == stage)
+                );
+                assert_eq!(data.handle(&failed, &mut report), Err(Errno::EIO));
+            }
         }
     }
     #[test_case]

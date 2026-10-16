@@ -191,7 +191,10 @@ impl Controller {
             report,
         )?;
         report.record("STA vdev start channel", u32::from(ap.frequency));
-        self.send_wmi(self.wmi_endpoint, &wmi::station::start(ap)?, report)?;
+        wmi::station::start_with_channel(ap, |command| {
+            self.send_wmi(self.wmi_endpoint, command, report)
+        })?;
+        report.record("STA home channel list submitted", u32::from(ap.frequency));
         self.wait_station(3000, report, "STA vdev start response wait", |data| {
             Ok(data.started)
         })?;

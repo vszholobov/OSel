@@ -122,6 +122,12 @@ fn unsupported_networks_explain_security_band_and_rate_rejections_without_weaken
         assert_eq!(station::unsupported_reason(&network), Some(reason));
         assert!(station::supported(&network).is_err());
         assert!(wmi::station::start(&network).is_err());
+        assert!(
+            wmi::station::start_with_channel(&network, |_| {
+                panic!("unsupported AP must not publish a transmit channel")
+            })
+            .is_err()
+        );
         assert!(station::associate(STA, &network, 0).is_err());
     }
 }
@@ -164,6 +170,64 @@ fn c_management_events_cover_scan_authentication_and_association() {
         } else {
             assert!(wmi::scan_complete(&bad).is_err());
         }
+    }
+}
+
+#[test]
+fn fresh_station_start_publishes_the_home_channel_before_start_and_stops_on_error() {
+    let ap = ap();
+    // No scan or persistent channel state exists in this new firmware session.
+    let expected = [
+        fixture!("station-channel").as_slice(),
+        fixture!("vdev-start").as_slice(),
+    ];
+    let mut commands = Vec::new();
+    wmi::station::start_with_channel(&ap, |command| {
+        commands.push(command.to_vec());
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(commands, expected);
+    for fail_at in 0..2 {
+        let mut sent = 0;
+        assert_eq!(
+            wmi::station::start_with_channel(&ap, |command| {
+                assert_eq!(command, expected[sent]);
+                sent += 1;
+                if sent == fail_at + 1 {
+                    Err(osel_core::errno::Errno::EIO)
+                } else {
+                    Ok(())
+                }
+            }),
+            Err(osel_core::errno::Errno::EIO)
+        );
+        assert_eq!(
+            sent,
+            fail_at + 1,
+            "a failed channel publication must prevent VDEV_START"
+        );
+    }
+    // The new home channel enables station TX only for the already-admitted AP;
+    // passive discovery remains passive, including channels 12/13 and 5 GHz.
+    let channel = fixture!("station-channel");
+    assert_eq!(u32::from_le_bytes(channel[32..36].try_into().unwrap()), 1);
+    assert_eq!(&channel[36..44], &[0; 8], "power limits stay at 0 dBm");
+    for frequency in (2412..=2462).step_by(5) {
+        let mut network = ap;
+        network.frequency = frequency;
+        let mut sent = 0;
+        wmi::station::start_with_channel(&network, |command| {
+            let field = if sent == 0 { 20 } else { 84 };
+            assert_eq!(
+                u32::from_le_bytes(command[field..field + 4].try_into().unwrap()),
+                u32::from(frequency)
+            );
+            sent += 1;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(sent, 2);
     }
 }
 

@@ -144,6 +144,15 @@ static void station_commands(void) {
     save("tx-encapsulation");
     struct wmi_tlv_vdev_start_cmd start = {.bcn_intval = 100, .dtim_period = 1, .ssid = {.ssid_len = 4, .ssid = "OSel"}};
     struct wmi_channel channel = {.mhz = 2412, .band_center_freq1 = 2412, .flags = MODE_11G};
+    struct wmi_tlv_scan_chan_list_cmd list = {.num_scan_chans = 1};
+    struct {struct tlv_header header; struct wmi_channel channel;} __packed home = {
+        .header = {.tag = WMI_TLV_TAG_STRUCT_CHANNEL, .len = sizeof(channel)},
+        .channel = channel,
+    };
+    begin(WMI_TLV_SCAN_CHAN_LIST_CMDID);
+    tlv(WMI_TLV_TAG_STRUCT_SCAN_CHAN_LIST_CMD, &list, sizeof(list));
+    tlv(WMI_TLV_TAG_ARRAY_STRUCT, &home, sizeof(home));
+    save("station-channel");
     begin(WMI_TLV_VDEV_START_REQUEST_CMDID);
     tlv(WMI_TLV_TAG_STRUCT_VDEV_START_REQUEST_CMD, &start, sizeof(start));
     tlv(WMI_TLV_TAG_STRUCT_CHANNEL, &channel, sizeof(channel));
