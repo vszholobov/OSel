@@ -12,6 +12,7 @@
 
 ### Fixed
 
+- Capture read-only firmware PDEV TX counters and advertised power limits after negative management completions, with bounded receive waits and preservation of the original error. Hardware DROP persists after queue/wake setup.
 - Initialize all four legacy station TX queues and wake policies, disable U-APSD and station power save after VDEV_START before authentication, and retain setup/other-WMI diagnostics. Hardware DROP persists with the EEPROM-domain command; this next setup correction still needs Acer validation.
 - Configure the Acer's reported WORC_WORLD EEPROM domain before station start, reject unaudited domains and retain EEPROM/management-service diagnostics after TX failures. Channel publication alone did not resolve the hardware DROP.
 - Publish the admitted station home channel after every firmware restart before VDEV_START; distinguish firmware management DROP/NOACK from a missing TX completion.

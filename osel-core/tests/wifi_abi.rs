@@ -26,6 +26,7 @@ fn firmware_boot_abi_matches_c_service_ready_init_and_ready() {
     let mut service = wmi::service_ready(fixture!("service-ready")).unwrap();
     assert_eq!(service.build, 0x441a8135);
     assert_eq!(service.chains, 2);
+    assert_eq!(service.tx_power, [3, 30]);
     assert_eq!(service.eeprom_domain, 0x6c);
     assert!(service.supports(65));
     assert_eq!(service.requests.len(), 1);
@@ -181,6 +182,43 @@ fn c_management_events_cover_scan_authentication_and_association() {
             assert!(wmi::scan_complete(&bad).is_err());
         }
     }
+}
+
+#[test]
+fn pdev_tx_counters_use_the_original_tlv_layout_and_reject_incomplete_snapshots() {
+    assert_eq!(
+        wmi::station::request_tx_stats().unwrap(),
+        fixture!("request-pdev-stats")
+    );
+    assert_eq!(fixture!("pdev-stats-layout"), &[180, 0, 0, 0, 28, 0, 0, 0]);
+    let event = fixture!("pdev-tx-stats");
+    let stats = wmi::station::tx_stats(event).unwrap().unwrap();
+    assert_eq!(stats.power, 0x10);
+    assert_eq!(stats.counters, core::array::from_fn(|i| 0x11 + i as u32));
+    for length in 0..event.len() {
+        assert!(wmi::station::tx_stats(&event[..length]).is_err());
+    }
+    let mut no_pdev = event[..52].to_vec();
+    no_pdev[12..16].fill(0); // num_pdev_stats
+    no_pdev[48..50].fill(0); // empty ARRAY_BYTE
+    assert_eq!(wmi::station::tx_stats(&no_pdev), Ok(None));
+    for count in [2u32, u32::MAX] {
+        let mut bad = event.to_vec();
+        bad[12..16].copy_from_slice(&count.to_le_bytes());
+        assert!(wmi::station::tx_stats(&bad).is_err());
+    }
+    for duplicate in [&event[4..48], &event[48..]] {
+        let mut bad = event.to_vec();
+        bad.extend_from_slice(duplicate);
+        assert!(wmi::station::tx_stats(&bad).is_err());
+    }
+    assert!(wmi::station::tx_stats(&event[..48]).is_err()); // no ARRAY_BYTE
+    let mut no_header = event[..4].to_vec();
+    no_header.extend_from_slice(&event[48..]);
+    assert!(wmi::station::tx_stats(&no_header).is_err());
+    let mut wrong_id = event.to_vec();
+    wrong_id[0] ^= 1;
+    assert!(wmi::station::tx_stats(&wrong_id).is_err());
 }
 
 #[test]
@@ -463,6 +501,14 @@ fn only_the_associated_authenticator_can_feed_eapol_before_and_after_authorizati
 
 #[test]
 fn single_bit_mutations_of_structured_events_remain_bounded() {
+    let original = fixture!("pdev-tx-stats");
+    for offset in 0..original.len() {
+        for bit in 0..8 {
+            let mut bytes = original.to_vec();
+            bytes[offset] ^= 1 << bit;
+            let _ = wmi::station::tx_stats(&bytes);
+        }
+    }
     let original = fixture!("service-ready");
     for offset in 0..original.len() {
         for bit in 0..8 {
@@ -524,6 +570,7 @@ fn hostile_wire_inputs_are_bounded_and_never_panic() {
             let _ = wmi::management(&bytes);
             let _ = wmi::scan_complete(&bytes);
             let _ = wmi::station::started(&bytes);
+            let _ = wmi::station::tx_stats(&bytes);
             let _ = wmi::station::lost(&bytes, AP);
             let _ = ieee80211::beacon(&bytes, 2412, -50);
             let _ = ieee80211::rsn(&bytes);

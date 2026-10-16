@@ -44,6 +44,7 @@ static void save(const char *name) {
 static void startup(void) {
     struct wmi_tlv_svc_rdy_ev service = {
         .fw_build_vers = 0x441a8135, .abi = abi, .num_rf_chains = 2, .num_mem_reqs = 1,
+        .hw_min_tx_power = 3, .hw_max_tx_power = 30,
     };
     struct hal_reg_capabilities reg = {
         .eeprom_rd = 0x6c, .low_2ghz_chan = 2412, .high_2ghz_chan = 2472,
@@ -356,9 +357,35 @@ static void station_tx_setup(void) {
     save("station-awake");
 }
 
+static void tx_failure_stats(void) {
+    struct wmi_request_stats_cmd request = {.stats_id = WMI_STAT_PDEV};
+    begin(WMI_TLV_REQUEST_STATS_CMDID);
+    tlv(WMI_TLV_TAG_STRUCT_REQUEST_STATS_CMD, &request, sizeof(request));
+    save("request-pdev-stats");
+    struct wmi_tlv_stats_ev event = {.stats_id = WMI_STAT_PDEV, .num_pdev_stats = 1};
+    struct wmi_pdev_stats stats = {
+        .base = {.chan_tx_pwr = 0x10},
+        .tx = {
+            .comp_queued = 0x11, .comp_delivered = 0x12,
+            .msdu_enqued = 0x13, .mpdu_enqued = 0x14, .wmm_drop = 0x15,
+            .local_enqued = 0x16, .local_freed = 0x17,
+            .hw_queued = 0x18, .hw_reaped = 0x19, .underrun = 0x1a,
+            .tx_abort = 0x1b, .tx_ko = 0x1c, .illgl_rate_phy_err = 0x1d,
+            .stateless_tid_alloc_failure = 0x1e, .txop_ovf = 0x1f,
+        },
+    };
+    begin(WMI_TLV_UPDATE_STATS_EVENTID);
+    tlv(WMI_TLV_TAG_STRUCT_STATS_EVENT, &event, sizeof(event));
+    tlv(WMI_TLV_TAG_ARRAY_BYTE, &stats, sizeof(stats));
+    save("pdev-tx-stats");
+    length = 0;
+    word(sizeof(stats)); word(offsetof(struct wmi_pdev_stats, tx));
+    save("pdev-stats-layout");
+}
+
 int main(int argc, char **argv) {
     if (argc != 2) return 1;
     destination = argv[1];
-    startup(); scanning(); station_commands(); station_events(); transport(); station_tx_setup();
+    startup(); scanning(); station_commands(); station_events(); transport(); station_tx_setup(); tx_failure_stats();
     return 0;
 }

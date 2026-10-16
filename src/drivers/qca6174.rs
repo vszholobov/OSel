@@ -1052,6 +1052,8 @@ impl Controller {
             report.record("WMI ABI", value);
         }
         report.record("WMI RF chains", service.chains);
+        report.record("WMI hardware minimum TX power", service.tx_power[0]);
+        report.record("WMI hardware maximum TX power", service.tx_power[1]);
         report.record("WMI EEPROM domain", service.eeprom_domain);
         for value in service.channels_2ghz {
             report.record("WMI 2GHz channel limit", value);
@@ -1150,6 +1152,7 @@ impl Controller {
             return Err(Errno::EOPNOTSUPP);
         }
         let mut data = data::Data::new(self.mac)?;
+        data.tx_power = service.tx_power;
         data.diagnostics.eeprom_domain = service.eeprom_domain;
         data.diagnostics.management_services = u32::from(service.supports(wmi::MGMT_TX_HTT))
             | u32::from(service.supports(wmi::MGMT_TX_WMI)) << 1;

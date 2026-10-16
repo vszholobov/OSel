@@ -46,6 +46,51 @@ pub fn prepare_authentication(mut send: impl FnMut(&[u8]) -> KResult<()>) -> KRe
     }
     send(&command(0x9001, 108, &words(&[0, 0]))?) // STA_PS_MODE_DISABLED
 }
+/// Read-only PDEV counters; never request peer stats or receive payloads.
+pub fn request_tx_stats() -> KResult<Vec<u8>> {
+    command(0x16001, 143, &words(&[4, 0, 0, 0, 0]))
+}
+#[derive(Debug, PartialEq, Eq)]
+pub struct TxStats {
+    pub power: u32,
+    pub counters: [u32; 15],
+}
+/// The TLV ABI uses the original 180-byte wmi_pdev_stats, not the 10.4 layout.
+/// A firmware response can omit PDEV stats; wait for a later response then.
+pub fn tx_stats(data: &[u8]) -> KResult<Option<TxStats>> {
+    if word(data, 0)? & 0xffffff != 0x1d004 {
+        return Err(Errno::EIO);
+    }
+    let mut header = None;
+    let mut stats = None;
+    let mut elements = Elements::new(&data[4..]);
+    while let Some((tag, value)) = elements.next()? {
+        match tag {
+            70 => unique(&mut header, value)?,
+            17 => unique(&mut stats, value)?,
+            _ => (),
+        }
+    }
+    let count = word(header.ok_or(Errno::EIO)?, 1)?;
+    let stats = stats.ok_or(Errno::EIO)?;
+    if count == 0 {
+        return Ok(None);
+    }
+    if count != 1 || stats.len() < 180 {
+        return Err(Errno::EIO);
+    }
+    let mut counters = [0; 15];
+    for (value, index) in counters
+        .iter_mut()
+        .zip([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 16, 20, 22])
+    {
+        *value = word(stats, 7 + index)?;
+    }
+    Ok(Some(TxStats {
+        power: word(stats, 6)?,
+        counters,
+    }))
+}
 pub fn authorize(ap: [u8; 6]) -> KResult<Vec<u8>> {
     peer_param(ap, 3, 1)
 }

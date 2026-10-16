@@ -42,6 +42,38 @@ impl Controller {
             wmi::station::started(event)?;
             self.data.as_mut().ok_or(Errno::ENODEV)?.started = true;
         }
+        if id == 0x1d004 {
+            match wmi::station::tx_stats(event) {
+                Ok(Some(stats)) => {
+                    self.data.as_mut().ok_or(Errno::ENODEV)?.tx_stats_received = true;
+                    report.record("STA firmware channel TX power", stats.power);
+                    for (name, value) in [
+                        "STA TX completion queued",
+                        "STA TX completion delivered",
+                        "STA TX MSDU queued",
+                        "STA TX MPDU queued",
+                        "STA TX WMM drops",
+                        "STA TX local queued",
+                        "STA TX local freed",
+                        "STA TX hardware queued",
+                        "STA TX hardware reaped",
+                        "STA TX underruns",
+                        "STA TX aborts",
+                        "STA TX excessive retries",
+                        "STA TX illegal rate errors",
+                        "STA TX TID allocation failures",
+                        "STA TX TXOP overflows",
+                    ]
+                    .into_iter()
+                    .zip(stats.counters)
+                    {
+                        report.record(name, value);
+                    }
+                }
+                Ok(None) => (),
+                Err(error) => report.record("STA TX stats malformed", error as u32),
+            }
+        }
         if id == 0x7001 {
             let diagnostics = &mut self.data.as_mut().ok_or(Errno::ENODEV)?.diagnostics;
             diagnostics.management = diagnostics.management.saturating_add(1);
@@ -161,16 +193,53 @@ impl Controller {
     ) -> KResult<()> {
         let id = self.transmit_frame(frame, management, encrypt, report)?;
         report.record("STA HTT TX submitted ID", u32::from(id));
-        self.wait_station(
-            3000,
-            report,
-            "STA HTT TX completion wait",
-            |data| match data.completion(id) {
+        let mut completion_status = None;
+        let result = self.wait_station(3000, report, "STA HTT TX completion wait", |data| {
+            completion_status = data.completion(id);
+            match completion_status {
                 Some(0) => Ok(true),
                 Some(_) => Err(Errno::EIO),
                 None => Ok(false),
-            },
-        )
+            }
+        });
+        if let Some(status) = completion_status.filter(|&status| management && status != 0) {
+            // Best-effort evidence only. A stats error must never replace the
+            // original TX failure or turn rejected authentication into success.
+            let stats = self.tx_failure_stats(report);
+            report.record("STA TX stats result", stats.err().map_or(0, |e| e as u32));
+            report.record(
+                "STA HTT TX failed id/status",
+                u32::from(id) << 8 | u32::from(status),
+            );
+            report.record("STA HTT TX original error", Errno::EIO as u32);
+        }
+        result
+    }
+    fn tx_failure_stats(&mut self, report: &mut Report) -> KResult<()> {
+        let indicator = self.get(INDICATOR);
+        if indicator == u32::MAX || indicator & 1 != 0 {
+            return Err(Errno::EIO);
+        }
+        let data = self.data.as_mut().ok_or(Errno::ENODEV)?;
+        data.tx_stats_received = false;
+        report.record("STA hardware minimum TX power", data.tx_power[0]);
+        report.record("STA hardware maximum TX power", data.tx_power[1]);
+        self.send_wmi(
+            self.wmi_endpoint,
+            &wmi::station::request_tx_stats()?,
+            report,
+        )?;
+        let end = time::monotonic_ns().saturating_add(500_000_000);
+        loop {
+            self.station_poll(report)?;
+            if self.data.as_ref().ok_or(Errno::ENODEV)?.tx_stats_received {
+                return Ok(());
+            }
+            if time::monotonic_ns() >= end {
+                return Err(Errno::ETIMEDOUT);
+            }
+            delay(10)?;
+        }
     }
     pub(super) fn associate(
         &mut self,

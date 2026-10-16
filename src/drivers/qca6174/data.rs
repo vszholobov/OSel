@@ -56,6 +56,8 @@ pub(super) struct Data {
     pub(super) authorized: bool,
     pub(super) drops: u64,
     pub(super) diagnostics: Diagnostics,
+    pub(super) tx_power: [u32; 2],
+    pub(super) tx_stats_received: bool,
 }
 fn page() -> KResult<Dma> {
     let page = Dma::new().ok_or(Errno::ENOMEM)?;
@@ -87,6 +89,8 @@ impl Data {
             authorized: false,
             drops: 0,
             diagnostics: Diagnostics::default(),
+            tx_power: [0; 2],
+            tx_stats_received: false,
         };
         for _ in 0..htt::RX_POSTED {
             let page = page()?;
