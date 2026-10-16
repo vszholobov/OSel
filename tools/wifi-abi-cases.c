@@ -323,9 +323,42 @@ static void transport(void) {
     save("tx-ethernet");
 }
 
+static void station_tx_setup(void) {
+    /* Legacy 11g DCF, without QoS negotiation: identical contention rules
+     * for BE/BK/VI/VO, no TXOP, admission control, NoAck or U-APSD.
+     */
+    struct wmi_tlv_vdev_set_wmm_cmd wmm = {0};
+    for (size_t i = 0; i < 4; i++) {
+        wmm.vdev_wmm_params[i].params = (struct wmi_wmm_params) {
+            .cwmin = 15, .cwmax = 1023, .aifs = 2,
+        };
+    }
+    begin(WMI_TLV_VDEV_SET_WMM_PARAMS_CMDID);
+    tlv(WMI_TLV_TAG_STRUCT_VDEV_SET_WMM_PARAMS_CMD, &wmm, sizeof(wmm));
+    save("station-wmm");
+    const struct {u32 id, value; const char *name;} params[] = {
+        {WMI_STA_PS_PARAM_RX_WAKE_POLICY, WMI_STA_PS_RX_WAKE_POLICY_WAKE, "station-rx-wake"},
+        {WMI_STA_PS_PARAM_TX_WAKE_THRESHOLD, WMI_STA_PS_TX_WAKE_THRESHOLD_ALWAYS, "station-tx-wake"},
+        {WMI_STA_PS_PARAM_PSPOLL_COUNT, WMI_STA_PS_PSPOLL_COUNT_NO_MAX, "station-pspoll"},
+        {WMI_STA_PS_PARAM_UAPSD, 0, "station-uapsd"},
+    };
+    for (size_t i = 0; i < sizeof(params) / sizeof(params[0]); i++) {
+        struct wmi_sta_powersave_param_cmd ps = {
+            .param_id = params[i].id, .param_value = params[i].value,
+        };
+        begin(WMI_TLV_STA_POWERSAVE_PARAM_CMDID);
+        tlv(WMI_TLV_TAG_STRUCT_STA_POWERSAVE_PARAM_CMD, &ps, sizeof(ps));
+        save(params[i].name);
+    }
+    struct wmi_sta_powersave_mode_cmd mode = {.sta_ps_mode = WMI_STA_PS_MODE_DISABLED};
+    begin(WMI_TLV_STA_POWERSAVE_MODE_CMDID);
+    tlv(WMI_TLV_TAG_STRUCT_STA_POWERSAVE_MODE_CMD, &mode, sizeof(mode));
+    save("station-awake");
+}
+
 int main(int argc, char **argv) {
     if (argc != 2) return 1;
     destination = argv[1];
-    startup(); scanning(); station_commands(); station_events(); transport();
+    startup(); scanning(); station_commands(); station_events(); transport(); station_tx_setup();
     return 0;
 }

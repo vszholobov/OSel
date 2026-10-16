@@ -184,6 +184,41 @@ fn c_management_events_cover_scan_authentication_and_association() {
 }
 
 #[test]
+fn started_station_configures_legacy_queues_and_wake_policy_before_authentication() {
+    let expected = [
+        fixture!("station-wmm").as_slice(),
+        fixture!("station-rx-wake").as_slice(),
+        fixture!("station-tx-wake").as_slice(),
+        fixture!("station-pspoll").as_slice(),
+        fixture!("station-uapsd").as_slice(),
+        fixture!("station-awake").as_slice(),
+    ];
+    let mut commands = Vec::new();
+    wmi::station::prepare_authentication(|command| {
+        commands.push(command.to_vec());
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(commands, expected);
+    for failure in 0..expected.len() {
+        let mut attempted = 0;
+        assert_eq!(
+            wmi::station::prepare_authentication(|command| {
+                assert_eq!(command, expected[attempted]);
+                attempted += 1;
+                if attempted == failure + 1 {
+                    Err(osel_core::errno::Errno::EIO)
+                } else {
+                    Ok(())
+                }
+            }),
+            Err(osel_core::errno::Errno::EIO)
+        );
+        assert_eq!(attempted, failure + 1);
+    }
+}
+
+#[test]
 fn fresh_station_start_publishes_the_home_channel_before_start_and_stops_on_error() {
     let ap = ap();
     // No scan or persistent channel state exists in this new firmware session.

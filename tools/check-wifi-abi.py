@@ -70,13 +70,17 @@ typedef uint16_t __le16; typedef uint32_t __le32; typedef uint64_t __le64;
     for name in ['wmi_tlv_grp_id', 'wmi_tlv_cmd_id', 'wmi_tlv_event_id',
                  'wmi_tlv_tag', 'wmi_tlv_vdev_param', 'wmi_tlv_peer_param', 'wmi_tlv_peer_flags',
                  'wmi_phy_mode', 'wmi_cipher_suites', 'wmi_peer_type', 'ath10k_hw_txrx_mode', 'htt_mgmt_tx_status',
-                 'wmi_tlv_service']:
+                 'wmi_tlv_service', 'wmi_sta_ps_mode', 'wmi_sta_powersave_param',
+                 'wmi_sta_ps_param_rx_wake_policy', 'wmi_sta_ps_param_tx_wake_threshold',
+                 'wmi_sta_ps_param_pspoll_count']:
         emit('enum', name)
     for name in ['wmi_tlv', 'wmi_tlv_init_cmd', 'wmi_tlv_resource_config',
                  'host_memory_chunk_tlv', 'wlan_host_mem_req',
                  'wmi_tlv_svc_rdy_ev', 'hal_reg_capabilities', 'wmi_tlv_rdy_ev',
                  'wmi_vdev_create_cmd', 'wmi_tlv_vdev_start_cmd', 'wmi_vdev_up_cmd',
                  'wmi_vdev_set_param_cmd', 'wmi_peer_set_param_cmd',
+                 'wmi_tlv_vdev_set_wmm_cmd', 'wmi_sta_powersave_mode_cmd',
+                 'wmi_sta_powersave_param_cmd',
                  'wmi_tlv_peer_create_cmd', 'wmi_tlv_peer_assoc_cmd',
                  'wmi_vdev_install_key_cmd', 'wmi_tlv_start_scan_cmd',
                  'wmi_tlv_scan_chan_list_cmd', 'wmi_channel', 'wmi_tlv_pdev_set_rd_cmd',

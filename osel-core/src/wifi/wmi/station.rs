@@ -30,6 +30,22 @@ pub fn tx_encapsulation() -> KResult<Vec<u8>> {
     // offload. Each HTT descriptor chooses Ethernet or management separately.
     vdev_param(48, 1)
 }
+/// Configure a started legacy STA before creating its AP peer or sending auth.
+/// Firmware defaults are not a substitute for programming contention and wake
+/// policy. Keep QoS/U-APSD disabled, and keep the station awake during WPA2/data.
+pub fn prepare_authentication(mut send: impl FnMut(&[u8]) -> KResult<()>) -> KResult<()> {
+    let mut queues = words(&[0]); // vdev 0
+    for _ in 0..4 {
+        // BE, BK, VI, VO: reserved word then wmi_wmm_params. Legacy 11g DCF.
+        queues.extend_from_slice(&words(&[0, 15, 1023, 2, 0, 0, 0]));
+    }
+    send(&command(0x500d, 199, &queues)?)?;
+    for (id, value) in [(0, 0), (1, 1), (2, 0), (4, 0)] {
+        // RX_WAKE=WAKE, TX_WAKE=ALWAYS, PSPOLL=NO_MAX, UAPSD=0.
+        send(&command(0x9002, 109, &words(&[0, id, value]))?)?;
+    }
+    send(&command(0x9001, 108, &words(&[0, 0]))?) // STA_PS_MODE_DISABLED
+}
 pub fn authorize(ap: [u8; 6]) -> KResult<Vec<u8>> {
     peer_param(ap, 3, 1)
 }

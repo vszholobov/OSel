@@ -14,6 +14,8 @@ pub(super) struct Diagnostics {
     pub last_htt: u32,
     pub eeprom_domain: u32,
     pub management_services: u32,
+    pub tx_setup: u32,
+    pub last_other_wmi: u32,
 }
 impl Diagnostics {
     pub(super) fn record(self, report: &mut Report) {
@@ -26,6 +28,8 @@ impl Diagnostics {
             ("STA last HTT event ID", self.last_htt),
             ("STA EEPROM domain", self.eeprom_domain),
             ("STA management services HTT/WMI", self.management_services),
+            ("STA TX queues and wake configured", self.tx_setup),
+            ("STA last other WMI event ID", self.last_other_wmi),
         ] {
             report.record(name, value);
         }

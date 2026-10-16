@@ -31,6 +31,9 @@ impl Controller {
         let id = u32::from_le_bytes(event[..4].try_into().unwrap()) & 0xffffff;
         let diagnostics = &mut self.data.as_mut().ok_or(Errno::ENODEV)?.diagnostics;
         diagnostics.wmi = diagnostics.wmi.saturating_add(1);
+        if id != 0x5001 && id != 0x7001 {
+            diagnostics.last_other_wmi = id;
+        }
         if wmi::station::lost(event, self.data.as_ref().ok_or(Errno::ENODEV)?.ap)? {
             report.record("WMI AP connection lost", id);
             return Err(Errno::ENETUNREACH);
@@ -203,6 +206,17 @@ impl Controller {
         self.wait_station(3000, report, "STA vdev start response wait", |data| {
             Ok(data.started)
         })?;
+        report.record("STA TX queues and wake setup", 0);
+        wmi::station::prepare_authentication(|command| {
+            self.send_wmi(self.wmi_endpoint, command, report)
+        })
+        .inspect_err(|&error| report.record("STA TX queues and wake setup", error as u32))?;
+        self.data
+            .as_mut()
+            .ok_or(Errno::ENODEV)?
+            .diagnostics
+            .tx_setup = 1;
+        report.record("STA TX queues and wake configured", 1);
         self.send_wmi(
             self.wmi_endpoint,
             &wmi::station::create_peer(ap.bssid)?,
