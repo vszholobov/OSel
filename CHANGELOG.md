@@ -12,6 +12,7 @@
 
 ### Fixed
 
+- Check AP liveness before disconnecting QCA6174 on beacon-miss events: up to three directed probes under a fixed three-second deadline, periodic idle checks, validated activity recovery and explicit roam-reason diagnostics. Keep peer loss and deauthentication fatal; sustained stability still needs Acer validation.
 - Use beacon/probe-response DS or HT primary-channel information for Wi-Fi AP records instead of the tuned RX channel, preventing adjacent-channel reception from mislabeling an AP or selecting the wrong authentication channel; reject malformed, conflicting and cross-band channel metadata.
 - Program QCA6174 runtime TX/RX chain masks from validated firmware capabilities before creating vdevs, matching ath10k startup; reject partial setup and retain the submitted mask in failure diagnostics. Hardware validation remains open after power/rate setup did not resolve DROP.
 - Configure QCA6174 station channel/PDEV power at a conservative 10 dBm and select the AP's lowest basic management rate before authentication; validate half-dBm fields and rate codes against independent ath10k C fixtures. Acer connectivity still needs hardware validation.

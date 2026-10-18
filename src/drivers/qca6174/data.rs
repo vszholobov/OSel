@@ -2,7 +2,7 @@
 use super::{Dma, Errno, KResult, Report};
 use alloc::{collections::VecDeque, vec::Vec};
 use core::sync::atomic::{Ordering, fence};
-use osel_core::wifi::htt;
+use osel_core::wifi::{htt, station::LinkMonitor};
 
 #[derive(Default, Clone, Copy)]
 pub(super) struct Diagnostics {
@@ -62,6 +62,10 @@ pub(super) struct Data {
     pub(super) diagnostics: Diagnostics,
     pub(super) tx_power: [u32; 2],
     pub(super) tx_stats_received: bool,
+    pub(super) liveness: LinkMonitor,
+    pub(super) probe_frame: Vec<u8>,
+    pub(super) probe_tx: Option<u16>,
+    pub(super) probe_sequence: u16,
 }
 fn page() -> KResult<Dma> {
     let page = Dma::new().ok_or(Errno::ENOMEM)?;
@@ -95,6 +99,10 @@ impl Data {
             diagnostics: Diagnostics::default(),
             tx_power: [0; 2],
             tx_stats_received: false,
+            liveness: LinkMonitor::default(),
+            probe_frame: Vec::new(),
+            probe_tx: None,
+            probe_sequence: 2,
         };
         for _ in 0..htt::RX_POSTED {
             let page = page()?;
@@ -155,16 +163,27 @@ impl Data {
             htt::Event::Tx { status, ids } => {
                 for id in ids.chunks_exact(2) {
                     let id = u16::from_le_bytes(id.try_into().unwrap());
-                    if self.tx_management[id as usize] || status != 0 {
+                    let probe = self.probe_tx == Some(id);
+                    if !probe && (self.tx_management[id as usize] || status != 0) {
                         report.record(
                             "HTT TX completion id/status",
                             u32::from(id) << 8 | u32::from(status),
                         );
                     }
                     self.complete(id, status)?;
+                    if probe {
+                        report.remember(
+                            "STA AP probe completion",
+                            u32::from(id) << 8 | u32::from(status),
+                        );
+                        if status == 0 {
+                            report.remember("STA AP liveness confirmed", u32::from(id));
+                        }
+                    }
                 }
             }
             htt::Event::ManagementTx { id, status } => {
+                let probe = self.probe_tx == Some(id);
                 if !self
                     .tx_management
                     .get(id as usize)
@@ -173,19 +192,30 @@ impl Data {
                 {
                     return Err(Errno::EIO);
                 }
-                report.record(
-                    match status {
-                        0 => "HTT management TX OK",
-                        1 => "HTT management TX DROP",
-                        _ => "HTT management TX NOACK",
-                    },
-                    u32::from(id),
-                );
-                report.record(
-                    "HTT management completion id/status",
-                    u32::from(id) << 8 | u32::from(status),
-                );
+                if !probe {
+                    report.record(
+                        match status {
+                            0 => "HTT management TX OK",
+                            1 => "HTT management TX DROP",
+                            _ => "HTT management TX NOACK",
+                        },
+                        u32::from(id),
+                    );
+                    report.record(
+                        "HTT management completion id/status",
+                        u32::from(id) << 8 | u32::from(status),
+                    );
+                }
                 self.complete(id, status)?;
+                if probe {
+                    report.remember(
+                        "STA AP probe completion",
+                        u32::from(id) << 8 | u32::from(status),
+                    );
+                    if status == 0 {
+                        report.remember("STA AP liveness confirmed", u32::from(id));
+                    }
+                }
             }
             htt::Event::Rx {
                 peer,
@@ -248,7 +278,15 @@ impl Data {
             return Err(Errno::EIO);
         }
         self.tx[slot] = None;
-        self.completed[slot] = Some(status);
+        if self.probe_tx == Some(id) {
+            self.probe_tx = None;
+            self.completed[slot] = None;
+            if status == 0 {
+                self.liveness.activity(crate::time::monotonic_ns());
+            }
+        } else {
+            self.completed[slot] = Some(status);
+        }
         Ok(())
     }
     pub(super) fn completion(&mut self, id: u16) -> Option<u8> {
@@ -303,6 +341,9 @@ impl Data {
                                 self.ap,
                                 self.authorized,
                             );
+                        if permitted && frame.encrypted && self.authorized {
+                            self.liveness.activity(crate::time::monotonic_ns());
+                        }
                         if permitted && self.received.len() < 64 {
                             self.received.push_back(frame.ethernet.to_vec());
                         } else {
@@ -325,6 +366,45 @@ impl Data {
 mod tests {
     use super::*;
     use osel_core::frames::FrameSource;
+    #[test_case]
+    fn liveness_probe_completion_keeps_unrelated_dma_and_negative_status_is_not_activity() {
+        let mut data = Data::new([2, 3, 4, 5, 6, 8]).unwrap();
+        let mut report = Report::new();
+        data.authorized = true;
+        data.liveness.start(0);
+        data.liveness.beacon_missed(0);
+        let (ordinary, _) = data.transmit(&[0xaa; 60], false, true).unwrap();
+        let mut completion = *include_bytes!(
+            "../../../osel-core/tests/fixtures/ath10k-v6.12/management-completed-legacy.bin"
+        );
+        for (now, status) in [(0, 1u32), (1_000_000_000, 0)] {
+            assert!(data.liveness.probe_due(now).unwrap());
+            let (probe, _) = data
+                .transmit(
+                    include_bytes!(
+                        "../../../osel-core/tests/fixtures/ath10k-v6.12/station-probe.bin"
+                    ),
+                    true,
+                    false,
+                )
+                .unwrap();
+            data.probe_tx = Some(probe);
+            data.liveness.probe_sent(now);
+            completion[4..8].copy_from_slice(&u32::from(probe).to_le_bytes());
+            completion[8..12].copy_from_slice(&status.to_le_bytes());
+            data.handle(&completion, &mut report).unwrap();
+            assert!(data.tx[ordinary as usize].is_some());
+            assert!(data.tx[probe as usize].is_none());
+            assert_eq!(data.probe_tx, None);
+            assert_eq!(data.completion(probe), None);
+            assert!(data.authorized);
+            assert_eq!(data.liveness.probes(), if status == 0 { 0 } else { 1 });
+            assert_eq!(data.handle(&completion, &mut report), Err(Errno::EIO));
+        }
+        assert_eq!(data.liveness.probe_due(2_000_000_000), Ok(false));
+        data.complete(ordinary, 0).unwrap();
+        assert_eq!(data.completion(ordinary), Some(0));
+    }
     #[test_case]
     fn acer_peer_aliases_share_keys_rx_replay_and_survive_one_unmap() {
         let mut data = Data::new([2, 3, 4, 5, 6, 8]).unwrap();
@@ -530,6 +610,8 @@ mod tests {
         let original =
             include_bytes!("../../../osel-core/tests/fixtures/ath10k-v6.12/encrypted-ethernet.bin");
         for forged in [false, true] {
+            data.liveness.start(0);
+            data.liveness.beacon_missed(0);
             let page = &data.buffers[0];
             unsafe {
                 core::ptr::copy_nonoverlapping(original.as_ptr(), page.ptr, original.len());
@@ -549,6 +631,7 @@ mod tests {
             event.extend_from_slice(&(page.physical() as u32).to_le_bytes());
             event.extend_from_slice(&[14, 0, 0, 0]);
             data.handle(&event, &mut report).unwrap();
+            assert_eq!(data.liveness.probe_due(1), Ok(forged));
             assert_eq!(data.buffers.len(), htt::RX_POSTED);
             assert_eq!(data.received.len(), 1);
         }

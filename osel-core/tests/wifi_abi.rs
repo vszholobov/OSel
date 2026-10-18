@@ -22,6 +22,123 @@ fn ap() -> ieee80211::AccessPoint {
 }
 
 #[test]
+fn beacon_miss_probes_before_disconnect_and_never_extends_its_deadline() {
+    use osel_core::errno::Errno;
+    let mut monitor = station::LinkMonitor::default();
+    monitor.beacon_missed(0);
+    assert_eq!(monitor.probe_due(u64::MAX), Ok(false));
+    monitor.start(0);
+    assert_eq!(monitor.probe_due(29_999_999_999), Ok(false));
+    monitor.beacon_missed(100);
+    for attempt in 0..3 {
+        let now = 100 + attempt * 1_000_000_000;
+        assert_eq!(monitor.probe_due(now), Ok(true));
+        monitor.probe_sent(now);
+        assert_eq!(monitor.probes(), (attempt + 1) as u8);
+        monitor.beacon_missed(now + 1);
+        assert_eq!(monitor.probe_due(now + 999_999_999), Ok(false));
+    }
+    assert_eq!(monitor.probe_due(3_000_000_100), Err(Errno::ENETUNREACH));
+    // A full TX ring must not postpone loss detection indefinitely either.
+    monitor.start(0);
+    monitor.beacon_missed(0);
+    assert_eq!(monitor.probe_due(0), Ok(true));
+    assert_eq!(monitor.probe_due(3_000_000_000), Err(Errno::ENETUNREACH));
+}
+
+#[test]
+fn ap_activity_recovers_a_beacon_miss_and_idle_checks_continue_after_recovery() {
+    let mut monitor = station::LinkMonitor::default();
+    monitor.start(0);
+    monitor.activity(20_000_000_000);
+    assert_eq!(monitor.probe_due(49_999_999_999), Ok(false));
+    assert_eq!(monitor.probe_due(50_000_000_000), Ok(true));
+    monitor.probe_sent(50_000_000_000);
+    monitor.activity(50_000_000_001);
+    assert_eq!(monitor.probes(), 0);
+    assert_eq!(monitor.probe_due(80_000_000_000), Ok(false));
+    assert_eq!(monitor.probe_due(80_000_000_001), Ok(true));
+    monitor.beacon_missed(80_000_000_002);
+    assert_eq!(
+        monitor.probe_due(83_000_000_001),
+        Err(osel_core::errno::Errno::ENETUNREACH)
+    );
+}
+
+#[test]
+fn directed_probe_matches_wire_fixture_and_preserves_station_admission() {
+    assert_eq!(
+        station::probe_request(STA, &ap(), 2).unwrap(),
+        fixture!("station-probe")
+    );
+    let mut network = ap();
+    network.frequency = 2472;
+    assert!(station::probe_request(STA, &network, 2).is_err());
+    network = ap();
+    network.rates = [0x82, 0x84, 0x8b, 0x96, 12, 18, 24, 36, 48, 72, 96, 108];
+    network.rates_len = 12;
+    let probe = station::probe_request(STA, &network, 4097).unwrap();
+    assert_eq!(&probe[22..24], &[0x10, 0]);
+    assert_eq!(
+        &probe[30..],
+        &[1, 8, 2, 4, 11, 22, 12, 18, 24, 36, 50, 4, 48, 72, 96, 108]
+    );
+}
+
+#[test]
+fn roam_reasons_use_c_layout_and_only_beacon_miss_starts_an_ap_check() {
+    use wmi::station::{LinkEvent, link_event};
+    assert_eq!(
+        link_event(fixture!("beacon-miss"), AP),
+        Ok(LinkEvent::BeaconMiss { rssi: 45 })
+    );
+    assert_eq!(
+        link_event(fixture!("roam-low-rssi"), AP),
+        Ok(LinkEvent::Roam {
+            reason: 3,
+            rssi: 45
+        })
+    );
+    assert_eq!(
+        link_event(fixture!("roam-handoff-failed"), AP),
+        Ok(LinkEvent::Roam {
+            reason: 5,
+            rssi: 45
+        })
+    );
+    assert_eq!(
+        link_event(fixture!("peer-kickout"), AP),
+        Ok(LinkEvent::Kickout)
+    );
+    assert_eq!(
+        link_event(fixture!("peer-kickout"), STA),
+        Ok(LinkEvent::Other)
+    );
+    let mut other = fixture!("beacon-miss").to_vec();
+    other[8..12].copy_from_slice(&1u32.to_le_bytes());
+    assert_eq!(link_event(&other, AP), Ok(LinkEvent::Other));
+    for event in [
+        fixture!("beacon-miss").as_slice(),
+        fixture!("peer-kickout").as_slice(),
+    ] {
+        for end in 0..event.len() {
+            assert!(link_event(&event[..end], AP).is_err());
+        }
+        let mut duplicate = event.to_vec();
+        duplicate.extend_from_slice(&event[4..]);
+        assert!(link_event(&duplicate, AP).is_err());
+    }
+    // Extended firmware event, as on the Acer: optional trailing TLVs remain bounded.
+    let mut extended = fixture!("beacon-miss").to_vec();
+    extended.extend_from_slice(&[8, 0, 17, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    assert_eq!(extended.len(), 32);
+    assert_eq!(
+        link_event(&extended, AP),
+        Ok(LinkEvent::BeaconMiss { rssi: 45 })
+    );
+}
+
+#[test]
 fn firmware_boot_abi_matches_c_service_ready_init_and_ready() {
     let mut service = wmi::service_ready(fixture!("service-ready")).unwrap();
     assert_eq!(service.build, 0x441a8135);
@@ -721,7 +838,7 @@ fn hostile_wire_inputs_are_bounded_and_never_panic() {
             let _ = wmi::scan_complete(&bytes);
             let _ = wmi::station::started(&bytes);
             let _ = wmi::station::tx_stats(&bytes);
-            let _ = wmi::station::lost(&bytes, AP);
+            let _ = wmi::station::link_event(&bytes, AP);
             let _ = ieee80211::beacon(&bytes, 2412, -50);
             let _ = ieee80211::rsn(&bytes);
             let _ = station::response(&bytes, STA, AP);

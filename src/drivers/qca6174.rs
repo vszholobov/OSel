@@ -76,13 +76,17 @@ impl Report {
         }
     }
     fn record(&mut self, stage: &'static str, value: u32) {
+        self.remember(stage, value);
+        crate::println!("WIFI {}: {:08x}", stage, value);
+    }
+    // Periodic liveness checks belong in wifi regs, without interrupting input.
+    fn remember(&mut self, stage: &'static str, value: u32) {
         self.stage = stage;
         if self.len == LOG_CAPACITY {
             self.records.copy_within(1.., 0);
         }
         self.records[self.len.min(LOG_CAPACITY - 1)] = Record { stage, value };
         self.len = (self.len + 1).min(LOG_CAPACITY);
-        crate::println!("WIFI {}: {:08x}", stage, value);
         *REPORT.lock() = *self;
     }
     fn rejected_event(&mut self, htt: bool, event: &[u8], error: Errno) {
@@ -336,6 +340,7 @@ fn connected_worker() {
         while !STOP.load(Ordering::Acquire) {
             controller.station_poll(&mut report)?;
             controller.eapol(&mut handshake, &mut report)?;
+            controller.station_liveness(&mut report)?;
             link.dropped(core::mem::take(
                 &mut controller.data.as_mut().unwrap().drops,
             ));

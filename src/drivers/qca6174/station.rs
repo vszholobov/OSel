@@ -22,7 +22,11 @@ pub(super) fn nonce(output: &mut [u8; 32]) -> KResult<()> {
 impl Controller {
     fn station_wmi(&mut self, event: Vec<u8>, report: &mut Report) -> KResult<()> {
         self.station_wmi_event(&event, report)
-            .inspect_err(|&error| report.rejected_event(false, &event, error))
+            .inspect_err(|&error| {
+                if error != Errno::ENETUNREACH {
+                    report.rejected_event(false, &event, error);
+                }
+            })
     }
     fn station_wmi_event(&mut self, event: &[u8], report: &mut Report) -> KResult<()> {
         if event.len() < 4 {
@@ -34,9 +38,26 @@ impl Controller {
         if id != 0x5001 && id != 0x7001 {
             diagnostics.last_other_wmi = id;
         }
-        if wmi::station::lost(event, self.data.as_ref().ok_or(Errno::ENODEV)?.ap)? {
-            report.record("WMI AP connection lost", id);
-            return Err(Errno::ENETUNREACH);
+        let data = self.data.as_mut().ok_or(Errno::ENODEV)?;
+        match wmi::station::link_event(event, data.ap)? {
+            wmi::station::LinkEvent::BeaconMiss { rssi } => {
+                report.record("STA WMI roam reason", 2);
+                report.record("STA WMI roam RSSI raw", rssi);
+                if data.authorized {
+                    data.liveness.beacon_missed(time::monotonic_ns());
+                } else {
+                    return Err(Errno::ENETUNREACH);
+                }
+            }
+            wmi::station::LinkEvent::Roam { reason, rssi } => {
+                report.record("STA WMI roam reason", reason);
+                report.record("STA WMI roam RSSI raw", rssi);
+            }
+            wmi::station::LinkEvent::Kickout => {
+                report.record("WMI AP peer kickout", id);
+                return Err(Errno::ENETUNREACH);
+            }
+            wmi::station::LinkEvent::Other => (),
         }
         if id == 0x5001 {
             wmi::station::started(event)?;
@@ -90,6 +111,13 @@ impl Controller {
                 data.diagnostics.wrong_channel = data.diagnostics.wrong_channel.saturating_add(1);
                 return Ok(());
             }
+            if data.authorized
+                && frame.frame.get(10..16) == Some(data.ap.as_slice())
+                && osel_core::wifi::ieee80211::beacon(frame.frame, frame.frequency, frame.rssi)
+                    .is_ok_and(|ap| ap.bssid == data.ap && ap.frequency == data.frequency)
+            {
+                data.liveness.activity(time::monotonic_ns());
+            }
             match station::response(frame.frame, data.station, data.ap)? {
                 station::Response::Disconnected(reason) => {
                     report.record("AP disconnected reason", u32::from(reason));
@@ -105,6 +133,28 @@ impl Controller {
                 station::Response::Other => (),
             }
         }
+        Ok(())
+    }
+    pub(super) fn station_liveness(&mut self, report: &mut Report) -> KResult<()> {
+        let now = time::monotonic_ns();
+        let data = self.data.as_mut().ok_or(Errno::ENODEV)?;
+        let due = data.liveness.probe_due(now).inspect_err(|_| {
+            report.record("STA AP liveness timeout", u32::from(data.liveness.probes()));
+        })?;
+        if !due || data.probe_tx.is_some() || !data.can_transmit() {
+            return Ok(());
+        }
+        let mut frame = data.probe_frame.clone();
+        frame
+            .get_mut(22..24)
+            .ok_or(Errno::EIO)?
+            .copy_from_slice(&((data.probe_sequence & 0xfff) << 4).to_le_bytes());
+        let id = self.transmit_frame(&frame, true, false, report)?;
+        let data = self.data.as_mut().ok_or(Errno::ENODEV)?;
+        data.probe_tx = Some(id);
+        data.probe_sequence = data.probe_sequence.wrapping_add(1);
+        data.liveness.probe_sent(now);
+        report.remember("STA AP liveness probe", u32::from(data.liveness.probes()));
         Ok(())
     }
     pub(super) fn station_poll(&mut self, report: &mut Report) -> KResult<()> {
@@ -256,6 +306,7 @@ impl Controller {
         let data = self.data.as_mut().ok_or(Errno::ENODEV)?;
         data.ap = ap.bssid;
         data.frequency = ap.frequency;
+        data.probe_frame = station::probe_request(data.station, ap, 2)?;
         let eeprom_domain = data.diagnostics.eeprom_domain;
         report.record("STA EEPROM domain configuration", eeprom_domain);
         // Reject an unaudited domain before configuring this station at all.
@@ -436,6 +487,11 @@ impl Controller {
                 handshake.installed()?;
                 self.send_wmi(self.wmi_endpoint, &wmi::station::authorize(ap)?, report)?;
                 self.data.as_mut().unwrap().authorized = true;
+                self.data
+                    .as_mut()
+                    .unwrap()
+                    .liveness
+                    .start(time::monotonic_ns());
             }
         }
         Ok(())

@@ -6,7 +6,7 @@ description: OSel commands for network, PCI, memory and initial Acer Wi-Fi diagn
 
 **Audience:** users checking networking or reporting a failure.
 
-**Summary:** `diag` collects a general report. After DHCP, `ping gateway` checks the router and `ping IP` checks an IPv4 destination. Acer supports `wifi probe` and its saved `wifi regs` report; WPA2 commands are implemented and still require hardware connectivity validation.
+**Summary:** `diag` collects a general report. After DHCP, `ping gateway` checks the router and `ping IP` checks an IPv4 destination. Acer supports `wifi probe` and its saved `wifi regs` report; WPA2 connectivity and a network game are confirmed on Acer; sustained stability remains under test.
 
 ## Commands {#commands}
 
@@ -45,7 +45,7 @@ description: OSel commands for network, PCI, memory and initial Acer Wi-Fi diagn
 2. For [Acer Wi-Fi](hardware/acer-nitro.md#wifi), run `wifi probe`, then `clear` and `wifi regs`; save that display too. The error and stage help even when probing fails.
 3. For Ethernet after DHCP, run `ping gateway 4`, then `ping SERVER_IP 4`. Check `tcpcheck SERVER_IP 8080`. For game failures include the error text and server address.
 
-`wifi load` has a 120-second deadline after the ROM check and supports Ctrl+C. Stages and uploaded byte counts appear on screen. `firmware check passed; target stopped` confirms firmware startup through HTC/WMI; then run `wifi scan`, select an AP with `wifi connect N` and check `net ip` and `ping gateway`. Acer connectivity is still unverified. Save `wifi regs` on failure.
+`wifi load` has a 120-second deadline after the ROM check and supports Ctrl+C. Stages and uploaded byte counts appear on screen. `firmware check passed; target stopped` confirms firmware startup through HTC/WMI; then run `wifi scan`, select an AP with `wifi connect N` and check `net ip` and `ping gateway`. The owner confirmed Acer connectivity, ping and a network Tetris game. Save `wifi regs` on failure.
 
 Reports contain no Wi-Fi passwords or keys. All shell output is also sent to COM1. If the laptop freezes during `wifi probe`, preserve the last line: stages are shown on the display and sent to COM1 while executing. Probing does not run automatically at boot, so the shell remains available after reboot.
 
@@ -67,4 +67,6 @@ If the TX wait returns EIO after `HTT management TX DROP`, firmware reported dis
 
 ## Verified scope {#limits}
 
-QEMU verifies commands, missing QCA6174, actual ICMP, the WPA2 state machine, DMA ownership, adapter switching and link-loss cleanup. QEMU does not emulate QCA6174. Acer photos confirm HTT 3.87 and an 18-AP result with Galaxy S23. Repeated scanning is unreliable; WPA2, DHCP and Wi-Fi gameplay still require hardware verification; see the current [driver status](../developer/architecture/drivers/wifi.md#abi-audit).
+QEMU verifies commands, missing QCA6174, actual ICMP, the WPA2 state machine, DMA ownership, adapter switching and link-loss cleanup. QEMU does not emulate QCA6174. Acer photos confirm HTT 3.87 and an 18-AP result with Galaxy S23. The owner confirmed connectivity, ping and Wi-Fi gameplay with a Mac; sustained stability still requires verification; see the current [driver status](../developer/architecture/drivers/wifi.md#abi-audit).
+
+If Wi-Fi disconnects after a successful connection, save `wifi regs` and `wifi status`. `STA WMI roam reason=00000002` means missed beacons: the driver checks AP liveness for up to three seconds and closes the link only without confirmation. `STA AP liveness probe` identifies an attempt; `STA AP liveness confirmed` reports its ACK. After 30 seconds without confirmed activity, an idle check runs. `STA AP liveness timeout` means the check could not confirm the link. Explicit kickout/deauth and peer loss still close it immediately. The new monitor still needs sustained Acer validation; automatic password entry and reconnection are not implemented.

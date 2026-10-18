@@ -286,6 +286,31 @@ static void station_events(void) {
     tlv(WMI_TLV_TAG_STRUCT_MGMT_RX_HDR, &header, sizeof(header));
     tlv(WMI_TLV_TAG_ARRAY_BYTE, frame, 32);
     save("associated");
+    struct wmi_tlv_roam_ev roam = {.reason = WMI_ROAM_REASON_BEACON_MISS, .rssi = 45};
+    begin(WMI_TLV_ROAM_EVENTID);
+    tlv(WMI_TLV_TAG_STRUCT_ROAM_EVENT, &roam, sizeof(roam));
+    save("beacon-miss");
+    roam.reason = WMI_ROAM_REASON_LOW_RSSI;
+    begin(WMI_TLV_ROAM_EVENTID);
+    tlv(WMI_TLV_TAG_STRUCT_ROAM_EVENT, &roam, sizeof(roam));
+    save("roam-low-rssi");
+    roam.reason = WMI_ROAM_REASON_HO_FAILED;
+    begin(WMI_TLV_ROAM_EVENTID);
+    tlv(WMI_TLV_TAG_STRUCT_ROAM_EVENT, &roam, sizeof(roam));
+    save("roam-handoff-failed");
+    struct wmi_peer_sta_kickout_event kickout = {0};
+    memcpy(kickout.peer_macaddr.addr, ap, 6);
+    begin(WMI_TLV_PEER_STA_KICKOUT_EVENTID);
+    tlv(WMI_TLV_TAG_STRUCT_PEER_STA_KICKOUT_EVENT, &kickout, sizeof(kickout));
+    save("peer-kickout");
+    u8 probe[36] = {0x40};
+    memcpy(probe + 4, ap, 6); memcpy(probe + 10, sta, 6); memcpy(probe + 16, ap, 6);
+    probe[22] = 0x20;
+    const u8 probe_ies[] = {0, 4, 'O', 'S', 'e', 'l', 1, 4, 2, 4, 11, 22};
+    memcpy(probe + 24, probe_ies, sizeof(probe_ies));
+    length = 0;
+    append(probe, sizeof(probe));
+    save("station-probe");
 }
 
 static void transport(void) {
