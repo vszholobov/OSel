@@ -4,21 +4,45 @@ use crate::errno::{Errno, KResult};
 use alloc::{vec, vec::Vec};
 
 pub fn supported(ap: &AccessPoint) -> KResult<()> {
-    if ap.ssid_len > 32
-        || ap.rates_len > 12
-        || ap.beacon_interval == 0
-        || ap.dtim == 0
-        || (ap.frequency.saturating_sub(2412)) % 5 != 0
-        || !ap.wpa2()
-        || ap.hidden()
-        || ap.capabilities & 3 != 1
-        || ap.rates_len == 0
-        || ap.unsupported_basic_rate
-        || !(2412..=2462).contains(&ap.frequency)
-    {
-        return Err(Errno::EOPNOTSUPP);
+    unsupported_reason(ap).map_or(Ok(()), |_| Err(Errno::EOPNOTSUPP))
+}
+/// The same admission policy drives diagnostics and association; never imply a
+/// discovered AP is connectable merely because it advertises an RSN element.
+pub fn unsupported_reason(ap: &AccessPoint) -> Option<&'static str> {
+    if ap.ssid_len > 32 || ap.rates_len > 12 || ap.beacon_interval == 0 || ap.dtim == 0 {
+        return Some("invalid AP metadata");
     }
-    Ok(())
+    if !(2412..=2462).contains(&ap.frequency) || (ap.frequency - 2412) % 5 != 0 {
+        return Some("connection requires channels 1-11");
+    }
+    if ap.hidden() {
+        return Some("hidden SSID");
+    }
+    if ap.capabilities & 3 != 1 {
+        return Some("infrastructure AP required");
+    }
+    if ap.capabilities & 0x10 == 0 {
+        return Some("open network; WPA2 required");
+    }
+    let Some(rsn) = ap.rsn else {
+        return Some("no WPA2 RSN; WPA1/WEP unsupported");
+    };
+    if !rsn.group_ccmp {
+        return Some("group cipher requires CCMP/AES");
+    }
+    if !rsn.pairwise_ccmp {
+        return Some("pairwise cipher requires CCMP/AES");
+    }
+    if !rsn.psk {
+        return Some("WPA2-Personal PSK required");
+    }
+    if rsn.pmf_required {
+        return Some("mandatory PMF unsupported");
+    }
+    if ap.rates_len == 0 || ap.unsupported_basic_rate {
+        return Some("unsupported basic rates");
+    }
+    None
 }
 fn header(subtype: u8, station: [u8; 6], ap: [u8; 6], sequence: u16) -> Vec<u8> {
     let mut frame = vec![0; 24];

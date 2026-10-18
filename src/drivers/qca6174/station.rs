@@ -21,25 +21,73 @@ pub(super) fn nonce(output: &mut [u8; 32]) -> KResult<()> {
 }
 impl Controller {
     fn station_wmi(&mut self, event: Vec<u8>, report: &mut Report) -> KResult<()> {
+        self.station_wmi_event(&event, report)
+            .inspect_err(|&error| report.rejected_event(false, &event, error))
+    }
+    fn station_wmi_event(&mut self, event: &[u8], report: &mut Report) -> KResult<()> {
         if event.len() < 4 {
             return Err(Errno::EIO);
         }
         let id = u32::from_le_bytes(event[..4].try_into().unwrap()) & 0xffffff;
-        if wmi::station::lost(&event, self.data.as_ref().ok_or(Errno::ENODEV)?.ap)? {
+        let diagnostics = &mut self.data.as_mut().ok_or(Errno::ENODEV)?.diagnostics;
+        diagnostics.wmi = diagnostics.wmi.saturating_add(1);
+        if id != 0x5001 && id != 0x7001 {
+            diagnostics.last_other_wmi = id;
+        }
+        if wmi::station::lost(event, self.data.as_ref().ok_or(Errno::ENODEV)?.ap)? {
             report.record("WMI AP connection lost", id);
             return Err(Errno::ENETUNREACH);
         }
         if id == 0x5001 {
-            wmi::station::started(&event)?;
+            wmi::station::started(event)?;
             self.data.as_mut().ok_or(Errno::ENODEV)?.started = true;
         }
+        if id == 0x1d004 {
+            match wmi::station::tx_stats(event) {
+                Ok(Some(stats)) => {
+                    self.data.as_mut().ok_or(Errno::ENODEV)?.tx_stats_received = true;
+                    report.record("STA firmware channel TX power", stats.power);
+                    for (name, value) in [
+                        "STA TX completion queued",
+                        "STA TX completion delivered",
+                        "STA TX MSDU queued",
+                        "STA TX MPDU queued",
+                        "STA TX WMM drops",
+                        "STA TX local queued",
+                        "STA TX local freed",
+                        "STA TX hardware queued",
+                        "STA TX hardware reaped",
+                        "STA TX underruns",
+                        "STA TX aborts",
+                        "STA TX excessive retries",
+                        "STA TX illegal rate errors",
+                        "STA TX TID allocation failures",
+                        "STA TX TXOP overflows",
+                    ]
+                    .into_iter()
+                    .zip(stats.counters)
+                    {
+                        report.record(name, value);
+                    }
+                }
+                Ok(None) => (),
+                Err(error) => report.record("STA TX stats malformed", error as u32),
+            }
+        }
         if id == 0x7001 {
-            let frame = match wmi::management(&event) {
+            let diagnostics = &mut self.data.as_mut().ok_or(Errno::ENODEV)?.diagnostics;
+            diagnostics.management = diagnostics.management.saturating_add(1);
+            let frame = match wmi::management(event) {
                 Ok(frame) => frame,
-                Err(_) => return Ok(()),
+                Err(_) => {
+                    let diagnostics = &mut self.data.as_mut().unwrap().diagnostics;
+                    diagnostics.rejected = diagnostics.rejected.saturating_add(1);
+                    return Ok(());
+                }
             };
             let data = self.data.as_mut().ok_or(Errno::ENODEV)?;
             if frame.frequency != data.frequency {
+                data.diagnostics.wrong_channel = data.diagnostics.wrong_channel.saturating_add(1);
                 return Ok(());
             }
             match station::response(frame.frame, data.station, data.ap)? {
@@ -102,10 +150,12 @@ impl Controller {
         &mut self,
         timeout: u64,
         report: &mut Report,
+        stage: &'static str,
         mut ready: impl FnMut(&mut data::Data) -> KResult<bool>,
     ) -> KResult<()> {
+        report.record(stage, 0);
         let end = time::monotonic_ns().saturating_add(timeout * 1_000_000);
-        loop {
+        let result = (|| loop {
             self.station_poll(report)?;
             if ready(self.data.as_mut().ok_or(Errno::ENODEV)?)? {
                 return Ok(());
@@ -114,7 +164,25 @@ impl Controller {
                 return Err(Errno::ETIMEDOUT);
             }
             delay(10)?;
+        })();
+        if let Err(error) = result {
+            // Preserve error context within wifi regs' last 22 entries, even
+            // when event dispatch or the completion predicate fails early.
+            for (name, value) in [
+                ("STA firmware indicator", self.get(INDICATOR)),
+                ("STA CE4 source write", self.get(CE + 4 * 0x400 + 0x3c)),
+                ("STA CE4 source read", self.get(CE + 4 * 0x400 + 0x44)),
+                ("STA CE1 destination read", self.get(CE + 0x400 + 0x48)),
+                ("STA CE2 destination read", self.get(CE + 2 * 0x400 + 0x48)),
+            ] {
+                report.record(name, value);
+            }
+            if let Some(data) = &self.data {
+                data.diagnostics.record(report);
+            }
+            report.record(stage, error as u32);
         }
+        result
     }
     fn frame_and_wait(
         &mut self,
@@ -124,11 +192,54 @@ impl Controller {
         report: &mut Report,
     ) -> KResult<()> {
         let id = self.transmit_frame(frame, management, encrypt, report)?;
-        self.wait_station(3000, report, |data| match data.completion(id) {
-            Some(0) => Ok(true),
-            Some(_) => Err(Errno::EIO),
-            None => Ok(false),
-        })
+        report.record("STA HTT TX submitted ID", u32::from(id));
+        let mut completion_status = None;
+        let result = self.wait_station(3000, report, "STA HTT TX completion wait", |data| {
+            completion_status = data.completion(id);
+            match completion_status {
+                Some(0) => Ok(true),
+                Some(_) => Err(Errno::EIO),
+                None => Ok(false),
+            }
+        });
+        if let Some(status) = completion_status.filter(|&status| management && status != 0) {
+            // Best-effort evidence only. A stats error must never replace the
+            // original TX failure or turn rejected authentication into success.
+            let stats = self.tx_failure_stats(report);
+            report.record("STA TX stats result", stats.err().map_or(0, |e| e as u32));
+            report.record(
+                "STA HTT TX failed id/status",
+                u32::from(id) << 8 | u32::from(status),
+            );
+            report.record("STA HTT TX original error", Errno::EIO as u32);
+        }
+        result
+    }
+    fn tx_failure_stats(&mut self, report: &mut Report) -> KResult<()> {
+        let indicator = self.get(INDICATOR);
+        if indicator == u32::MAX || indicator & 1 != 0 {
+            return Err(Errno::EIO);
+        }
+        let data = self.data.as_mut().ok_or(Errno::ENODEV)?;
+        data.tx_stats_received = false;
+        report.record("STA hardware minimum TX power", data.tx_power[0]);
+        report.record("STA hardware maximum TX power", data.tx_power[1]);
+        self.send_wmi(
+            self.wmi_endpoint,
+            &wmi::station::request_tx_stats()?,
+            report,
+        )?;
+        let end = time::monotonic_ns().saturating_add(500_000_000);
+        loop {
+            self.station_poll(report)?;
+            if self.data.as_ref().ok_or(Errno::ENODEV)?.tx_stats_received {
+                return Ok(());
+            }
+            if time::monotonic_ns() >= end {
+                return Err(Errno::ETIMEDOUT);
+            }
+            delay(10)?;
+        }
     }
     pub(super) fn associate(
         &mut self,
@@ -145,17 +256,54 @@ impl Controller {
         let data = self.data.as_mut().ok_or(Errno::ENODEV)?;
         data.ap = ap.bssid;
         data.frequency = ap.frequency;
+        let eeprom_domain = data.diagnostics.eeprom_domain;
+        report.record("STA EEPROM domain configuration", eeprom_domain);
+        // Reject an unaudited domain before configuring this station at all.
+        wmi::station::regdomain(eeprom_domain)?;
         self.send_wmi(self.wmi_endpoint, &wmi::vdev_create(self.mac)?, report)?;
-        self.send_wmi(self.wmi_endpoint, &wmi::station::vdev_param(48, 2)?, report)?; // Ethernet TX
+        self.send_wmi(
+            self.wmi_endpoint,
+            &wmi::station::tx_encapsulation()?,
+            report,
+        )?;
         report.record("STA vdev start channel", u32::from(ap.frequency));
-        self.send_wmi(self.wmi_endpoint, &wmi::station::start(ap)?, report)?;
-        self.wait_station(3000, report, |data| Ok(data.started))?;
+        wmi::station::start_with_channel(ap, eeprom_domain, |command| {
+            self.send_wmi(self.wmi_endpoint, command, report)
+        })?;
+        let diagnostics = &mut self.data.as_mut().ok_or(Errno::ENODEV)?.diagnostics;
+        diagnostics.management_rate = wmi::station::management_rate(ap)?;
+        report.record("STA home channel list submitted", u32::from(ap.frequency));
+        report.record("STA EEPROM domain configured", eeprom_domain);
+        report.record(
+            "STA configured TX power half-dBm",
+            wmi::station::TX_POWER_HALF_DBM,
+        );
+        report.record(
+            "STA management rate code",
+            wmi::station::management_rate(ap)?,
+        );
+        self.wait_station(3000, report, "STA vdev start response wait", |data| {
+            Ok(data.started)
+        })?;
+        report.record("STA TX queues and wake setup", 0);
+        wmi::station::prepare_authentication(|command| {
+            self.send_wmi(self.wmi_endpoint, command, report)
+        })
+        .inspect_err(|&error| report.record("STA TX queues and wake setup", error as u32))?;
+        self.data
+            .as_mut()
+            .ok_or(Errno::ENODEV)?
+            .diagnostics
+            .tx_setup = 1;
+        report.record("STA TX queues and wake configured", 1);
         self.send_wmi(
             self.wmi_endpoint,
             &wmi::station::create_peer(ap.bssid)?,
             report,
         )?;
-        self.wait_station(3000, report, |data| Ok(data.peer.is_some()))?;
+        self.wait_station(3000, report, "STA AP peer map wait", |data| {
+            Ok(!data.peer.is_empty())
+        })?;
         report.record("STA open authentication begin", 0);
         self.frame_and_wait(
             &station::authenticate(self.mac, ap.bssid, 0),
@@ -164,7 +312,7 @@ impl Controller {
             report,
         )?;
         let mac = self.mac;
-        self.wait_station(3000, report, |data| {
+        self.wait_station(3000, report, "STA authentication response wait", |data| {
             while let Some(frame) = data.management.pop_front() {
                 if matches!(
                     station::response(&frame, mac, ap.bssid)?,
@@ -178,7 +326,7 @@ impl Controller {
         report.record("STA association begin", 0);
         self.frame_and_wait(&station::associate(self.mac, ap, 1)?, true, false, report)?;
         let mut aid = 0;
-        self.wait_station(3000, report, |data| {
+        self.wait_station(3000, report, "STA association response wait", |data| {
             while let Some(frame) = data.management.pop_front() {
                 if let station::Response::Associated(value) =
                     station::response(&frame, mac, ap.bssid)?
@@ -196,11 +344,7 @@ impl Controller {
             report,
         )?;
         self.send_wmi(self.wmi_endpoint, &wmi::station::up(ap.bssid, aid)?, report)?;
-        self.send_wmi(
-            self.wmi_endpoint,
-            &wmi::station::peer_param(ap.bssid, 0xff, 1)?,
-            report,
-        )?; // QCA6174 powersave workaround
+        self.send_wmi(self.wmi_endpoint, &wmi::station::wake(ap.bssid)?, report)?; // QCA6174 powersave workaround
         let mut handshake = wpa2::Handshake::new(pmk, self.mac, ap.bssid)?;
         report.record("WPA2 EAPOL handshake wait", 0);
         let deadline = time::monotonic_ns().saturating_add(15_000_000_000);
@@ -231,7 +375,9 @@ impl Controller {
         let command = wmi::station::key(ap, group, index, rsc, key)?;
         self.send_wmi(self.wmi_endpoint, &command, report)?;
         // This firmware acknowledges installation with HTT SEC_IND, like ath10k.
-        self.wait_station(3000, report, |data| Ok(data.security[counter] > previous))?;
+        self.wait_station(3000, report, "STA key acknowledgement wait", |data| {
+            Ok(data.security[counter] > previous)
+        })?;
         if group {
             self.data
                 .as_mut()
@@ -288,11 +434,7 @@ impl Controller {
             self.frame_and_wait(&ethernet, false, false, report)?;
             if installed {
                 handshake.installed()?;
-                self.send_wmi(
-                    self.wmi_endpoint,
-                    &wmi::station::peer_param(ap, 3, 1)?,
-                    report,
-                )?;
+                self.send_wmi(self.wmi_endpoint, &wmi::station::authorize(ap)?, report)?;
                 self.data.as_mut().unwrap().authorized = true;
             }
         }

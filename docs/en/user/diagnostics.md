@@ -28,7 +28,7 @@ description: OSel commands for network, PCI, memory and initial Acer Wi-Fi diagn
 | `wifi fw` | bundled firmware version, API/WMI/HTT, OTP and exact board match |
 | `wifi probe` | checks the Acer card up to a BMI ROM response; does not start firmware or connect |
 | `wifi load` | repeats the ROM check, uploads calibration/firmware and waits for HTC/WMI ready; stops the target after the check, without connecting |
-| `wifi scan` | loads firmware and passively scans 2.4 GHz; lists up to 20 APs with SSID, BSSID, frequency, signal and WPA2 compatibility, then stops the target |
+| `wifi scan` | loads firmware and merges three passive passes over 2.4 GHz and selected 5 GHz channels; lists up to 20 APs with SSID, BSSID, frequency, signal and WPA2 compatibility, then stops the target |
 | `wifi results` | saved results of the last successful scan without accessing hardware |
 | `wifi connect N` | connects to WPA2 AP number N from wifi results; separate hidden password input, followed by DHCP |
 | `wifi disconnect` | stops Wi-Fi, clears network configuration and aborts connections |
@@ -51,10 +51,20 @@ Reports contain no Wi-Fi passwords or keys. All shell output is also sent to COM
 
 ## Connect Wi-Fi {#connect}
 
-In a new image run `wifi scan`, then `wifi connect N`, selecting a WPA2 network number. Enter the password on the laptop without echo; it is not needed in a report. Requirements: visible SSID, WPA2-Personal/CCMP, 2.4 GHz and channels 1–11. WPA3-only, Enterprise, mandatory PMF and hidden SSIDs are unsupported. Initial power is capped at 0 dBm: test near the router.
+In a new image run `wifi scan`, then `wifi connect N`, selecting a WPA2 network number. Enter the password on the laptop without echo; it is not needed in a report. Requirements: visible SSID, WPA2-Personal/CCMP, 2.4 GHz and channels 1–11. WPA3-only, Enterprise, mandatory PMF and hidden SSIDs are unsupported. Power is capped at 10 dBm with board calibration retained; test near the router initially.
+
+Discovery covers more channels than association: channels 1–13 and selected 5 GHz channels within board limits are scanned, while connection accepts only 1–11. DFS and 6 GHz are excluded. A nearby phone hotspot may therefore be absent; the phone model does not establish its configured band.
+
+Each rejected network shows `Cannot connect:` with the exact reason. `group cipher requires CCMP/AES` means the AP's group encryption is unsupported, even if its password is correct and unicast offers AES. `no WPA2 RSN` means no suitable WPA2 description; WPA1/WEP are not implemented. PSK and mandatory PMF are checked separately. A compatible router configuration requires WPA2-Personal and AES/CCMP for both group and pairwise encryption; mandatory PMF is unsupported. The old `UNSUPPORTED` output alone does not establish Rostel-6's exact security mode.
+
+For empty or intermittent results run `clear`, `wifi regs`: preserve `passive scan channel visits`, `management frames`, `bad WMI frames`, `bad beacons`, `networks` and the commit from `diag`. Three passes merge within one command; `No saved networks` does not establish that APs are absent. The deeper receive queue and repeated passes still need Acer validation.
 
 After `WiFi DHCP ready`, run `net ip`, `ping gateway 4`, `tcpcheck SERVER_IP 8080`, then [Tetris](network.md). On failure run `clear`, `wifi regs`, `wifi status` and `diag`; include the last stage, errno and commit. A DHCP timeout leaves the worker active; retry `net dhcp` after fixing DHCP. Use `wifi disconnect` before reconnecting.
 
+For a connection ETIMEDOUT preserve `wifi regs`. `STA HTT TX completion wait` means no transmission completion reached the driver; `STA authentication response wait` means TX completed but no matching AP response was accepted. Both precede WPA2 password verification. Reports include TX ID, completion status and receive counters, never the password.
+
+If the TX wait returns EIO after `HTT management TX DROP`, firmware reported discarding the frame; `NOACK` means completion without acknowledgement. This differs from a missing TX completion with ETIMEDOUT. Preserve the complete `wifi regs` report and commit from `diag`; the first open authentication does not yet verify the WPA2 password. DROP alone does not establish its cause or whether the frame was transmitted over the air.
+
 ## Verified scope {#limits}
 
-QEMU verifies commands, missing QCA6174, actual ICMP, the WPA2 state machine, DMA ownership, adapter switching and link-loss cleanup. QEMU does not emulate QCA6174. ROM/BMI has been confirmed on Acer. Firmware loading, scanning, WPA2, DHCP and Wi-Fi gameplay still require separate hardware verification.
+QEMU verifies commands, missing QCA6174, actual ICMP, the WPA2 state machine, DMA ownership, adapter switching and link-loss cleanup. QEMU does not emulate QCA6174. Acer photos confirm HTT 3.87 and an 18-AP result with Galaxy S23. Repeated scanning is unreliable; WPA2, DHCP and Wi-Fi gameplay still require hardware verification; see the current [driver status](../developer/architecture/drivers/wifi.md#abi-audit).

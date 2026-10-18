@@ -4,6 +4,33 @@
 
 ## Не выпущено
 
+### Added
+
+- Explain Wi-Fi connection rejection reasons and passively discover channels 12–13 and selected non-DFS 5 GHz channels within factory limits; station admission remains WPA2-CCMP on channels 1–11.
+
+- Independent QCA6174 wire fixtures generated from checksum-pinned ath10k v6.12 C declarations: boot, scan, station/key commands, HTT events and RX/TX layouts, plus mutation tests and a kernel DMA/event lifecycle scenario.
+
+### Fixed
+
+- Use beacon/probe-response DS or HT primary-channel information for Wi-Fi AP records instead of the tuned RX channel, preventing adjacent-channel reception from mislabeling an AP or selecting the wrong authentication channel; reject malformed, conflicting and cross-band channel metadata.
+- Program QCA6174 runtime TX/RX chain masks from validated firmware capabilities before creating vdevs, matching ath10k startup; reject partial setup and retain the submitted mask in failure diagnostics. Hardware validation remains open after power/rate setup did not resolve DROP.
+- Configure QCA6174 station channel/PDEV power at a conservative 10 dBm and select the AP's lowest basic management rate before authentication; validate half-dBm fields and rate codes against independent ath10k C fixtures. Acer connectivity still needs hardware validation.
+- Capture read-only firmware PDEV TX counters and advertised power limits after negative management completions, with bounded receive waits and preservation of the original error. Hardware DROP persists after queue/wake setup.
+- Initialize all four legacy station TX queues and wake policies, disable U-APSD and station power save after VDEV_START before authentication, and retain setup/other-WMI diagnostics. Hardware DROP persists with both the EEPROM-domain command and queue/wake setup.
+- Configure the Acer's reported WORC_WORLD EEPROM domain before station start, reject unaudited domains and retain EEPROM/management-service diagnostics after TX failures. Channel publication alone did not resolve the hardware DROP.
+- Publish the admitted station home channel after every firmware restart before VDEV_START; distinguish firmware management DROP/NOACK from a missing TX completion.
+- Accept legacy 12-byte HTT management completions alongside extended events, and retain rejected-event headers, station receive counters and wait errors without logging key material or frame payloads.
+- Match ath10k STA setup with DEFAULT peers and Native WiFi vdev encapsulation while HTT descriptors select management or Ethernet format.
+- Retain all selected-AP peer IDs for RX and key acknowledgements; only the last unmap revokes authorization.
+- Parse HTT management completions without releasing unrelated/stale DMA slots, and distinguish TX-completion from AP-response timeouts with receive counters.
+
+- Buffer WMI receive bursts with 15 independent DMA slots, combine three bounded passive scan passes and retain scan/receive counters after intermittent empty results on Acer. Hardware reliability still needs verification.
+
+- Reject EAPOL relayed from other Ethernet sources even after Wi-Fi authorization, and validate HTC credit trailers on readiness/service replies as well as normal receive packets.
+- HTT startup waits through bounded credit notifications before version confirmation while retaining its shared deadline and version check.
+- HTC credit trailers use the four-byte record headers and padded credit reports required by ath10k; receive failures and HTT version replies now retain diagnostic headers.
+- QCA6174 firmware startup accepts the preliminary WMI SERVICE_AVAILABLE event before SERVICE_READY, avoiding the EIO observed on Acer while keeping a shared timeout and strict readiness validation.
+
 ## 0.12 — 2026-10-15
 
 ### Added
