@@ -35,6 +35,20 @@ pub fn tx_encapsulation() -> KResult<Vec<u8>> {
     // offload. Each HTT descriptor chooses Ethernet or management separately.
     vdev_param(48, 1)
 }
+/// Program the runtime PDEV antenna masks after WMI ready, like ath10k start.
+/// Keep runtime setup consistent with ath10k even when INIT has resource masks.
+/// Never enable a chain beyond the validated SERVICE_READY capability.
+pub fn configure_chains(chains: u32, mut send: impl FnMut(&[u8]) -> KResult<()>) -> KResult<u32> {
+    if !(1..=4).contains(&chains) {
+        return Err(Errno::EINVAL);
+    }
+    let mask = (1 << chains) - 1;
+    // WMI_TLV_PDEV_PARAM_TX_CHAIN_MASK / RX_CHAIN_MASK.
+    for parameter in [1, 2] {
+        send(&command(0x4003, 82, &words(&[parameter, mask]))?)?;
+    }
+    Ok(mask)
+}
 /// Match ath10k's lowest basic management rate, independent of IE ordering.
 /// If no basic bit was advertised, use the lowest supported legacy rate.
 pub fn management_rate(ap: &AccessPoint) -> KResult<u32> {

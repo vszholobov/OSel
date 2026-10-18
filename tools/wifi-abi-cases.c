@@ -172,6 +172,16 @@ static void station_commands(void) {
     begin(WMI_TLV_PDEV_SET_PARAM_CMDID);
     tlv(WMI_TLV_TAG_STRUCT_PDEV_SET_PARAM_CMD, &power, sizeof(power));
     save("station-tx-power");
+    struct wmi_pdev_set_param_cmd chains = {
+        .param_id = WMI_TLV_PDEV_PARAM_TX_CHAIN_MASK, .param_value = 3,
+    };
+    begin(WMI_TLV_PDEV_SET_PARAM_CMDID);
+    tlv(WMI_TLV_TAG_STRUCT_PDEV_SET_PARAM_CMD, &chains, sizeof(chains));
+    save("runtime-tx-chains");
+    chains.param_id = WMI_TLV_PDEV_PARAM_RX_CHAIN_MASK;
+    begin(WMI_TLV_PDEV_SET_PARAM_CMDID);
+    tlv(WMI_TLV_TAG_STRUCT_PDEV_SET_PARAM_CMD, &chains, sizeof(chains));
+    save("runtime-rx-chains");
     param.param_id = WMI_TLV_VDEV_PARAM_MGMT_RATE;
     param.param_value = (WMI_RATE_PREAMBLE_CCK << 6) | ATH10K_HW_RATE_CCK_LP_1M;
     begin(WMI_TLV_VDEV_SET_PARAM_CMDID);

@@ -54,6 +54,62 @@ fn firmware_boot_abi_matches_c_service_ready_init_and_ready() {
 }
 
 #[test]
+fn runtime_radio_chains_match_c_and_stop_on_invalid_capabilities_or_send_failure() {
+    let expected = [
+        fixture!("runtime-tx-chains").as_slice(),
+        fixture!("runtime-rx-chains").as_slice(),
+    ];
+    let service = wmi::service_ready(fixture!("service-ready")).unwrap();
+    let mut sent = Vec::new();
+    assert_eq!(
+        wmi::station::configure_chains(service.chains, |command| {
+            sent.push(command.to_vec());
+            Ok(())
+        }),
+        Ok(3)
+    );
+    assert_eq!(sent, expected);
+    for chains in [0, 5, 32, u32::MAX] {
+        assert!(
+            wmi::station::configure_chains(chains, |_| {
+                panic!("invalid RF capability must fail before any command")
+            })
+            .is_err()
+        );
+    }
+    for failure in 0..expected.len() {
+        let mut attempted = 0;
+        assert_eq!(
+            wmi::station::configure_chains(service.chains, |command| {
+                assert_eq!(command, expected[attempted]);
+                attempted += 1;
+                if attempted == failure + 1 {
+                    Err(osel_core::errno::Errno::EIO)
+                } else {
+                    Ok(())
+                }
+            }),
+            Err(osel_core::errno::Errno::EIO)
+        );
+        assert_eq!(attempted, failure + 1);
+    }
+    for (chains, mask) in [(1, 1u32), (2, 3), (3, 7), (4, 15)] {
+        let mut sent = 0;
+        assert_eq!(
+            wmi::station::configure_chains(chains, |command| {
+                let mut expected = expected[sent].to_vec();
+                expected[12..16].copy_from_slice(&mask.to_le_bytes());
+                assert_eq!(command, expected);
+                sent += 1;
+                Ok(())
+            }),
+            Ok(mask)
+        );
+        assert_eq!(sent, 2);
+    }
+}
+
+#[test]
 fn passive_scan_wire_commands_match_c_structures_and_enum_tags() {
     assert_eq!(
         wmi::scan_channels(&[2412, 2437]).unwrap(),

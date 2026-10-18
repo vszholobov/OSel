@@ -15,8 +15,8 @@ pub(super) struct Diagnostics {
     pub eeprom_domain: u32,
     pub management_services: u32,
     pub tx_setup: u32,
-    pub tx_power_half_dbm: u32,
     pub management_rate: u32,
+    pub chain_mask: u32,
     pub last_other_wmi: u32,
 }
 impl Diagnostics {
@@ -31,8 +31,8 @@ impl Diagnostics {
             ("STA EEPROM domain", self.eeprom_domain),
             ("STA management services HTT/WMI", self.management_services),
             ("STA TX queues and wake configured", self.tx_setup),
-            ("STA configured TX power half-dBm", self.tx_power_half_dbm),
             ("STA management rate code", self.management_rate),
+            ("STA runtime TX/RX chain mask", self.chain_mask),
             ("STA last other WMI event ID", self.last_other_wmi),
         ] {
             report.record(name, value);

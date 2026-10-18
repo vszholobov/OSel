@@ -271,7 +271,6 @@ impl Controller {
             self.send_wmi(self.wmi_endpoint, command, report)
         })?;
         let diagnostics = &mut self.data.as_mut().ok_or(Errno::ENODEV)?.diagnostics;
-        diagnostics.tx_power_half_dbm = wmi::station::TX_POWER_HALF_DBM;
         diagnostics.management_rate = wmi::station::management_rate(ap)?;
         report.record("STA home channel list submitted", u32::from(ap.frequency));
         report.record("STA EEPROM domain configured", eeprom_domain);

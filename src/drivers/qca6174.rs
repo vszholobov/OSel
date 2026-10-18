@@ -1160,6 +1160,13 @@ impl Controller {
         self.data = Some(data); // owns the ring before the firmware can see it
         self.send_htt(&config, report)?;
         report.record("HTT RX ring posted buffers", htt::RX_POSTED as u32);
+        report.record("WMI runtime RF chain setup", service.chains);
+        let chain_mask = wmi::station::configure_chains(service.chains, |command| {
+            self.send_wmi(self.wmi_endpoint, command, report)
+        })
+        .inspect_err(|&error| report.record("WMI runtime RF chain setup", error as u32))?;
+        self.data.as_mut().ok_or(Errno::ENODEV)?.diagnostics.chain_mask = chain_mask;
+        report.record("WMI runtime TX/RX chain mask configured", chain_mask);
         Ok(())
     }
     fn handle_htt(&mut self, event: &[u8], report: &mut Report) -> KResult<()> {

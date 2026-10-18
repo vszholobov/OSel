@@ -12,6 +12,7 @@
 
 ### Fixed
 
+- Program QCA6174 runtime TX/RX chain masks from validated firmware capabilities before creating vdevs, matching ath10k startup; reject partial setup and retain the submitted mask in failure diagnostics. Hardware validation remains open after power/rate setup did not resolve DROP.
 - Configure QCA6174 station channel/PDEV power at a conservative 10 dBm and select the AP's lowest basic management rate before authentication; validate half-dBm fields and rate codes against independent ath10k C fixtures. Acer connectivity still needs hardware validation.
 - Capture read-only firmware PDEV TX counters and advertised power limits after negative management completions, with bounded receive waits and preservation of the original error. Hardware DROP persists after queue/wake setup.
 - Initialize all four legacy station TX queues and wake policies, disable U-APSD and station power save after VDEV_START before authentication, and retain setup/other-WMI diagnostics. Hardware DROP persists with both the EEPROM-domain command and queue/wake setup.
