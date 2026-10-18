@@ -242,10 +242,17 @@ pub fn started(data: &[u8]) -> KResult<()> {
     }
     Ok(())
 }
-pub fn lost(data: &[u8], ap: [u8; 6]) -> KResult<bool> {
+#[derive(Debug, PartialEq, Eq)]
+pub enum LinkEvent {
+    Other,
+    BeaconMiss { rssi: u32 },
+    Roam { reason: u32, rssi: u32 },
+    Kickout,
+}
+pub fn link_event(data: &[u8], ap: [u8; 6]) -> KResult<LinkEvent> {
     let id = word(data, 0)? & 0xffffff;
     if id != 0x6001 && id != 0xb001 {
-        return Ok(false);
+        return Ok(LinkEvent::Other);
     }
     let mut response = None;
     let mut elements = Elements::new(&data[4..]);
@@ -257,9 +264,22 @@ pub fn lost(data: &[u8], ap: [u8; 6]) -> KResult<bool> {
     }
     let value = response.ok_or(Errno::EIO)?;
     if id == 0x6001 {
-        return Ok(value.get(..6).ok_or(Errno::EIO)? == ap);
+        return Ok(if value.get(..8).ok_or(Errno::EIO)?[..6] == ap {
+            LinkEvent::Kickout
+        } else {
+            LinkEvent::Other
+        });
     }
-    Ok(word(value, 0)? == 0 && matches!(word(value, 1)?, 2 | 5))
+    let (vdev, reason, rssi) = (word(value, 0)?, word(value, 1)?, word(value, 2)?);
+    Ok(if vdev != 0 {
+        LinkEvent::Other
+    } else if reason == 2 {
+        LinkEvent::BeaconMiss { rssi }
+    } else {
+        // No roaming is enabled. In particular, HO_FAILED is not proof that
+        // this association is gone; retain the reason without tearing it down.
+        LinkEvent::Roam { reason, rssi }
+    })
 }
 pub fn associated(ap: &AccessPoint, aid: u16) -> KResult<Vec<u8>> {
     station::supported(ap)?;
@@ -354,16 +374,22 @@ mod tests {
     #[test]
     fn beacon_loss_and_kickout_are_bound_to_the_current_station() {
         let roam = command(0xb001, 48, &words(&[0, 2, 0])).unwrap();
-        assert!(lost(&roam, [2; 6]).unwrap());
+        assert_eq!(
+            link_event(&roam, [2; 6]),
+            Ok(LinkEvent::BeaconMiss { rssi: 0 })
+        );
         let other = command(0xb001, 48, &words(&[1, 2, 0])).unwrap();
-        assert!(!lost(&other, [2; 6]).unwrap());
+        assert_eq!(link_event(&other, [2; 6]), Ok(LinkEvent::Other));
         let rssi = command(0xb001, 48, &words(&[0, 3, 0])).unwrap();
-        assert!(!lost(&rssi, [2; 6]).unwrap());
+        assert_eq!(
+            link_event(&rssi, [2; 6]),
+            Ok(LinkEvent::Roam { reason: 3, rssi: 0 })
+        );
         let kickout = command(0x6001, 43, &mac([2; 6])).unwrap();
-        assert!(lost(&kickout, [2; 6]).unwrap());
-        assert!(!lost(&kickout, [4; 6]).unwrap());
+        assert_eq!(link_event(&kickout, [2; 6]), Ok(LinkEvent::Kickout));
+        assert_eq!(link_event(&kickout, [4; 6]), Ok(LinkEvent::Other));
         for end in 0..roam.len() {
-            assert!(lost(&roam[..end], [2; 6]).is_err());
+            assert!(link_event(&roam[..end], [2; 6]).is_err());
         }
     }
 }

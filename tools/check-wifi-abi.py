@@ -73,7 +73,7 @@ typedef uint16_t __le16; typedef uint32_t __le32; typedef uint64_t __le64;
                  'wmi_tlv_pdev_param', 'wmi_rate_preamble', 'ath10k_hw_rate_ofdm', 'ath10k_hw_rate_cck',
                  'wmi_tlv_service', 'wmi_sta_ps_mode', 'wmi_sta_powersave_param',
                  'wmi_sta_ps_param_rx_wake_policy', 'wmi_sta_ps_param_tx_wake_threshold',
-                 'wmi_sta_ps_param_pspoll_count', 'wmi_stats_id']:
+                 'wmi_sta_ps_param_pspoll_count', 'wmi_stats_id', 'wmi_roam_reason']:
         emit('enum', name)
     for name in ['wmi_tlv', 'wmi_tlv_init_cmd', 'wmi_tlv_resource_config',
                  'host_memory_chunk_tlv', 'wlan_host_mem_req',
@@ -86,7 +86,8 @@ typedef uint16_t __le16; typedef uint32_t __le32; typedef uint64_t __le64;
                  'wmi_tlv_peer_create_cmd', 'wmi_tlv_peer_assoc_cmd',
                  'wmi_vdev_install_key_cmd', 'wmi_tlv_start_scan_cmd',
                  'wmi_tlv_scan_chan_list_cmd', 'wmi_channel', 'wmi_tlv_pdev_set_rd_cmd',
-                 'wmi_tlv_mgmt_rx_ev', 'wmi_scan_event',
+                 'wmi_tlv_mgmt_rx_ev', 'wmi_scan_event', 'wmi_tlv_roam_ev',
+                 'wmi_peer_sta_kickout_event',
                  'wmi_vdev_start_response_event', 'ath10k_htc_hdr',
                  'ath10k_ath10k_htc_record_hdr', 'ath10k_htc_credit_report',
                  'htt_cmd_hdr', 'htt_ver_resp', 'htt_rx_peer_map',

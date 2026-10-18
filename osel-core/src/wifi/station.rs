@@ -3,6 +3,55 @@ use super::ieee80211::{AccessPoint, RSN_IE};
 use crate::errno::{Errno, KResult};
 use alloc::{vec, vec::Vec};
 
+const IDLE_CHECK_NS: u64 = 30_000_000_000;
+const PROBE_INTERVAL_NS: u64 = 1_000_000_000;
+const PROBE_LIMIT: u8 = 3;
+
+/// Firmware beacon loss starts a bounded AP check, not an immediate disconnect.
+/// Idle checks also cover firmware which reports beacon loss only once.
+#[derive(Default, Debug)]
+pub struct LinkMonitor {
+    next_check: Option<u64>,
+    deadline: Option<u64>,
+    probes: u8,
+}
+impl LinkMonitor {
+    pub fn start(&mut self, now: u64) {
+        self.next_check = Some(now.saturating_add(IDLE_CHECK_NS));
+        self.deadline = None;
+        self.probes = 0;
+    }
+    pub fn activity(&mut self, now: u64) {
+        if self.next_check.is_some() {
+            self.start(now);
+        }
+    }
+    pub fn beacon_missed(&mut self, now: u64) {
+        if self.next_check.is_some() && self.deadline.is_none() {
+            self.deadline = Some(now.saturating_add(PROBE_INTERVAL_NS * u64::from(PROBE_LIMIT)));
+            self.next_check = Some(now);
+            self.probes = 0;
+        }
+    }
+    pub fn probe_due(&mut self, now: u64) -> KResult<bool> {
+        if self.deadline.is_some_and(|deadline| now >= deadline) {
+            return Err(Errno::ENETUNREACH);
+        }
+        if !self.next_check.is_some_and(|next| now >= next) {
+            return Ok(false);
+        }
+        self.beacon_missed(now);
+        Ok(self.probes < PROBE_LIMIT)
+    }
+    pub fn probe_sent(&mut self, now: u64) {
+        self.probes = self.probes.saturating_add(1);
+        self.next_check = Some(now.saturating_add(PROBE_INTERVAL_NS));
+    }
+    pub fn probes(&self) -> u8 {
+        self.probes
+    }
+}
+
 pub fn supported(ap: &AccessPoint) -> KResult<()> {
     unsupported_reason(ap).map_or(Ok(()), |_| Err(Errno::EOPNOTSUPP))
 }
@@ -57,6 +106,23 @@ pub fn authenticate(station: [u8; 6], ap: [u8; 6], sequence: u16) -> Vec<u8> {
     let mut frame = header(0xb0, station, ap, sequence);
     frame.extend_from_slice(&[0, 0, 1, 0, 0, 0]);
     frame
+}
+/// A directed management probe on the already-admitted home channel. No RSN,
+/// credentials or key material is sent; the normal HTT completion owns its DMA.
+pub fn probe_request(station: [u8; 6], ap: &AccessPoint, sequence: u16) -> KResult<Vec<u8>> {
+    supported(ap)?;
+    let mut frame = header(0x40, station, ap.bssid, sequence);
+    frame.extend_from_slice(&[0, ap.ssid_len]);
+    frame.extend_from_slice(ap.ssid());
+    let rates = &ap.rates[..usize::from(ap.rates_len)];
+    let first = rates.len().min(8);
+    frame.extend_from_slice(&[1, first as u8]);
+    frame.extend(rates[..first].iter().map(|rate| rate & 0x7f));
+    if rates.len() > first {
+        frame.extend_from_slice(&[50, (rates.len() - first) as u8]);
+        frame.extend(rates[first..].iter().map(|rate| rate & 0x7f));
+    }
+    Ok(frame)
 }
 pub fn associate(station: [u8; 6], ap: &AccessPoint, sequence: u16) -> KResult<Vec<u8>> {
     supported(ap)?;
