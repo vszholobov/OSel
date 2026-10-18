@@ -93,6 +93,16 @@ pub fn rsn(bytes: &[u8]) -> KResult<Rsn> {
         pmf_required: capabilities & (1 << 6) != 0,
     })
 }
+/// RX metadata identifies the tuned channel, which can hear neighboring BSSes.
+/// Use the AP's advertised primary channel, without crossing the received band.
+fn primary_frequency(channel: u8, received: u16) -> KResult<u16> {
+    match (received, channel) {
+        (2412..=2484, 1..=13) => Ok(2407 + u16::from(channel) * 5),
+        (2412..=2484, 14) => Ok(2484),
+        (5180..=5980, 36..=196) => Ok(5000 + u16::from(channel) * 5),
+        _ => Err(Errno::EIO),
+    }
+}
 pub fn beacon(frame: &[u8], frequency: u16, rssi: i32) -> KResult<AccessPoint> {
     if frame.len() < 36 || !matches!(frame[0], 0x80 | 0x50) || frame[1] & 0x43 != 0 {
         return Err(Errno::EIO);
@@ -117,6 +127,7 @@ pub fn beacon(frame: &[u8], frequency: u16, rssi: i32) -> KResult<AccessPoint> {
     };
     let mut input = Cursor(&frame[36..]);
     let mut ssid = false;
+    let (mut ds_channel, mut ht_channel) = (None, None);
     while !input.0.is_empty() {
         let header = input.take(2)?;
         let element = input.take(header[1] as usize)?;
@@ -149,6 +160,11 @@ pub fn beacon(frame: &[u8], frequency: u16, rssi: i32) -> KResult<AccessPoint> {
                 result.ssid_len = element.len() as u8;
                 ssid = true;
             }
+            3 => {
+                if element.len() != 1 || ds_channel.replace(element[0]).is_some() {
+                    return Err(Errno::EIO);
+                }
+            }
             5 => {
                 if element.len() < 4 || element[1] == 0 {
                     return Err(Errno::EIO);
@@ -161,11 +177,24 @@ pub fn beacon(frame: &[u8], frequency: u16, rssi: i32) -> KResult<AccessPoint> {
                 }
                 result.rsn = Some(rsn(element)?);
             }
+            61 => {
+                if element.len() < 22 || ht_channel.replace(element[0]).is_some() {
+                    return Err(Errno::EIO);
+                }
+            }
             _ => {}
         }
     }
     if !ssid || result.beacon_interval == 0 {
         return Err(Errno::EIO);
+    }
+    if let (Some(ds), Some(ht)) = (ds_channel, ht_channel) {
+        if ds != ht {
+            return Err(Errno::EIO);
+        }
+    }
+    if let Some(channel) = ds_channel.or(ht_channel) {
+        result.frequency = primary_frequency(channel, frequency)?;
     }
     Ok(result)
 }
@@ -219,6 +248,78 @@ mod tests {
         assert!(rsn(&bad[2..]).is_err());
         for end in 0..18 {
             assert!(rsn(&RSN_IE[2..end + 2]).is_err());
+        }
+    }
+    #[test]
+    fn advertised_primary_channel_overrides_adjacent_rx_channels_in_beacons_and_probe_responses() {
+        for subtype in [0x80, 0x50] {
+            for (channel, received, expected) in [
+                (3, 2412, 2422),
+                (11, 2472, 2462),
+                (13, 2462, 2472),
+                (14, 2472, 2484),
+                (36, 5200, 5180),
+                (165, 5805, 5825),
+            ] {
+                for ds in [false, true] {
+                    let mut frame = frame();
+                    frame[0] = subtype;
+                    if ds {
+                        frame.extend_from_slice(&[3, 1, channel]);
+                    }
+                    frame.extend_from_slice(&[61, 22, channel]);
+                    frame.extend_from_slice(&[0; 21]);
+                    let ap = beacon(&frame, received, -50).unwrap();
+                    assert_eq!(ap.frequency, expected);
+                    assert_eq!(ap.rssi, -50);
+                }
+            }
+        }
+        let mut ds_only = frame();
+        ds_only.extend_from_slice(&[3, 1, 3]);
+        assert_eq!(beacon(&ds_only, 2412, -50).unwrap().frequency, 2422);
+        assert_eq!(beacon(&frame(), 2462, -50).unwrap().frequency, 2462);
+    }
+    #[test]
+    fn invalid_duplicate_conflicting_or_cross_band_channel_elements_are_rejected() {
+        for (received, elements) in [
+            (2412, alloc::vec![3, 0]),
+            (2412, alloc::vec![3, 2, 1, 1]),
+            (2412, alloc::vec![3, 1, 0]),
+            (2412, alloc::vec![3, 1, 15]),
+            (2412, alloc::vec![3, 1, 36]),
+            (5180, alloc::vec![3, 1, 3]),
+            (2412, alloc::vec![3, 1, 3, 3, 1, 3]),
+            (2412, alloc::vec![61, 0]),
+            (2412, alloc::vec![61, 1, 3]),
+        ] {
+            let mut frame = frame();
+            frame.extend_from_slice(&elements);
+            assert!(beacon(&frame, received, -50).is_err());
+        }
+        let mut ht = alloc::vec![61, 22, 3];
+        ht.extend_from_slice(&[0; 21]);
+        for channel in [0, 15, 36] {
+            let mut bad = frame();
+            let mut element = ht.clone();
+            element[2] = channel;
+            bad.extend_from_slice(&element);
+            assert!(beacon(&bad, 2412, -50).is_err());
+        }
+        for elements in [
+            [ht.as_slice(), ht.as_slice()].concat(),
+            [&[3, 1, 11], ht.as_slice()].concat(),
+        ] {
+            let mut bad = frame();
+            bad.extend_from_slice(&elements);
+            assert!(beacon(&bad, 2412, -50).is_err());
+        }
+        for length in 0..ht.len() {
+            let mut bad = frame();
+            bad.extend_from_slice(&ht[..length]);
+            if length != 0 {
+                assert!(beacon(&bad, 2412, -50).is_err());
+            }
         }
     }
 }

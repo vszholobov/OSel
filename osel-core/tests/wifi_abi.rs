@@ -154,6 +154,50 @@ fn repeated_scans_accumulate_beacons_and_distinguish_empty_and_rejected_frames()
 }
 
 #[test]
+fn adjacent_channel_beacons_keep_the_ap_home_channel_across_scan_passes() {
+    let original = fixture!("beacon");
+    let frame = wmi::management(original).unwrap().frame;
+    let mut results = wmi::ScanResults::default();
+    for received in [11u32, 12, 13, 10] {
+        let mut payload = frame.to_vec();
+        payload.extend_from_slice(&[3, 1, 11]); // AP's actual primary channel
+        let mut event = original[..52].to_vec();
+        event[8..12].copy_from_slice(&received.to_le_bytes());
+        event[24..28].copy_from_slice(&(payload.len() as u32).to_le_bytes());
+        event[48..50].copy_from_slice(&(payload.len().next_multiple_of(4) as u16).to_le_bytes());
+        event.extend_from_slice(&payload);
+        event.resize(event.len().next_multiple_of(4), 0);
+        results.event(&event, 0xa001).unwrap();
+        let network = results.networks[0].unwrap();
+        assert_eq!(network.frequency, 2462);
+        assert_eq!(station::unsupported_reason(&network), None);
+        let mut sent = 0;
+        wmi::station::start_with_channel(&network, 0x6c, |command| {
+            if sent == 0 || sent == 4 {
+                let offset = if sent == 0 { 20 } else { 84 };
+                assert_eq!(&command[offset..offset + 4], &2462u32.to_le_bytes());
+            }
+            sent += 1;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(sent, 5);
+    }
+    assert_eq!(results.networks.iter().flatten().count(), 1);
+    assert_eq!(results.beacons, 4);
+    assert_eq!(results.bad_beacons, 0);
+    // Hearing a real channel-13 AP on channel 11 must not admit station TX.
+    let mut payload = frame.to_vec();
+    payload.extend_from_slice(&[3, 1, 13]);
+    let network = ieee80211::beacon(&payload, 2462, -50).unwrap();
+    assert_eq!(network.frequency, 2472);
+    assert_eq!(
+        station::unsupported_reason(&network),
+        Some("connection requires channels 1-11")
+    );
+}
+
+#[test]
 fn unsupported_networks_explain_security_band_and_rate_rejections_without_weakening_admission() {
     let good = ap();
     assert_eq!(station::unsupported_reason(&good), None);
