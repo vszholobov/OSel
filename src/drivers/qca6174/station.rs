@@ -270,8 +270,19 @@ impl Controller {
         wmi::station::start_with_channel(ap, eeprom_domain, |command| {
             self.send_wmi(self.wmi_endpoint, command, report)
         })?;
+        let diagnostics = &mut self.data.as_mut().ok_or(Errno::ENODEV)?.diagnostics;
+        diagnostics.tx_power_half_dbm = wmi::station::TX_POWER_HALF_DBM;
+        diagnostics.management_rate = wmi::station::management_rate(ap)?;
         report.record("STA home channel list submitted", u32::from(ap.frequency));
         report.record("STA EEPROM domain configured", eeprom_domain);
+        report.record(
+            "STA configured TX power half-dBm",
+            wmi::station::TX_POWER_HALF_DBM,
+        );
+        report.record(
+            "STA management rate code",
+            wmi::station::management_rate(ap)?,
+        );
         self.wait_station(3000, report, "STA vdev start response wait", |data| {
             Ok(data.started)
         })?;

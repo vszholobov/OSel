@@ -144,7 +144,11 @@ static void station_commands(void) {
     tlv(WMI_TLV_TAG_STRUCT_VDEV_SET_PARAM_CMD, &param, sizeof(param));
     save("tx-encapsulation");
     struct wmi_tlv_vdev_start_cmd start = {.bcn_intval = 100, .dtim_period = 1, .ssid = {.ssid_len = 4, .ssid = "OSel"}};
-    struct wmi_channel channel = {.mhz = 2412, .band_center_freq1 = 2412, .flags = MODE_11G};
+    /* Conservative 10 dBm cap, in WMI's half-dBm units, on TX channels 1-11. */
+    struct wmi_channel channel = {
+        .mhz = 2412, .band_center_freq1 = 2412, .flags = MODE_11G,
+        .max_power = 20, .reg_power = 20, .max_tx_power = 20,
+    };
     struct wmi_tlv_scan_chan_list_cmd list = {.num_scan_chans = 1};
     struct {struct tlv_header header; struct wmi_channel channel;} __packed home = {
         .header = {.tag = WMI_TLV_TAG_STRUCT_CHANNEL, .len = sizeof(channel)},
@@ -162,6 +166,30 @@ static void station_commands(void) {
     begin(WMI_TLV_PDEV_SET_REGDOMAIN_CMDID);
     tlv(WMI_TLV_TAG_STRUCT_PDEV_SET_REGDOMAIN_CMD, &domain, sizeof(domain));
     save("station-regdomain");
+    struct wmi_pdev_set_param_cmd power = {
+        .param_id = WMI_TLV_PDEV_PARAM_TXPOWER_LIMIT2G, .param_value = 20,
+    };
+    begin(WMI_TLV_PDEV_SET_PARAM_CMDID);
+    tlv(WMI_TLV_TAG_STRUCT_PDEV_SET_PARAM_CMD, &power, sizeof(power));
+    save("station-tx-power");
+    param.param_id = WMI_TLV_VDEV_PARAM_MGMT_RATE;
+    param.param_value = (WMI_RATE_PREAMBLE_CCK << 6) | ATH10K_HW_RATE_CCK_LP_1M;
+    begin(WMI_TLV_VDEV_SET_PARAM_CMDID);
+    tlv(WMI_TLV_TAG_STRUCT_VDEV_SET_PARAM_CMD, &param, sizeof(param));
+    save("station-management-rate");
+    length = 0;
+    const u32 rate_codes[] = {
+        (WMI_RATE_PREAMBLE_CCK << 6) | ATH10K_HW_RATE_CCK_LP_1M,
+        (WMI_RATE_PREAMBLE_CCK << 6) | ATH10K_HW_RATE_CCK_LP_2M,
+        (WMI_RATE_PREAMBLE_CCK << 6) | ATH10K_HW_RATE_CCK_LP_5_5M,
+        (WMI_RATE_PREAMBLE_CCK << 6) | ATH10K_HW_RATE_CCK_LP_11M,
+        ATH10K_HW_RATE_OFDM_6M, ATH10K_HW_RATE_OFDM_9M,
+        ATH10K_HW_RATE_OFDM_12M, ATH10K_HW_RATE_OFDM_18M,
+        ATH10K_HW_RATE_OFDM_24M, ATH10K_HW_RATE_OFDM_36M,
+        ATH10K_HW_RATE_OFDM_48M, ATH10K_HW_RATE_OFDM_54M,
+    };
+    append(rate_codes, sizeof(rate_codes));
+    save("legacy-rate-codes");
     begin(WMI_TLV_SERVICE_MGMT_TX_HTT); word(WMI_TLV_SERVICE_MGMT_TX_WMI);
     save("management-services");
     begin(WMI_TLV_VDEV_START_REQUEST_CMDID);

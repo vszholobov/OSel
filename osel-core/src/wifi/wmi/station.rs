@@ -12,6 +12,11 @@ use crate::{
 use alloc::vec::Vec;
 use zeroize::Zeroizing;
 
+// 10 dBm, expressed in the 0.5 dBm units used by WMI channel/PDEV limits.
+// Below ath's WORC_WORLD channel 1-11 ceiling (20 dBm). Firmware still applies
+// the exact board's calibration. SERVICE_READY's raw power fields are not dBm.
+pub const TX_POWER_HALF_DBM: u32 = 20;
+
 fn command(id: u32, tag: u16, value: &[u8]) -> KResult<Vec<u8>> {
     let mut result = id.to_le_bytes().to_vec();
     put_tlv(&mut result, tag, value)?;
@@ -29,6 +34,48 @@ pub fn tx_encapsulation() -> KResult<Vec<u8>> {
     // ath10k keeps the vdev default in Native WiFi mode even with Ethernet
     // offload. Each HTT descriptor chooses Ethernet or management separately.
     vdev_param(48, 1)
+}
+/// Match ath10k's lowest basic management rate, independent of IE ordering.
+/// If no basic bit was advertised, use the lowest supported legacy rate.
+pub fn management_rate(ap: &AccessPoint) -> KResult<u32> {
+    station::supported(ap)?;
+    let rates = &ap.rates[..usize::from(ap.rates_len)];
+    let basic = rates.iter().any(|rate| rate & 0x80 != 0);
+    let rate = rates
+        .iter()
+        .filter(|&&rate| !basic || rate & 0x80 != 0)
+        .map(|rate| rate & 0x7f)
+        .min()
+        .ok_or(Errno::EOPNOTSUPP)?;
+    // CCK uses the long preamble. These are hardware codes, not Mbps or the
+    // 500 kbit/s values carried by Supported Rates / Extended Supported Rates.
+    match rate {
+        2 => Ok(0x43),
+        4 => Ok(0x42),
+        11 => Ok(0x41),
+        22 => Ok(0x40),
+        12 => Ok(3),
+        18 => Ok(7),
+        24 => Ok(2),
+        36 => Ok(6),
+        48 => Ok(1),
+        72 => Ok(5),
+        96 => Ok(0),
+        108 => Ok(4),
+        _ => Err(Errno::EOPNOTSUPP),
+    }
+}
+fn home_channel(ap: &AccessPoint) -> Vec<u8> {
+    // min/max/regulatory power, regulatory class; antenna gain/max TX power.
+    // Both channel publication and VDEV_START must carry the same limits.
+    words(&[
+        u32::from(ap.frequency),
+        u32::from(ap.frequency),
+        0,
+        1,
+        TX_POWER_HALF_DBM << 8 | TX_POWER_HALF_DBM << 16,
+        TX_POWER_HALF_DBM << 8,
+    ])
 }
 /// Configure a started legacy STA before creating its AP peer or sending auth.
 /// Firmware defaults are not a substitute for programming contention and wake
@@ -112,7 +159,8 @@ pub fn create_peer(ap: [u8; 6]) -> KResult<Vec<u8>> {
 /// Every firmware boot needs its own channel table, including a fresh connect
 /// after scanning stopped/reset the target. Publish only the admitted home
 /// channel, configure its verified EEPROM domain, then start the vdev with the
-/// same 11g/20 MHz and 0 dBm limits. Unknown domains must not become WORC_WORLD.
+/// same 11g/20 MHz and 10 dBm limits. Set the PDEV power ceiling and AP's basic
+/// management rate before start/auth. Unknown domains must not become WORC_WORLD.
 pub fn start_with_channel(
     ap: &AccessPoint,
     eeprom_domain: u32,
@@ -120,16 +168,15 @@ pub fn start_with_channel(
 ) -> KResult<()> {
     station::supported(ap)?;
     let domain = regdomain(eeprom_domain)?;
+    let rate = management_rate(ap)?;
     let mut channels = Vec::new();
-    put_tlv(
-        &mut channels,
-        80,
-        &words(&[ap.frequency as u32, ap.frequency as u32, 0, 1, 0, 0]),
-    )?;
+    put_tlv(&mut channels, 80, &home_channel(ap))?;
     let mut list = command(0x3003, 79, &words(&[1]))?;
     put_tlv(&mut list, 18, &channels)?;
     send(&list)?;
     send(&domain)?;
+    send(&command(0x4003, 82, &words(&[3, TX_POWER_HALF_DBM]))?)?;
+    send(&vdev_param(25, rate)?)?;
     send(&start(ap)?)
 }
 pub fn regdomain(eeprom_domain: u32) -> KResult<Vec<u8>> {
@@ -155,12 +202,8 @@ pub fn start(ap: &AccessPoint) -> KResult<Vec<u8>> {
     body.extend_from_slice(&ap.ssid);
     body.extend_from_slice(&words(&[0, 0, 0, 0]));
     let mut result = command(0x5003, 88, &body)?;
-    // Legacy 11g/20 MHz, conservative 0 dBm power limits; no HT/VHT or DFS.
-    put_tlv(
-        &mut result,
-        80,
-        &words(&[ap.frequency as u32, ap.frequency as u32, 0, 1, 0, 0]),
-    )?;
+    // Legacy 11g/20 MHz; no HT/VHT or DFS.
+    put_tlv(&mut result, 80, &home_channel(ap))?;
     put_tlv(&mut result, 18, &[])?;
     Ok(result)
 }

@@ -51,7 +51,7 @@ Reports contain no Wi-Fi passwords or keys. All shell output is also sent to COM
 
 ## Connect Wi-Fi {#connect}
 
-In a new image run `wifi scan`, then `wifi connect N`, selecting a WPA2 network number. Enter the password on the laptop without echo; it is not needed in a report. Requirements: visible SSID, WPA2-Personal/CCMP, 2.4 GHz and channels 1–11. WPA3-only, Enterprise, mandatory PMF and hidden SSIDs are unsupported. Initial power is capped at 0 dBm: test near the router.
+In a new image run `wifi scan`, then `wifi connect N`, selecting a WPA2 network number. Enter the password on the laptop without echo; it is not needed in a report. Requirements: visible SSID, WPA2-Personal/CCMP, 2.4 GHz and channels 1–11. WPA3-only, Enterprise, mandatory PMF and hidden SSIDs are unsupported. Power is capped at 10 dBm with board calibration retained; test near the router initially.
 
 Discovery covers more channels than association: channels 1–13 and selected 5 GHz channels within board limits are scanned, while connection accepts only 1–11. DFS and 6 GHz are excluded. A nearby phone hotspot may therefore be absent; the phone model does not establish its configured band.
 

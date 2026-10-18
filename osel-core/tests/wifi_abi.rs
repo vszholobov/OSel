@@ -263,6 +263,8 @@ fn fresh_station_start_publishes_the_home_channel_before_start_and_stops_on_erro
     let expected = [
         fixture!("station-channel").as_slice(),
         fixture!("station-regdomain").as_slice(),
+        fixture!("station-tx-power").as_slice(),
+        fixture!("station-management-rate").as_slice(),
         fixture!("vdev-start").as_slice(),
     ];
     let mut commands = Vec::new();
@@ -272,7 +274,7 @@ fn fresh_station_start_publishes_the_home_channel_before_start_and_stops_on_erro
     })
     .unwrap();
     assert_eq!(commands, expected);
-    for fail_at in 0..3 {
+    for fail_at in 0..expected.len() {
         let mut sent = 0;
         assert_eq!(
             wmi::station::start_with_channel(&ap, 0x6c, |command| {
@@ -289,34 +291,82 @@ fn fresh_station_start_publishes_the_home_channel_before_start_and_stops_on_erro
         assert_eq!(
             sent,
             fail_at + 1,
-            "a failed channel/domain publication must stop the sequence"
+            "a failed radio configuration must prevent station start"
         );
     }
     // The new home channel enables station TX only for the already-admitted AP;
     // passive discovery remains passive, including channels 12/13 and 5 GHz.
     let channel = fixture!("station-channel");
     assert_eq!(u32::from_le_bytes(channel[32..36].try_into().unwrap()), 1);
-    assert_eq!(&channel[36..44], &[0; 8], "power limits stay at 0 dBm");
+    assert_eq!(&channel[36..44], &[0, 20, 20, 0, 0, 20, 0, 0]);
+    assert_eq!(wmi::station::TX_POWER_HALF_DBM, 20);
     for frequency in (2412..=2462).step_by(5) {
         let mut network = ap;
         network.frequency = frequency;
         let mut sent = 0;
         wmi::station::start_with_channel(&network, 0x6c, |command| {
-            if sent == 1 {
-                assert_eq!(command, fixture!("station-regdomain"));
-            } else {
+            if sent == 0 || sent == 4 {
                 let field = if sent == 0 { 20 } else { 84 };
                 assert_eq!(
                     u32::from_le_bytes(command[field..field + 4].try_into().unwrap()),
                     u32::from(frequency)
                 );
+                assert_eq!(
+                    &command[field + 16..field + 24],
+                    &[0, 20, 20, 0, 0, 20, 0, 0],
+                    "channel list and start use the same half-dBm limits"
+                );
+            } else {
+                assert_eq!(command, expected[sent]);
             }
             sent += 1;
             Ok(())
         })
         .unwrap();
-        assert_eq!(sent, 3);
+        assert_eq!(sent, expected.len());
     }
+}
+
+#[test]
+fn management_uses_the_lowest_ap_basic_rate_and_c_hardware_codes() {
+    let mut network = ap();
+    // Lower optional rates must not override an OFDM-only basic rate set;
+    // Supported Rates IE order need not be sorted by bitrate.
+    network.rates[..5].copy_from_slice(&[0x98, 2, 0x8c, 0xb0, 4]);
+    network.rates_len = 5;
+    assert_eq!(wmi::station::management_rate(&network), Ok(3)); // 6 Mbps
+    let mut commands = Vec::new();
+    wmi::station::start_with_channel(&network, 0x6c, |command| {
+        commands.push(command.to_vec());
+        Ok(())
+    })
+    .unwrap();
+    let mut expected = fixture!("station-management-rate").to_vec();
+    expected[16..20].copy_from_slice(&3u32.to_le_bytes());
+    assert_eq!(commands[3], expected);
+    // No basic bit: choose the lowest supported rate, still not IE order.
+    network.rates[..3].copy_from_slice(&[22, 11, 4]);
+    network.rates_len = 3;
+    assert_eq!(wmi::station::management_rate(&network), Ok(0x42));
+    for (rate, code) in [2, 4, 11, 22, 12, 18, 24, 36, 48, 72, 96, 108]
+        .into_iter()
+        .zip(fixture!("legacy-rate-codes").chunks_exact(4))
+    {
+        network.rates[0] = rate | 0x80;
+        network.rates_len = 1;
+        assert_eq!(
+            wmi::station::management_rate(&network),
+            Ok(u32::from_le_bytes(code.try_into().unwrap()))
+        );
+    }
+    network.rates[0] = 0xff;
+    assert!(wmi::station::management_rate(&network).is_err());
+    assert!(
+        wmi::station::start_with_channel(&network, 0x6c, |_| {
+            panic!("invalid rates must be rejected before radio configuration")
+        })
+        .is_err()
+    );
 }
 
 #[test]
